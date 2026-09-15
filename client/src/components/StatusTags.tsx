@@ -43,11 +43,14 @@ export const AttendanceStatusTag: React.FC<{ status: AttendanceStatus }> = ({ st
 };
 
 export const employeeStatusMap = {
-  active: { label: 'ກໍາລັງເຮັດວຽກ', color: 'green' },
-  inactive: { label: 'ພົ້ນສະພາບ', color: 'default' },
+  draft: { label: 'ຮ່າງ', color: 'blue' },
+  active: { label: 'ກຳລັງເຮັດວຽກ', color: 'green' },
+  inactive: { label: 'ບໍ່ໃຊ້ງານ', color: 'default' },
+  resigned: { label: 'ລາອອກ', color: 'red' },
+  suspended: { label: 'ພັກງານ', color: 'orange' },
 } as const;
 
-export const EmployeeStatusTag: React.FC<{ status: 'active' | 'inactive' }> = ({ status }) => {
+export const EmployeeStatusTag: React.FC<{ status: keyof typeof employeeStatusMap }> = ({ status }) => {
   const item = employeeStatusMap[status];
   return <Tag color={item.color}>{item.label}</Tag>;
 };

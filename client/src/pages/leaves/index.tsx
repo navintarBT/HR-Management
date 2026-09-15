@@ -54,24 +54,27 @@ export const LeaveListPage: React.FC = () => {
         </Button>
       }
     >
-      <Table {...tableProps} rowKey="_id" scroll={{ x: true }} sticky={{ offsetHeader }}>
+      <Table {...tableProps} rowKey="_id" scroll={{ x: 'max-content' }} sticky={{ offsetHeader }}>
         <Table.Column
           title="ພະນັກງານ"
+          width={160}
           render={(_, record: Leave) =>
             typeof record.employee === 'object' ? `${(record.employee as Employee).firstName} ${(record.employee as Employee).lastName}` : '-'
           }
         />
-        <Table.Column title="ປະເພດ" dataIndex="type" render={(v) => <LeaveTypeTag type={v} />} />
+        <Table.Column title="ປະເພດ" dataIndex="type" width={110} render={(v) => <LeaveTypeTag type={v} />} />
         <Table.Column
           title="ຊ່ວງວັນທີລາ"
+          width={200}
           render={(_, record: Leave) =>
             `${dayjs(record.startDate).format('DD/MM/YYYY')} - ${dayjs(record.endDate).format('DD/MM/YYYY')}`
           }
         />
-        <Table.Column title="ເຫດຜົນ" dataIndex="reason" ellipsis />
-        <Table.Column title="ສະຖານະ" dataIndex="status" render={(v) => <LeaveStatusTag status={v} />} />
+        <Table.Column title="ເຫດຜົນ" dataIndex="reason" width={200} ellipsis />
+        <Table.Column title="ສະຖານະ" dataIndex="status" width={110} render={(v) => <LeaveStatusTag status={v} />} />
         <Table.Column
           title="ຜູ້ອະນຸມັດ"
+          width={160}
           render={(_, record: Leave) =>
             typeof record.approver === 'object' && record.approver
               ? `${(record.approver as Employee).firstName} ${(record.approver as Employee).lastName}`

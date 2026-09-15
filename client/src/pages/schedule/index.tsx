@@ -8,6 +8,7 @@ import type { Employee, Position, Shift, ShiftCategory, Identity } from '../../t
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { RequestSwapModal } from './RequestSwapModal';
 import { categorical } from '../../theme/palette';
+import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
 
 const colorForId = (id: string) => categorical[id.charCodeAt(id.length - 1) % categorical.length];
 
@@ -16,13 +17,6 @@ function mondayOf(d: dayjs.Dayjs) {
   const diffToMonday = dow === 0 ? -6 : 1 - dow;
   return d.add(diffToMonday, 'day').startOf('day');
 }
-
-const withTextFilter = (selectProps: any) => ({
-  ...selectProps,
-  onSearch: undefined,
-  filterOption: (input: string, option: any) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase()),
-  showSearch: true,
-});
 
 // Shared between the create and edit shift modals — only the Form/formProps wrapping differs.
 const ShiftFormItems: React.FC<{
@@ -237,7 +231,7 @@ export const SchedulePage: React.FC = () => {
         rowKey="_id"
         loading={employeesLoading || shiftsLoading}
         pagination={false}
-        scroll={{ x: true }}
+        scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader }}
       >
         <Table.Column

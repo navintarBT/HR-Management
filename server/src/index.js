@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -8,6 +9,7 @@ const authRoutes = require('./routes/auth');
 const employeeRoutes = require('./routes/employees');
 const departmentRoutes = require('./routes/departments');
 const positionRoutes = require('./routes/positions');
+const employmentTypeRoutes = require('./routes/employmentTypes');
 const attendanceLogRoutes = require('./routes/attendanceLogs');
 const attendanceDailyRoutes = require('./routes/attendanceDaily');
 const attendanceActionRoutes = require('./routes/attendanceActions');
@@ -16,7 +18,7 @@ const shiftRoutes = require('./routes/shifts');
 const shiftSwapRoutes = require('./routes/shiftSwaps');
 const shiftCategoryRoutes = require('./routes/shiftCategories');
 const dashboardRoutes = require('./routes/dashboard');
-const admsStub = require('./routes/admsStub');
+const admsRoutes = require('./routes/adms');
 
 const app = express();
 
@@ -28,14 +30,17 @@ app.use(
 );
 app.use(morgan('dev'));
 app.use(express.json());
+app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// ZKTeco ADMS stub lives at the device's expected root path, not under /api.
-app.use('/', admsStub);
+// ZKTeco ADMS (push protocol) lives at the device's fixed expected root path,
+// not under /api — real terminals are hardcoded to hit /iclock/... directly.
+app.use('/', admsRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/positions', positionRoutes);
+app.use('/api/employment-types', employmentTypeRoutes);
 app.use('/api/attendance-logs', attendanceLogRoutes);
 app.use('/api/attendance-daily', attendanceDailyRoutes);
 app.use('/api/attendance', attendanceActionRoutes);

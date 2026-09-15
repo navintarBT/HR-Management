@@ -3,27 +3,38 @@ export type Role = 'admin' | 'manager' | 'employee';
 export interface Department {
   _id: string;
   name: string;
-  description?: string;
+  head?: Employee | string;
 }
 
 export interface Position {
   _id: string;
   name: string;
-  level?: string;
+  departments?: (Department | string)[];
+  head?: Employee | string;
+}
+
+export interface EmploymentType {
+  _id: string;
+  name: string;
 }
 
 export interface Employee {
   _id: string;
-  employeeCode: string;
-  firstName: string;
-  lastName: string;
+  employeeCode?: string;
+  firstName?: string;
+  lastName?: string;
   department?: Department | string;
   position?: Position | string;
-  hireDate: string;
-  status: 'active' | 'inactive';
+  supervisor?: Employee | string;
+  positionHead?: Employee | string;
+  hireDate?: string;
+  terminationDate?: string | null;
+  employmentType?: EmploymentType | string;
+  status: 'draft' | 'active' | 'inactive' | 'resigned' | 'suspended';
   deviceUserId?: string;
   email?: string;
   phone?: string;
+  photoUrl?: string;
 }
 
 export interface Identity {
@@ -31,6 +42,7 @@ export interface Identity {
   email: string;
   role: Role;
   employee: Employee | null;
+  mustChangePassword?: boolean;
 }
 
 export type AttendanceLogType = 'in' | 'out' | 'auto';

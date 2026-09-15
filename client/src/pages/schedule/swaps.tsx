@@ -59,11 +59,16 @@ export const ShiftSwapListPage: React.FC = () => {
         </Button>
       }
     >
-      <Table {...tableProps} rowKey="_id" scroll={{ x: true }} sticky={{ offsetHeader }}>
-        <Table.Column title="ຜູ້ຂໍ" render={(_, record: ShiftSwapRequest) => employeeName(record.requestedBy as Employee)} />
-        <Table.Column title="ກະທີ່ຂໍສະຫຼັບ" render={(_, record: ShiftSwapRequest) => shiftLabel(record.fromShift as Shift)} />
+      <Table {...tableProps} rowKey="_id" scroll={{ x: 'max-content' }} sticky={{ offsetHeader }}>
+        <Table.Column title="ຜູ້ຂໍ" width={150} render={(_, record: ShiftSwapRequest) => employeeName(record.requestedBy as Employee)} />
+        <Table.Column
+          title="ກະທີ່ຂໍສະຫຼັບ"
+          width={220}
+          render={(_, record: ShiftSwapRequest) => shiftLabel(record.fromShift as Shift)}
+        />
         <Table.Column
           title="ໃຫ້ / ແລກກັບ"
+          width={200}
           render={(_, record: ShiftSwapRequest) => (
             <div>
               <div>{employeeName(record.toEmployee as Employee)}</div>
@@ -79,9 +84,13 @@ export const ShiftSwapListPage: React.FC = () => {
             </div>
           )}
         />
-        <Table.Column title="ເຫດຜົນ" dataIndex="reason" ellipsis />
-        <Table.Column title="ສະຖານະ" dataIndex="status" render={(v) => <ShiftSwapStatusTag status={v} />} />
-        <Table.Column title="ຜູ້ອະນຸມັດ" render={(_, record: ShiftSwapRequest) => employeeName(record.approver as Employee)} />
+        <Table.Column title="ເຫດຜົນ" dataIndex="reason" width={180} ellipsis />
+        <Table.Column title="ສະຖານະ" dataIndex="status" width={110} render={(v) => <ShiftSwapStatusTag status={v} />} />
+        <Table.Column
+          title="ຜູ້ອະນຸມັດ"
+          width={150}
+          render={(_, record: ShiftSwapRequest) => employeeName(record.approver as Employee)}
+        />
         {canApprove && (
           <Table.Column
             title="ຈັດການ"

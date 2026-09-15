@@ -7,6 +7,7 @@ import type { Employee, Identity } from '../../types';
 import { EmployeeStatusTag } from '../../components/StatusTags';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { categorical } from '../../theme/palette';
+import { resolvePhotoUrl } from '../../providers/axios';
 
 export const EmployeeList: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
@@ -19,8 +20,7 @@ export const EmployeeList: React.FC = () => {
     pagination: { pageSize: 10 },
   });
 
-  const colorFor = (seed: string) => categorical[seed.charCodeAt(seed.length - 1) % categorical.length];
-
+  const colorFor = (seed: string) => (seed ? categorical[seed.charCodeAt(seed.length - 1) % categorical.length] : categorical[0]);
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -38,13 +38,18 @@ export const EmployeeList: React.FC = () => {
           onSearch={(value) => setFilters([{ field: 'q', operator: 'eq', value }])}
         />
       </div>
-      <Table {...tableProps} rowKey="_id" scroll={{ x: true }} sticky={{ offsetHeader }}>
+      <Table {...tableProps} rowKey="_id" scroll={{ x: 'max-content' }} sticky={{ offsetHeader }}>
         <Table.Column
           title="ພະນັກງານ"
           dataIndex="firstName"
+          width={220}
           render={(_, record: Employee) => (
             <Space>
-              <Avatar style={{ backgroundColor: colorFor(record.employeeCode) }} icon={<UserOutlined />} />
+              <Avatar
+                src={resolvePhotoUrl(record.photoUrl)}
+                style={{ backgroundColor: colorFor(record.employeeCode || record._id) }}
+                icon={<UserOutlined />}
+              />
               <div>
                 <div style={{ fontWeight: 500 }}>
                   {record.firstName} {record.lastName}
@@ -59,24 +64,30 @@ export const EmployeeList: React.FC = () => {
         <Table.Column
           title="ພະແນກ"
           dataIndex={['department', 'name']}
+          width={130}
           render={(_, record: Employee) => (typeof record.department === 'object' ? record.department?.name : '-')}
         />
         <Table.Column
-          title="ຕໍາແໜ່ງ"
+          title="ຕຳແໜ່ງ"
           dataIndex={['position', 'name']}
+          width={130}
           render={(_, record: Employee) => (typeof record.position === 'object' ? record.position?.name : '-')}
         />
-        <Table.Column title="ອີເມວ" dataIndex="email" />
+        <Table.Column
+          title="ປະເພດການຈ້າງ"
+          dataIndex={['employmentType', 'name']}
+          width={120}
+          render={(_, record: Employee) => (typeof record.employmentType === 'object' ? record.employmentType?.name : '-')}
+        />
+        <Table.Column title="ອີເມວ" dataIndex="email" width={180} />
+        <Table.Column title="ເບີໂທ" dataIndex="phone" width={120} />
         <Table.Column
           title="ວັນທີເລີ່ມງານ"
           dataIndex="hireDate"
+          width={120}
           render={(value) => (value ? dayjs(value).format('DD/MM/YYYY') : '-')}
         />
-        <Table.Column
-          title="ສະຖານະ"
-          dataIndex="status"
-          render={(value) => <EmployeeStatusTag status={value} />}
-        />
+        <Table.Column title="ສະຖານະ" dataIndex="status" width={110} render={(value) => <EmployeeStatusTag status={value} />} />
         <Table.Column
           title="ຈັດການ"
           fixed="right"

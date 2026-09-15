@@ -5,6 +5,7 @@ import dayjs from 'dayjs';
 import type { AttendanceDaily, Employee } from '../../types';
 import { AttendanceStatusTag } from '../../components/StatusTags';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
+import { withLocalTextFilter } from '../../utils/selectFilters';
 
 const { RangePicker } = DatePicker;
 
@@ -44,15 +45,7 @@ export const AttendanceDailyPage: React.FC = () => {
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Form form={form} layout="inline" onFinish={onSearch} style={{ rowGap: 8 }}>
           <Form.Item name="employee">
-            <Select
-              {...employeeSelect}
-              onSearch={undefined}
-              filterOption={(input, option) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase())}
-              placeholder="ເລືອກພະນັກງານ"
-              style={{ width: 220 }}
-              allowClear
-              showSearch
-            />
+            <Select {...withLocalTextFilter(employeeSelect)} placeholder="ເລືອກພະນັກງານ" style={{ width: 220 }} allowClear />
           </Form.Item>
           <Form.Item name="range">
             <RangePicker format="DD/MM/YYYY" />
@@ -68,34 +61,38 @@ export const AttendanceDailyPage: React.FC = () => {
         </Form>
       </div>
 
-      <Table {...tableProps} rowKey="_id" scroll={{ x: true }} sticky={{ offsetHeader }}>
+      <Table {...tableProps} rowKey="_id" scroll={{ x: 'max-content' }} sticky={{ offsetHeader }}>
         <Table.Column
           title="ພະນັກງານ"
+          width={160}
           render={(_, record: AttendanceDaily) =>
             typeof record.employee === 'object'
               ? `${(record.employee as Employee).firstName} ${(record.employee as Employee).lastName}`
               : '-'
           }
         />
-        <Table.Column title="ວັນທີ" dataIndex="date" render={(v) => dayjs(v).format('DD/MM/YYYY')} />
-        <Table.Column title="ເຂົ້າວຽກ" dataIndex="firstIn" render={(v) => (v ? dayjs(v).format('HH:mm') : '-')} />
-        <Table.Column title="ອອກວຽກ" dataIndex="lastOut" render={(v) => (v ? dayjs(v).format('HH:mm') : '-')} />
+        <Table.Column title="ວັນທີ" dataIndex="date" width={110} render={(v) => dayjs(v).format('DD/MM/YYYY')} />
+        <Table.Column title="ເຂົ້າວຽກ" dataIndex="firstIn" width={100} render={(v) => (v ? dayjs(v).format('HH:mm') : '-')} />
+        <Table.Column title="ອອກວຽກ" dataIndex="lastOut" width={100} render={(v) => (v ? dayjs(v).format('HH:mm') : '-')} />
         <Table.Column
           title="ຊົ່ວໂມງເຮັດວຽກ"
           dataIndex="workedHours"
+          width={130}
           render={(v) => <Typography.Text>{v?.toFixed(1)} ຊມ.</Typography.Text>}
         />
         <Table.Column
           title="ມາຊ້າ (ນາທີ)"
           dataIndex="lateMinutes"
+          width={120}
           render={(v) => (v > 0 ? <Typography.Text type="warning">{v} ນາທີ</Typography.Text> : '-')}
         />
         <Table.Column
           title="OT (ຊມ.)"
           dataIndex="otHours"
+          width={110}
           render={(v) => (v > 0 ? <Typography.Text type="success">{v.toFixed(1)} ຊມ.</Typography.Text> : '-')}
         />
-        <Table.Column title="ສະຖານະ" dataIndex="status" render={(v) => <AttendanceStatusTag status={v} />} />
+        <Table.Column title="ສະຖານະ" dataIndex="status" width={110} render={(v) => <AttendanceStatusTag status={v} />} />
       </Table>
     </List>
   );

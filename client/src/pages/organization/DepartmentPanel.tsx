@@ -1,18 +1,41 @@
-import { useTable, useModalForm, DeleteButton } from '@refinedev/antd';
-import { useGetIdentity } from '@refinedev/core';
-import { Table, Button, Modal, Form, Input, Space, Typography } from 'antd';
+import { useTable, useModalForm, useSelect, DeleteButton } from '@refinedev/antd';
+import { useGetIdentity, useInvalidate } from '@refinedev/core';
+import { Table, Button, Modal, Form, Input, Select, Space, Typography } from 'antd';
 import { PlusOutlined, EditOutlined } from '@ant-design/icons';
-import type { Department, Identity } from '../../types';
+import type { Department, Employee, Identity } from '../../types';
 import { useTableStickyOffset, useTabsNavBottom } from '../../hooks/useTableStickyOffset';
+import { useShowAllToggle } from '../../hooks/useShowAllToggle';
+import { withLocalTextFilter } from '../../utils/selectFilters';
 
 export const DepartmentPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isAdmin = identity?.role === 'admin';
 
-  const { tableProps } = useTable<Department>({
+  const { tableProps, setPageSize } = useTable<Department>({
     resource: 'departments',
     pagination: { pageSize: 10 },
     sorters: { initial: [{ field: 'name', order: 'asc' }] },
+  });
+
+  const total = typeof tableProps.pagination === 'object' ? tableProps.pagination?.total ?? 0 : 0;
+  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total);
+
+  const pagination = {
+    ...(typeof tableProps.pagination === 'object' ? tableProps.pagination : {}),
+    showTotal: () => (
+      <Button size="small" onClick={toggleShowAll}>
+        {showAll ? 'ສະແດງເປັນໜ້າ' : 'ສະແດງທັງໝົດ'}
+      </Button>
+    ),
+  };
+
+  const invalidate = useInvalidate();
+
+  const { selectProps: headSelect } = useSelect<Employee>({
+    resource: 'employees',
+    optionLabel: (item) => `${item.firstName} ${item.lastName}`,
+    optionValue: '_id',
+    pagination: { pageSize: 500, mode: 'server' },
   });
 
   const { modalProps: createModalProps, formProps: createFormProps, show: showCreate } = useModalForm<Department>({
@@ -28,6 +51,12 @@ export const DepartmentPanel: React.FC = () => {
   } = useModalForm<Department>({
     resource: 'departments',
     action: 'edit',
+    onMutationSuccess: () => {
+      // Renaming a department should be reflected immediately anywhere it's
+      // already displayed (e.g. populated on cached employee records), not
+      // just in this department list.
+      invalidate({ resource: 'employees', invalidates: ['list', 'detail'] });
+    },
   });
 
   const tabsNavBottom = useTabsNavBottom();
@@ -46,9 +75,14 @@ export const DepartmentPanel: React.FC = () => {
         </Space>
       </div>
 
-      <Table {...tableProps} rowKey="_id" sticky={{ offsetHeader }}>
+      <Table {...tableProps} pagination={pagination} rowKey="_id" sticky={{ offsetHeader }}>
         <Table.Column title="ຊື່ພະແນກ" dataIndex="name" />
-        <Table.Column title="ລາຍລະອຽດ" dataIndex="description" />
+        <Table.Column
+          title="ຫົວໜ້າພະແນກ"
+          render={(_, record: Department) =>
+            typeof record.head === 'object' && record.head ? `${record.head.firstName} ${record.head.lastName}` : '-'
+          }
+        />
         {isAdmin && (
           <Table.Column
             title="ຈັດການ"
@@ -68,8 +102,8 @@ export const DepartmentPanel: React.FC = () => {
           <Form.Item label="ຊື່ພະແນກ" name="name" rules={[{ required: true, message: 'ກະລຸນາປ້ອນຊື່ພະແນກ' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="ລາຍລະອຽດ" name="description">
-            <Input.TextArea rows={3} />
+          <Form.Item label="ຫົວໜ້າພະແນກ" name="head">
+            <Select {...withLocalTextFilter(headSelect)} allowClear placeholder="ເລືອກຫົວໜ້າພະແນກ" />
           </Form.Item>
         </Form>
       </Modal>
@@ -79,8 +113,12 @@ export const DepartmentPanel: React.FC = () => {
           <Form.Item label="ຊື່ພະແນກ" name="name" rules={[{ required: true, message: 'ກະລຸນາປ້ອນຊື່ພະແນກ' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="ລາຍລະອຽດ" name="description">
-            <Input.TextArea rows={3} />
+          <Form.Item
+            label="ຫົວໜ້າພະແນກ"
+            name="head"
+            getValueProps={(value) => ({ value: value && typeof value === 'object' ? value._id : value })}
+          >
+            <Select {...withLocalTextFilter(headSelect)} allowClear placeholder="ເລືອກຫົວໜ້າພະແນກ" />
           </Form.Item>
         </Form>
       </Modal>

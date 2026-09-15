@@ -18,9 +18,9 @@ async function inferType(employeeId, timestamp) {
 }
 
 // Real-world ingestion endpoint for biometric/RFID terminals (or the simulator button).
-// TODO: real ZKTeco devices speak the ADMS protocol (see routes/admsStub.js), not this
-// JSON shape. This endpoint is a convenience bridge for the in-app simulator and any
-// terminal middleware that can be configured to POST plain JSON instead.
+// Real ZKTeco devices speak the ADMS protocol instead (see routes/adms.js) — this
+// endpoint is a convenience bridge for the in-app simulator and any terminal
+// middleware that can be configured to POST plain JSON instead.
 router.post('/push', async (req, res, next) => {
   try {
     const { deviceId, userId, timestamp } = req.body;

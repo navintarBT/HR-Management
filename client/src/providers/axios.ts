@@ -2,6 +2,8 @@ import axios from 'axios';
 
 export const API_URL = import.meta.env.VITE_API_URL || '/api';
 
+export const resolvePhotoUrl = (photoUrl?: string | null) => (photoUrl ? `${API_URL}${photoUrl}` : undefined);
+
 export const axiosInstance = axios.create();
 
 axiosInstance.interceptors.request.use((config) => {
@@ -22,6 +24,13 @@ axiosInstance.interceptors.response.use(
       if (!window.location.pathname.includes('/login')) {
         window.location.href = '/login';
       }
+    }
+    // Surface the API's own error message (e.g. delete-protection, head-conflict
+    // validation) into what refine's notification provider actually displays —
+    // without this, mutation failures show axios's generic "Request failed with
+    // status code 409" instead of the real reason.
+    if (error?.response?.data?.message) {
+      error.message = error.response.data.message;
     }
     return Promise.reject(error);
   }

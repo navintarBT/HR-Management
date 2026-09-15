@@ -13,26 +13,47 @@ router.get('/summary', authenticate, async (req, res, next) => {
   try {
     const days = Math.min(Number(req.query.days) || 14, 30);
     const today = toDateKey(new Date());
+    const selfEmployeeId = req.user.role === 'employee' && req.user.employeeId ? req.user.employeeId._id : null;
 
     const fromDate = new Date();
     fromDate.setDate(fromDate.getDate() - (days - 1));
     const fromKey = toDateKey(fromDate);
 
+    if (req.user.role === 'employee' && !selfEmployeeId) {
+      return res.json({
+        totalEmployees: 0,
+        presentToday: 0,
+        lateToday: 0,
+        onLeaveToday: 0,
+        absentToday: 0,
+        pendingLeaves: 0,
+        trend: [],
+        todayShifts: [],
+        pendingApprovals: [],
+      });
+    }
+
+    const employeeFilter = selfEmployeeId ? { employee: selfEmployeeId } : {};
+    const employeeCountFilter = selfEmployeeId ? { _id: selfEmployeeId, status: 'active' } : { status: 'active' };
+    const leaveFilter = selfEmployeeId ? { employee: selfEmployeeId } : {};
+    const shiftFilter = selfEmployeeId ? { employee: selfEmployeeId } : {};
+    const swapFilter = selfEmployeeId ? { $or: [{ requestedBy: selfEmployeeId }, { toEmployee: selfEmployeeId }] } : {};
+
     const [totalEmployees, todayRows, trendRows, pendingLeaves, todayShiftsRaw, pendingLeaveRows, pendingSwapRows] =
       await Promise.all([
-        Employee.countDocuments({ status: 'active' }),
-        AttendanceDaily.find({ date: today }),
-        AttendanceDaily.find({ date: { $gte: fromKey, $lte: today } }),
-        Leave.countDocuments({ status: 'pending' }),
-        Shift.find({ date: today, status: 'scheduled' })
+        Employee.countDocuments(employeeCountFilter),
+        AttendanceDaily.find({ date: today, ...employeeFilter }),
+        AttendanceDaily.find({ date: { $gte: fromKey, $lte: today }, ...employeeFilter }),
+        Leave.countDocuments({ status: 'pending', ...leaveFilter }),
+        Shift.find({ date: today, status: 'scheduled', ...shiftFilter })
           .populate('employee', 'firstName lastName employeeCode')
           .populate('position', 'name')
           .sort({ startTime: 1 }),
-        Leave.find({ status: 'pending' })
+        Leave.find({ status: 'pending', ...leaveFilter })
           .populate('employee', 'firstName lastName')
           .sort({ createdAt: -1 })
           .limit(6),
-        ShiftSwapRequest.find({ status: 'pending' })
+        ShiftSwapRequest.find({ status: 'pending', ...swapFilter })
           .populate('requestedBy', 'firstName lastName')
           .populate('toEmployee', 'firstName lastName')
           .populate({ path: 'fromShift', select: 'date startTime endTime' })

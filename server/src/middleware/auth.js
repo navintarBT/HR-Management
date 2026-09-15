@@ -10,6 +10,7 @@ async function authenticate(req, res, next) {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(payload.sub).populate('employeeId');
     if (!user) return res.status(401).json({ message: 'Invalid token' });
+    if (user.isActive === false) return res.status(401).json({ message: 'Account is inactive' });
     req.user = user;
     next();
   } catch (err) {

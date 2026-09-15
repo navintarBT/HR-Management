@@ -5,6 +5,7 @@ import { Modal, Form, Select, Input } from 'antd';
 import dayjs from 'dayjs';
 import { API_URL } from '../../providers/axios';
 import type { Employee, Identity, Shift } from '../../types';
+import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
 
 interface RequestSwapModalProps {
   open: boolean;
@@ -58,13 +59,6 @@ export const RequestSwapModal: React.FC<RequestSwapModalProps> = ({ open, onClos
     ],
     queryOptions: { enabled: !!toEmployeeId },
     pagination: { pageSize: 100, mode: 'server' },
-  });
-
-  const withTextFilter = (selectProps: typeof employeeSelect) => ({
-    ...selectProps,
-    onSearch: undefined,
-    filterOption: (input: string, option: any) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase()),
-    showSearch: true,
   });
 
   const reset = () => {

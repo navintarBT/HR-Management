@@ -2,8 +2,8 @@ import type { I18nProvider } from '@refinedev/core';
 
 // Minimal Lao dictionary covering the translation keys Refine's core/antd
 // packages actually call internally (SaveButton, DeleteButton confirm,
-// notifications, unsaved-changes warning, error pages). Everything else in
-// this app is written directly in Lao rather than routed through i18n.
+// notifications, error pages). Everything else in this app is written
+// directly in Lao rather than routed through i18n.
 const dictionary: Record<string, string> = {
   'buttons.save': 'ບັນທຶກ',
   'buttons.cancel': 'ຍົກເລີກ',
@@ -27,7 +27,6 @@ const dictionary: Record<string, string> = {
   'pages.error.404': 'ຂໍອະໄພ, ບໍ່ພົບໜ້ານີ້.',
   'pages.error.backHome': 'ກັບໄປໜ້າຫຼັກ',
   'pages.error.info': 'ທ່ານອາດລືມເພີ່ມອົງປະກອບ {{action}} ໃຫ້ຊັບພະຍາກອນ {{resource}}.',
-  warnWhenUnsavedChanges: 'ທ່ານແນ່ໃຈບໍວ່າຈະອອກ? ທ່ານມີການປ່ຽນແປງທີ່ຍັງບໍ່ໄດ້ບັນທຶກ.',
 
   // Refine looks up `${resource}.${resource}` for a resource's display name in
   // notifications (e.g. "Successfully created {{resource}}") before falling

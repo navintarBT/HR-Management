@@ -4,6 +4,7 @@ import { SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { AttendanceLog, Employee } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
+import { withLocalTextFilter } from '../../utils/selectFilters';
 
 const { RangePicker } = DatePicker;
 
@@ -49,15 +50,7 @@ export const AttendanceLogsPage: React.FC = () => {
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Form form={form} layout="inline" onFinish={onSearch} style={{ rowGap: 8 }}>
           <Form.Item name="employee">
-            <Select
-              {...employeeSelect}
-              onSearch={undefined}
-              filterOption={(input, option) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase())}
-              placeholder="ເລືອກພະນັກງານ"
-              style={{ width: 220 }}
-              allowClear
-              showSearch
-            />
+            <Select {...withLocalTextFilter(employeeSelect)} placeholder="ເລືອກພະນັກງານ" style={{ width: 220 }} allowClear />
           </Form.Item>
           <Form.Item name="range">
             <RangePicker format="DD/MM/YYYY" />
@@ -73,22 +66,24 @@ export const AttendanceLogsPage: React.FC = () => {
         </Form>
       </div>
 
-      <Table {...tableProps} rowKey="_id" scroll={{ x: true }} sticky={{ offsetHeader }}>
+      <Table {...tableProps} rowKey="_id" scroll={{ x: 'max-content' }} sticky={{ offsetHeader }}>
         <Table.Column
           title="ພະນັກງານ"
+          width={160}
           render={(_, record: AttendanceLog) =>
             typeof record.employee === 'object' && record.employee
               ? `${(record.employee as Employee).firstName} ${(record.employee as Employee).lastName}`
               : record.deviceUserId || '-'
           }
         />
-        <Table.Column title="ວັນທີ-ເວລາ" dataIndex="timestamp" render={(v) => dayjs(v).format('DD/MM/YYYY HH:mm:ss')} />
+        <Table.Column title="ວັນທີ-ເວລາ" dataIndex="timestamp" width={170} render={(v) => dayjs(v).format('DD/MM/YYYY HH:mm:ss')} />
         <Table.Column
           title="ປະເພດ"
           dataIndex="type"
+          width={100}
           render={(v: string) => <Tag color={typeMap[v]?.color}>{typeMap[v]?.label ?? v}</Tag>}
         />
-        <Table.Column title="ອຸປະກອນ" dataIndex="deviceId" />
+        <Table.Column title="ອຸປະກອນ" dataIndex="deviceId" width={130} />
       </Table>
     </List>
   );

@@ -7,6 +7,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL } from '../../providers/axios';
 import type { Employee, Position, Shift, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
+import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
 
 const { RangePicker: DateRangePicker } = DatePicker;
 const { RangePicker: TimeRangePicker } = TimePicker;
@@ -18,13 +19,6 @@ interface PendingChange {
   startTime?: string;
   endTime?: string;
 }
-
-const withTextFilter = (selectProps: any) => ({
-  ...selectProps,
-  onSearch: undefined,
-  filterOption: (input: string, option: any) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase()),
-  showSearch: true,
-});
 
 export const BulkShiftEditPage: React.FC = () => {
   const [filterPosition, setFilterPosition] = useState<string>();

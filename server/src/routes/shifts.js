@@ -49,6 +49,9 @@ function buildQuery(query) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const { mongoQuery, _start, _end, _sort, _order } = buildQuery(req.query);
+    if (req.user.role === 'employee') {
+      mongoQuery.employee = req.user.employeeId ? req.user.employeeId._id : null;
+    }
     const [items, total] = await Promise.all([
       Shift.find(mongoQuery)
         .populate('employee position category')
@@ -66,7 +69,11 @@ router.get('/', authenticate, async (req, res, next) => {
 
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const item = await Shift.findById(req.params.id).populate('employee position category');
+    const query = { _id: req.params.id };
+    if (req.user.role === 'employee') {
+      query.employee = req.user.employeeId ? req.user.employeeId._id : null;
+    }
+    const item = await Shift.findOne(query).populate('employee position category');
     if (!item) return res.status(404).json({ message: 'Not found' });
     res.json(item);
   } catch (err) {

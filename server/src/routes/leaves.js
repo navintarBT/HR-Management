@@ -1,6 +1,7 @@
 const express = require('express');
 const Leave = require('../models/Leave');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { markLeave, toDateKey } = require('../utils/attendanceProcessor');
 
 const router = express.Router();
 
@@ -15,6 +16,44 @@ function scopedQuery(req) {
     query.employee = req.user.employeeId ? req.user.employeeId._id : null;
   }
   return { query, _start: Number(_start) || 0, _end: Number(_end) || 10, _sort, _order };
+}
+
+function validateLeavePayload(payload) {
+  if (!payload.employee || !payload.type || !payload.startDate || !payload.endDate) {
+    const err = new Error('employee, type, startDate, and endDate are required');
+    err.status = 400;
+    throw err;
+  }
+
+  if (new Date(payload.endDate) < new Date(payload.startDate)) {
+    const err = new Error('End date cannot be before start date');
+    err.status = 400;
+    throw err;
+  }
+}
+
+async function ensureNoOverlappingLeave(payload, currentId) {
+  const query = {
+    employee: payload.employee,
+    status: { $in: ['pending', 'approved'] },
+    startDate: { $lte: new Date(payload.endDate) },
+    endDate: { $gte: new Date(payload.startDate) },
+  };
+  if (currentId) query._id = { $ne: currentId };
+
+  const existing = await Leave.findOne(query);
+  if (!existing) return;
+
+  const err = new Error('Employee already has a pending or approved leave in this date range');
+  err.status = 409;
+  throw err;
+}
+
+async function markApprovedLeaveDays(leave) {
+  for (let d = new Date(leave.startDate); d <= leave.endDate; d.setDate(d.getDate() + 1)) {
+    // eslint-disable-next-line no-await-in-loop
+    await markLeave(leave.employee, toDateKey(d));
+  }
 }
 
 router.get('/', authenticate, async (req, res, next) => {
@@ -53,6 +92,8 @@ router.post('/', authenticate, async (req, res, next) => {
       payload.employee = req.user.employeeId._id;
     }
     payload.status = 'pending';
+    validateLeavePayload(payload);
+    await ensureNoOverlappingLeave(payload);
     const item = await Leave.create(payload);
     res.status(201).json(item);
   } catch (err) {
@@ -73,7 +114,16 @@ router.patch('/:id', authenticate, async (req, res, next) => {
     }
 
     const { type, startDate, endDate, reason } = req.body;
-    Object.assign(item, { type, startDate, endDate, reason });
+    const nextPayload = {
+      employee: item.employee,
+      type: type ?? item.type,
+      startDate: startDate ?? item.startDate,
+      endDate: endDate ?? item.endDate,
+      reason,
+    };
+    validateLeavePayload(nextPayload);
+    await ensureNoOverlappingLeave(nextPayload, item._id);
+    Object.assign(item, nextPayload);
     await item.save();
     res.json(item);
   } catch (err) {
@@ -83,13 +133,18 @@ router.patch('/:id', authenticate, async (req, res, next) => {
 
 router.patch('/:id/approve', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const item = await Leave.findByIdAndUpdate(
-      req.params.id,
-      { status: 'approved', approver: req.user.employeeId ? req.user.employeeId._id : undefined, decidedAt: new Date() },
-      { new: true }
-    ).populate('employee approver');
+    const item = await Leave.findById(req.params.id);
     if (!item) return res.status(404).json({ message: 'Not found' });
-    res.json(item);
+    if (item.status !== 'pending') return res.status(400).json({ message: 'Only pending requests can be approved' });
+
+    item.status = 'approved';
+    item.approver = req.user.employeeId ? req.user.employeeId._id : undefined;
+    item.decidedAt = new Date();
+    await item.save();
+    await markApprovedLeaveDays(item);
+
+    const populated = await item.populate('employee approver');
+    res.json(populated);
   } catch (err) {
     next(err);
   }
@@ -97,13 +152,17 @@ router.patch('/:id/approve', authenticate, requireRole('admin', 'manager'), asyn
 
 router.patch('/:id/reject', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const item = await Leave.findByIdAndUpdate(
-      req.params.id,
-      { status: 'rejected', approver: req.user.employeeId ? req.user.employeeId._id : undefined, decidedAt: new Date() },
-      { new: true }
-    ).populate('employee approver');
+    const item = await Leave.findById(req.params.id);
     if (!item) return res.status(404).json({ message: 'Not found' });
-    res.json(item);
+    if (item.status !== 'pending') return res.status(400).json({ message: 'Only pending requests can be rejected' });
+
+    item.status = 'rejected';
+    item.approver = req.user.employeeId ? req.user.employeeId._id : undefined;
+    item.decidedAt = new Date();
+    await item.save();
+
+    const populated = await item.populate('employee approver');
+    res.json(populated);
   } catch (err) {
     next(err);
   }

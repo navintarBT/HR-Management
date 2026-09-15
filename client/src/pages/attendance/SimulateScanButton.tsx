@@ -6,6 +6,7 @@ import { ScanOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { API_URL } from '../../providers/axios';
 import type { Employee } from '../../types';
+import { withLocalTextFilter } from '../../utils/selectFilters';
 
 export const SimulateScanButton: React.FC = () => {
   const [open, setOpen] = useState(false);
@@ -64,15 +65,7 @@ export const SimulateScanButton: React.FC = () => {
       >
         <Form form={form} layout="vertical">
           <Form.Item label="ພະນັກງານ" name="employeeId" rules={[{ required: true, message: 'ກະລຸນາເລືອກພະນັກງານ' }]}>
-            <Select
-              {...selectProps}
-              onSearch={undefined}
-              filterOption={(input, option) =>
-                ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase())
-              }
-              placeholder="ເລືອກພະນັກງານ"
-              showSearch
-            />
+            <Select {...withLocalTextFilter(selectProps)} placeholder="ເລືອກພະນັກງານ" />
           </Form.Item>
           <Form.Item label="ເວລາ (ຄ່າເລີ່ມຕົ້ນ: ດຽວນີ້)" name="timestamp">
             <DatePicker showTime style={{ width: '100%' }} format="DD/MM/YYYY HH:mm:ss" />
