@@ -59,7 +59,9 @@ export const LeaveListPage: React.FC = () => {
           title="ພະນັກງານ"
           width={160}
           render={(_, record: Leave) =>
-            typeof record.employee === 'object' ? `${(record.employee as Employee).firstName} ${(record.employee as Employee).lastName}` : '-'
+            record.employee && typeof record.employee === 'object'
+              ? `${(record.employee as Employee).firstName} ${(record.employee as Employee).lastName}`
+              : '-'
           }
         />
         <Table.Column title="ປະເພດ" dataIndex="type" width={110} render={(v) => <LeaveTypeTag type={v} />} />

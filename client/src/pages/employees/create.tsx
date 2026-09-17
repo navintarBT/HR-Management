@@ -1,19 +1,27 @@
 import { useEffect } from 'react';
 import { Create, useForm, useSelect } from '@refinedev/antd';
-import { Form, Input, Select, DatePicker, Row, Col, Checkbox, Divider, Button } from 'antd';
+import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Checkbox, Divider, Button } from 'antd';
 import dayjs from 'dayjs';
-import type { Department, EmploymentType, Employee } from '../../types';
+import type { Department, EmploymentType, Employee, ShiftCategory } from '../../types';
 import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
+import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
 
 export const EmployeeCreate: React.FC = () => {
   const { formProps, saveButtonProps, form } = useForm({ resource: 'employees' });
   const createUser = Form.useWatch('createUser', formProps.form);
 
+  // When a category is picked, it becomes the live source of the default
+  // time (see Employee.defaultShiftCategory) — the manual time fields are
+  // only meaningful without one, so they're cleared rather than stored stale.
   const submitValues = (values: any) =>
     formProps.onFinish?.({
       ...values,
       hireDate: values.hireDate ? dayjs(values.hireDate).toISOString() : undefined,
+      defaultShiftCategory: values.defaultShiftCategory ?? null,
+      defaultShiftStart: values.defaultShiftCategory ? null : values.workTime?.[0] ? values.workTime[0].format('HH:mm') : undefined,
+      defaultShiftEnd: values.defaultShiftCategory ? null : values.workTime?.[1] ? values.workTime[1].format('HH:mm') : undefined,
+      workTime: undefined,
     });
 
   const handleSaveDraft = () => {
@@ -25,11 +33,13 @@ export const EmployeeCreate: React.FC = () => {
     resource: 'departments',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
   const allDepartments = departmentQuery?.data?.data ?? [];
 
   const departmentId = Form.useWatch('department', form);
   const positionId = Form.useWatch('position', form);
+  const defaultShiftCategoryId = Form.useWatch('defaultShiftCategory', form);
   const { positionSelect, options: positionOptions, isValidForDepartment, allPositions } =
     usePositionsByDepartment(departmentId);
 
@@ -69,6 +79,7 @@ export const EmployeeCreate: React.FC = () => {
     resource: 'employment-types',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
 
   return (
@@ -109,11 +120,6 @@ export const EmployeeCreate: React.FC = () => {
           <Col xs={24} md={12}>
             <Form.Item label="ນາມສະກຸນ" name="lastName" rules={[{ required: true }]}>
               <Input />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={12}>
-            <Form.Item label="ອີເມວ" name="email">
-              <Input type="email" />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
@@ -175,6 +181,27 @@ export const EmployeeCreate: React.FC = () => {
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
+            <Form.Item label="ໝວດໝູ່ກະ (ຜູກເວລາແບບ live)" name="defaultShiftCategory">
+              <ShiftCategoryQuickPicker
+                onSelect={(category?: ShiftCategory) =>
+                  form.setFieldValue(
+                    'workTime',
+                    category ? [dayjs(category.startTime, 'HH:mm'), dayjs(category.endTime, 'HH:mm')] : undefined
+                  )
+                }
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item
+              label="ໂມງເຂົ້າວຽກ"
+              name="workTime"
+              tooltip={defaultShiftCategoryId ? 'ດຶງມາຈາກໝວດໝູ່ກະທີ່ເລືອກໄວ້ — ລ້າງໝວດໝູ່ກະກ່ອນຖ້າຕ້ອງການຕັ້ງເວລາເອງ' : undefined}
+            >
+              <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} disabled={!!defaultShiftCategoryId} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
             <Form.Item label="ສະຖານະ" name="status" initialValue="active" rules={[{ required: true }]}>
               <Select
                 options={[
@@ -185,6 +212,20 @@ export const EmployeeCreate: React.FC = () => {
                   { label: 'ພັກງານ', value: 'suspended' },
                 ]}
               />
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Divider orientation="left">ຂໍ້ມູນເພີ່ມເຕີມ</Divider>
+        <Row gutter={16}>
+          <Col xs={24} md={12}>
+            <Form.Item label="ເງິນເດືອນ" name="salary">
+              <InputNumber style={{ width: '100%' }} min={0} step={100000} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item label="ພັກປະຈຳປີ (ມື້)" name="annualLeaveDays" initialValue={15}>
+              <InputNumber style={{ width: '100%' }} min={0} />
             </Form.Item>
           </Col>
         </Row>

@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
 import { Edit, useForm, useSelect } from '@refinedev/antd';
-import { Form, Input, Select, DatePicker, Row, Col, Divider, Button } from 'antd';
+import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Divider, Button } from 'antd';
 import dayjs from 'dayjs';
-import type { Department, EmploymentType, Employee } from '../../types';
+import type { Department, EmploymentType, Employee, ShiftCategory } from '../../types';
 import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
+import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
 
 export const EmployeeEdit: React.FC = () => {
@@ -14,11 +15,14 @@ export const EmployeeEdit: React.FC = () => {
     resource: 'departments',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
   const allDepartments = departmentQuery?.data?.data ?? [];
 
   const departmentId = Form.useWatch('department', form);
   const positionId = Form.useWatch('position', form);
+  const defaultShiftCategoryId = Form.useWatch('defaultShiftCategory', form);
+  const statusValue = Form.useWatch('status', form);
   const { positionSelect, options: positionOptions, isValidForDepartment, allPositions } =
     usePositionsByDepartment(departmentId);
 
@@ -61,6 +65,7 @@ export const EmployeeEdit: React.FC = () => {
     resource: 'employment-types',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
 
   useEffect(() => {
@@ -70,7 +75,6 @@ export const EmployeeEdit: React.FC = () => {
       deviceUserId: record.deviceUserId,
       firstName: record.firstName,
       lastName: record.lastName,
-      email: record.email,
       phone: record.phone,
       status: record.status,
       photoUrl: record.photoUrl,
@@ -78,14 +82,36 @@ export const EmployeeEdit: React.FC = () => {
       department: typeof record.department === 'object' ? record.department?._id : record.department,
       position: typeof record.position === 'object' ? record.position?._id : record.position,
       hireDate: record.hireDate ? dayjs(record.hireDate) : undefined,
+      // If a category is linked, preview ITS current time (live), not
+      // whatever was last saved to defaultShiftStart/End — a category edited
+      // since this employee was last saved should show the new time here too.
+      defaultShiftCategory: idOf(record.defaultShiftCategory),
+      workTime:
+        typeof record.defaultShiftCategory === 'object' && record.defaultShiftCategory
+          ? [dayjs(record.defaultShiftCategory.startTime, 'HH:mm'), dayjs(record.defaultShiftCategory.endTime, 'HH:mm')]
+          : record.defaultShiftStart && record.defaultShiftEnd
+            ? [dayjs(record.defaultShiftStart, 'HH:mm'), dayjs(record.defaultShiftEnd, 'HH:mm')]
+            : undefined,
+      salary: record.salary ?? undefined,
+      annualLeaveDays: record.annualLeaveDays ?? undefined,
+      terminationReason: record.terminationReason ?? undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [record]);
 
+  // When a category is picked, it becomes the live source of the default
+  // time (see Employee.defaultShiftCategory) — the manual time fields are
+  // only meaningful without one, so they're cleared rather than stored stale.
   const submitValues = (values: any) =>
     formProps.onFinish?.({
       ...values,
       hireDate: values.hireDate ? dayjs(values.hireDate).toISOString() : undefined,
+      defaultShiftCategory: values.defaultShiftCategory ?? null,
+      defaultShiftStart: values.defaultShiftCategory ? null : values.workTime?.[0] ? values.workTime[0].format('HH:mm') : null,
+      defaultShiftEnd: values.defaultShiftCategory ? null : values.workTime?.[1] ? values.workTime[1].format('HH:mm') : null,
+      workTime: undefined,
+      salary: values.salary ?? null,
+      annualLeaveDays: values.annualLeaveDays ?? null,
     });
 
   const handleSaveDraft = () => {
@@ -131,11 +157,6 @@ export const EmployeeEdit: React.FC = () => {
           <Col xs={24} md={12}>
             <Form.Item label="ນາມສະກຸນ" name="lastName" rules={[{ required: true }]}>
               <Input />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={12}>
-            <Form.Item label="ອີເມວ" name="email">
-              <Input type="email" />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
@@ -197,6 +218,27 @@ export const EmployeeEdit: React.FC = () => {
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
+            <Form.Item label="ໝວດໝູ່ກະ (ຜູກເວລາແບບ live)" name="defaultShiftCategory">
+              <ShiftCategoryQuickPicker
+                onSelect={(category?: ShiftCategory) =>
+                  form.setFieldValue(
+                    'workTime',
+                    category ? [dayjs(category.startTime, 'HH:mm'), dayjs(category.endTime, 'HH:mm')] : undefined
+                  )
+                }
+              />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item
+              label="ໂມງເຂົ້າວຽກ"
+              name="workTime"
+              tooltip={defaultShiftCategoryId ? 'ດຶງມາຈາກໝວດໝູ່ກະທີ່ເລືອກໄວ້ — ລ້າງໝວດໝູ່ກະກ່ອນຖ້າຕ້ອງການຕັ້ງເວລາເອງ' : undefined}
+            >
+              <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} disabled={!!defaultShiftCategoryId} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
             <Form.Item label="ສະຖານະ" name="status" rules={[{ required: true }]}>
               <Select
                 options={[
@@ -207,6 +249,27 @@ export const EmployeeEdit: React.FC = () => {
                   { label: 'ພັກງານ', value: 'suspended' },
                 ]}
               />
+            </Form.Item>
+          </Col>
+          {statusValue === 'resigned' && (
+            <Col xs={24}>
+              <Form.Item label="ເຫດຜົນທີ່ອອກ" name="terminationReason">
+                <Input.TextArea rows={2} placeholder="ຕົວຢ່າງ: ລາອອກເອງ, ໝົດສັນຍາ, ຖືກໃຫ້ອອກ ..." />
+              </Form.Item>
+            </Col>
+          )}
+        </Row>
+
+        <Divider orientation="left">ຂໍ້ມູນເພີ່ມເຕີມ</Divider>
+        <Row gutter={16}>
+          <Col xs={24} md={12}>
+            <Form.Item label="ເງິນເດືອນ" name="salary">
+              <InputNumber style={{ width: '100%' }} min={0} step={100000} />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item label="ພັກປະຈຳປີ (ມື້)" name="annualLeaveDays">
+              <InputNumber style={{ width: '100%' }} min={0} />
             </Form.Item>
           </Col>
         </Row>

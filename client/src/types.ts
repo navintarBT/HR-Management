@@ -29,12 +29,19 @@ export interface Employee {
   positionHead?: Employee | string;
   hireDate?: string;
   terminationDate?: string | null;
+  terminationReason?: string | null;
   employmentType?: EmploymentType | string;
   status: 'draft' | 'active' | 'inactive' | 'resigned' | 'suspended';
   deviceUserId?: string;
   email?: string;
   phone?: string;
   photoUrl?: string;
+  defaultShiftCategory?: ShiftCategory | string | null;
+  defaultShiftStart?: string; // HH:mm — fallback for a manual time with no matching category
+  defaultShiftEnd?: string; // HH:mm
+  defaultRestDay?: number | null; // 0 = Sunday .. 6 = Saturday
+  salary?: number | null;
+  annualLeaveDays?: number | null;
 }
 
 export interface Identity {
@@ -95,16 +102,16 @@ export interface ShiftCategory {
   autoAbsentMinutes?: number | null; // late beyond this many minutes is recorded as "absent" instead of "late"
 }
 
-export type ShiftStatus = 'scheduled' | 'cancelled';
+export type ShiftStatus = 'scheduled' | 'cancelled' | 'rest';
 
 export interface Shift {
   _id: string;
   employee: Employee | string;
-  position: Position | string;
+  position?: Position | string; // not set for a 'rest' entry
   category?: ShiftCategory | string;
   date: string; // YYYY-MM-DD
-  startTime: string; // HH:mm
-  endTime: string; // HH:mm
+  startTime?: string; // HH:mm — not set for a 'rest' entry
+  endTime?: string; // HH:mm — not set for a 'rest' entry
   note?: string;
   status: ShiftStatus;
 }

@@ -8,7 +8,7 @@ const User = require('../models/User');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
-const POPULATE = 'department position supervisor positionHead employmentType';
+const POPULATE = 'department position supervisor positionHead employmentType defaultShiftCategory';
 
 const PHOTOS_DIR = path.join(__dirname, '../../uploads/employees');
 fs.mkdirSync(PHOTOS_DIR, { recursive: true });
@@ -48,7 +48,13 @@ function buildListQuery(req) {
 
   for (const [key, value] of Object.entries(filters)) {
     if (value === undefined || value === '') continue;
-    query[key] = value;
+    if (key.endsWith('_gte') || key.endsWith('_lte')) {
+      const field = key.replace(/_(gte|lte)$/, '');
+      const op = key.endsWith('_gte') ? '$gte' : '$lte';
+      query[field] = { ...query[field], [op]: value };
+    } else {
+      query[key] = value;
+    }
   }
 
   if (q) {
@@ -67,8 +73,16 @@ function buildListQuery(req) {
 function cleanEmployeePayload(body) {
   const { createUser, userEmail, userPassword, userRole, mustChangePassword, ...employeePayload } = body;
 
-  for (const field of ['employeeCode', 'email', 'phone', 'deviceUserId']) {
+  for (const field of ['employeeCode', 'email', 'phone', 'deviceUserId', 'defaultShiftStart', 'defaultShiftEnd']) {
     if (employeePayload[field] === '') delete employeePayload[field];
+  }
+  // Number/ObjectId fields: an empty string would fail Mongoose's cast, so
+  // drop it (a request that never mentions the field at all); explicit null
+  // still passes through so a PATCH can deliberately clear a previously-set value.
+  for (const field of ['defaultRestDay', 'salary', 'annualLeaveDays', 'defaultShiftCategory']) {
+    if (employeePayload[field] === '' || employeePayload[field] === undefined) {
+      delete employeePayload[field];
+    }
   }
   if (!employeePayload.terminationDate) delete employeePayload.terminationDate;
   if (!employeePayload.supervisor) delete employeePayload.supervisor;
@@ -106,7 +120,7 @@ async function ensureUniqueEmployeeFields(payload, currentId) {
   const existing = await Employee.findOne(query);
   if (!existing) return;
 
-  const err = new Error('Employee already exists with the same employee code, email, or device user id');
+  const err = new Error('ມີພະນັກງານທີ່ໃຊ້ ລະຫັດພະນັກງານ, ອີເມວ, ຫຼື ລະຫັດເຄື່ອງສະແກນດຽວກັນຢູ່ແລ້ວ');
   err.status = 409;
   throw err;
 }
@@ -114,12 +128,12 @@ async function ensureUniqueEmployeeFields(payload, currentId) {
 function validateEmployee(payload, partial = false) {
   const isDraft = payload.status === 'draft';
   if (!isDraft && !partial && (!payload.employeeCode || !payload.firstName || !payload.lastName || !payload.hireDate)) {
-    const err = new Error('employeeCode, firstName, lastName, and hireDate are required');
+    const err = new Error('ກະລຸນາປ້ອນ ລະຫັດພະນັກງານ, ຊື່, ນາມສະກຸນ, ແລະ ວັນທີເລີ່ມງານ ໃຫ້ຄົບ');
     err.status = 400;
     throw err;
   }
   if (payload.terminationDate && payload.hireDate && new Date(payload.terminationDate) < new Date(payload.hireDate)) {
-    const err = new Error('Termination date cannot be before hire date');
+    const err = new Error('ວັນທີອອກງານ ຈະຢູ່ກ່ອນ ວັນທີເລີ່ມງານ ບໍ່ໄດ້');
     err.status = 400;
     throw err;
   }
@@ -171,10 +185,10 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
 
     if (userPayload.createUser) {
       if (!userPayload.email || !userPayload.password) {
-        return res.status(400).json({ message: 'User email and password are required when creating a login account' });
+        return res.status(400).json({ message: 'ກະລຸນາປ້ອນອີເມວ ແລະ ລະຫັດຜ່ານ ສຳລັບບັນຊີເຂົ້າສູ່ລະບົບ' });
       }
       const existingUser = await User.findOne({ email: userPayload.email.toLowerCase() });
-      if (existingUser) return res.status(409).json({ message: 'Login email already exists' });
+      if (existingUser) return res.status(409).json({ message: 'ອີເມວນີ້ຖືກໃຊ້ເຂົ້າສູ່ລະບົບແລ້ວ' });
     }
 
     const employee = await Employee.create(employeePayload);
@@ -210,6 +224,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
         employeePayload.terminationDate = new Date();
       } else if (current.status === 'resigned') {
         employeePayload.terminationDate = null;
+        employeePayload.terminationReason = null;
       }
     }
 

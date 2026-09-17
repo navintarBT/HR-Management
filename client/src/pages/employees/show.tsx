@@ -30,7 +30,6 @@ export const EmployeeShow: React.FC = () => {
         <Descriptions.Item label="ລະຫັດເຄື່ອງສະແກນ">{record?.deviceUserId || '-'}</Descriptions.Item>
         <Descriptions.Item label="ຊື່">{record?.firstName || '-'}</Descriptions.Item>
         <Descriptions.Item label="ນາມສະກຸນ">{record?.lastName || '-'}</Descriptions.Item>
-        <Descriptions.Item label="ອີເມວ">{record?.email || '-'}</Descriptions.Item>
         <Descriptions.Item label="ເບີໂທ">{record?.phone || '-'}</Descriptions.Item>
       </Descriptions>
 
@@ -58,12 +57,32 @@ export const EmployeeShow: React.FC = () => {
         <Descriptions.Item label="ວັນທີເລີ່ມງານ">
           {record?.hireDate ? dayjs(record.hireDate).format('DD MMMM YYYY') : '-'}
         </Descriptions.Item>
+        <Descriptions.Item label="ໂມງເຂົ້າວຽກ">
+          {(() => {
+            const category = record?.defaultShiftCategory;
+            if (category && typeof category === 'object')
+              return category.name
+                ? `${category.startTime} - ${category.endTime} (${category.name})`
+                : `${category.startTime} - ${category.endTime}`;
+            if (record?.defaultShiftStart && record?.defaultShiftEnd) return `${record.defaultShiftStart} - ${record.defaultShiftEnd}`;
+            return '-';
+          })()}
+        </Descriptions.Item>
         <Descriptions.Item label="ສະຖານະ">
           {record?.status ? <EmployeeStatusTag status={record.status} /> : '-'}
         </Descriptions.Item>
         <Descriptions.Item label="ວັນທີອອກງານ">
           {record?.terminationDate ? dayjs(record.terminationDate).format('DD MMMM YYYY') : '-'}
         </Descriptions.Item>
+        <Descriptions.Item label="ເຫດຜົນທີ່ອອກ" span={2}>
+          {record?.terminationReason || '-'}
+        </Descriptions.Item>
+      </Descriptions>
+
+      <Divider orientation="left">ຂໍ້ມູນເພີ່ມເຕີມ</Divider>
+      <Descriptions bordered column={2} size="middle">
+        <Descriptions.Item label="ເງິນເດືອນ">{record?.salary != null ? record.salary.toLocaleString() : '-'}</Descriptions.Item>
+        <Descriptions.Item label="ພັກປະຈຳປີ (ມື້)">{record?.annualLeaveDays ?? '-'}</Descriptions.Item>
       </Descriptions>
     </Show>
   );

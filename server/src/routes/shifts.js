@@ -20,10 +20,13 @@ async function applyShiftUpdate(id, changes) {
   const date = changes.date ?? current.date;
   const startTime = changes.startTime ?? current.startTime;
   const endTime = changes.endTime ?? current.endTime;
+  const status = changes.status ?? current.status;
 
-  const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
-  const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
-  if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
+  if (status !== 'rest') {
+    const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
+    const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
+    if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
+  }
 
   Object.assign(current, changes);
   await current.save();
@@ -83,11 +86,13 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
 router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const { employee, date, startTime, endTime } = req.body;
-    const existing = await Shift.find({ employee, date, status: 'scheduled' });
-    const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
-    if (conflict) {
-      return res.status(409).json({ message: 'Employee already has an overlapping shift that day' });
+    const { employee, date, startTime, endTime, status } = req.body;
+    if (status !== 'rest') {
+      const existing = await Shift.find({ employee, date, status: 'scheduled' });
+      const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
+      if (conflict) {
+        return res.status(409).json({ message: 'Employee already has an overlapping shift that day' });
+      }
     }
     const item = await Shift.create(req.body);
     const populated = await item.populate('employee position category');

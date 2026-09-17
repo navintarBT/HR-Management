@@ -92,6 +92,8 @@ export const SchedulePage: React.FC = () => {
   const shiftsByEmpDate = useMemo(() => {
     const map: Record<string, Record<string, Shift[]>> = {};
     for (const s of shifts) {
+      // A shift whose employee was since deleted has nowhere to render — skip it.
+      if (!s.employee) continue;
       const empId = typeof s.employee === 'object' ? s.employee._id : s.employee;
       map[empId] = map[empId] || {};
       map[empId][s.date] = map[empId][s.date] || [];
@@ -141,8 +143,8 @@ export const SchedulePage: React.FC = () => {
   useEffect(() => {
     if (!editModalProps.open || !editingRecord) return;
     editForm.setFieldsValue({
-      employee: typeof editingRecord.employee === 'object' ? editingRecord.employee._id : editingRecord.employee,
-      position: typeof editingRecord.position === 'object' ? editingRecord.position._id : editingRecord.position,
+      employee: editingRecord.employee && typeof editingRecord.employee === 'object' ? editingRecord.employee._id : editingRecord.employee,
+      position: editingRecord.position && typeof editingRecord.position === 'object' ? editingRecord.position._id : editingRecord.position,
       category: typeof editingRecord.category === 'object' ? editingRecord.category?._id : editingRecord.category,
       date: dayjs(editingRecord.date),
       time: [dayjs(`${editingRecord.date} ${editingRecord.startTime}`), dayjs(`${editingRecord.date} ${editingRecord.endTime}`)],
@@ -163,6 +165,7 @@ export const SchedulePage: React.FC = () => {
     resource: 'positions',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
 
   const { data: categoriesData } = useList<ShiftCategory>({
@@ -172,7 +175,7 @@ export const SchedulePage: React.FC = () => {
   const categories = categoriesData?.data ?? [];
   const { selectProps: categorySelect } = useSelect<ShiftCategory>({
     resource: 'shift-categories',
-    optionLabel: (item) => `${item.name} (${item.startTime}-${item.endTime})`,
+    optionLabel: (item) => (item.name ? `${item.name} (${item.startTime}-${item.endTime})` : `${item.startTime}-${item.endTime}`),
     optionValue: '_id',
     pagination: { pageSize: 100, mode: 'server' },
   });
@@ -268,21 +271,35 @@ export const SchedulePage: React.FC = () => {
                 const isSelf = emp._id === myEmployeeId;
                 return (
                   <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                    {cellShifts.map((s) => (
-                      <Tag
-                        key={s._id}
-                        color={colorForId(typeof s.position === 'object' ? s.position._id : s.position)}
-                        style={{ cursor: isManager || isSelf ? 'pointer' : 'default', whiteSpace: 'normal', margin: 0 }}
-                        onClick={() => {
-                          if (isManager) openEdit(s._id);
-                          else if (isSelf) setSwapShift(s);
-                        }}
-                      >
-                        {typeof s.position === 'object' ? s.position?.name : ''}
-                        <br />
-                        {s.startTime}-{s.endTime}
-                      </Tag>
-                    ))}
+                    {cellShifts.map((s) => {
+                      const positionId = typeof s.position === 'object' ? s.position?._id : s.position;
+                      const isRest = s.status === 'rest';
+                      // A rest entry has no position/time to edit or swap here —
+                      // it's managed on the monthly rest-day table instead.
+                      const clickable = !isRest && (isManager || isSelf);
+                      return (
+                        <Tag
+                          key={s._id}
+                          color={isRest ? 'default' : positionId ? colorForId(positionId) : 'default'}
+                          style={{ cursor: clickable ? 'pointer' : 'default', whiteSpace: 'normal', margin: 0 }}
+                          onClick={() => {
+                            if (isRest) return;
+                            if (isManager) openEdit(s._id);
+                            else if (isSelf) setSwapShift(s);
+                          }}
+                        >
+                          {isRest ? (
+                            'ພັກ'
+                          ) : (
+                            <>
+                              {typeof s.position === 'object' ? s.position?.name : ''}
+                              <br />
+                              {s.startTime}-{s.endTime}
+                            </>
+                          )}
+                        </Tag>
+                      );
+                    })}
                     {isManager && (
                       <Button type="dashed" size="small" block icon={<PlusOutlined />} onClick={() => openCreate(emp._id, dateKey)} />
                     )}

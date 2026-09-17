@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useTable, useModalForm, useSelect, DeleteButton } from '@refinedev/antd';
 import { useGetIdentity, useInvalidate, useNotification } from '@refinedev/core';
 import { Table, Button, Modal, Form, Input, Select, Space, Typography } from 'antd';
-import { PlusOutlined, EditOutlined, ApartmentOutlined, DeleteOutlined, ExclamationCircleFilled } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, ApartmentOutlined, DeleteOutlined, ExclamationCircleFilled, SearchOutlined } from '@ant-design/icons';
 import type { Department, Employee, Position, Identity } from '../../types';
 import { useTableStickyOffset, useTabsNavBottom } from '../../hooks/useTableStickyOffset';
 import { useShowAllToggle } from '../../hooks/useShowAllToggle';
@@ -14,14 +14,25 @@ export const PositionPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isAdmin = identity?.role === 'admin';
 
-  const { tableProps, setPageSize } = useTable<Position>({
+  const { tableProps, setPageSize, setCurrent, setFilters } = useTable<Position>({
     resource: 'positions',
     pagination: { pageSize: 10 },
     sorters: { initial: [{ field: 'name', order: 'asc' }] },
   });
 
   const total = typeof tableProps.pagination === 'object' ? tableProps.pagination?.total ?? 0 : 0;
-  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total);
+  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total, 10, setCurrent);
+
+  const [search, setSearch] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState<string>();
+  const applyPositionFilters = (overrides: { search?: string; department?: string } = {}) => {
+    const s = 'search' in overrides ? overrides.search : search;
+    const d = 'department' in overrides ? overrides.department : departmentFilter;
+    const filters: any[] = [];
+    if (s) filters.push({ field: 'q', operator: 'eq', value: s });
+    if (d) filters.push({ field: 'departments', operator: 'eq', value: d });
+    setFilters(filters, 'replace');
+  };
 
   const pagination = {
     ...(typeof tableProps.pagination === 'object' ? tableProps.pagination : {}),
@@ -36,6 +47,7 @@ export const PositionPanel: React.FC = () => {
     resource: 'departments',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
 
   const { selectProps: headSelect } = useSelect<Employee>({
@@ -149,6 +161,29 @@ export const PositionPanel: React.FC = () => {
   return (
     <div>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Input.Search
+            placeholder="ຄົ້ນຫາຊື່ຕໍາແໜ່ງ"
+            allowClear
+            style={{ width: 220 }}
+            prefix={<SearchOutlined />}
+            onSearch={(value) => {
+              setSearch(value);
+              applyPositionFilters({ search: value });
+            }}
+          />
+          <Select
+            {...departmentSelect}
+            placeholder="ກອງຕາມພະແນກ"
+            allowClear
+            style={{ width: 200 }}
+            value={departmentFilter}
+            onChange={(v: any) => {
+              setDepartmentFilter(v);
+              applyPositionFilters({ department: v });
+            }}
+          />
+        </Space>
         <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Typography.Text type="secondary">
             {selectedRowKeys.length > 0 ? `ເລືອກໄວ້ ${selectedRowKeys.length} ຕໍາແໜ່ງ` : 'ຈັດການລາຍຊື່ຕໍາແໜ່ງງານທັງໝົດ'}
@@ -247,7 +282,7 @@ export const PositionPanel: React.FC = () => {
           <Form.Item label="ຊື່ຕໍາແໜ່ງ" name="name" rules={[{ required: true, message: 'ກະລຸນາປ້ອນຊື່ຕໍາແໜ່ງ' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="ພະແນກ" name="departments">
+          <Form.Item label="ພະແນກ" name="departments" rules={[{ required: true, message: 'ກະລຸນາເລືອກຢ່າງໜ້ອຍ 1 ພະແນກ' }]}>
             <Select {...departmentSelect} mode="multiple" allowClear placeholder="ເລືອກໄດ້ຫຼາຍພະແນກ" />
           </Form.Item>
           <Form.Item label="ຫົວໜ້າຕໍາແໜ່ງ" name="head">
@@ -264,6 +299,7 @@ export const PositionPanel: React.FC = () => {
           <Form.Item
             label="ພະແນກ"
             name="departments"
+            rules={[{ required: true, message: 'ກະລຸນາເລືອກຢ່າງໜ້ອຍ 1 ພະແນກ' }]}
             getValueProps={(value) => ({
               value: Array.isArray(value) ? value.map((d) => (d && typeof d === 'object' ? d._id : d)) : value,
             })}

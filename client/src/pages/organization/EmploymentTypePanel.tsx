@@ -10,14 +10,14 @@ export const EmploymentTypePanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isAdmin = identity?.role === 'admin';
 
-  const { tableProps, setPageSize } = useTable<EmploymentType>({
+  const { tableProps, setPageSize, setCurrent } = useTable<EmploymentType>({
     resource: 'employment-types',
     pagination: { pageSize: 10 },
     sorters: { initial: [{ field: 'name', order: 'asc' }] },
   });
 
   const total = typeof tableProps.pagination === 'object' ? tableProps.pagination?.total ?? 0 : 0;
-  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total);
+  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total, 10, setCurrent);
 
   const pagination = {
     ...(typeof tableProps.pagination === 'object' ? tableProps.pagination : {}),

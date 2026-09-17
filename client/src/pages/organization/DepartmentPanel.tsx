@@ -1,7 +1,7 @@
 import { useTable, useModalForm, useSelect, DeleteButton } from '@refinedev/antd';
 import { useGetIdentity, useInvalidate } from '@refinedev/core';
 import { Table, Button, Modal, Form, Input, Select, Space, Typography } from 'antd';
-import { PlusOutlined, EditOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, SearchOutlined } from '@ant-design/icons';
 import type { Department, Employee, Identity } from '../../types';
 import { useTableStickyOffset, useTabsNavBottom } from '../../hooks/useTableStickyOffset';
 import { useShowAllToggle } from '../../hooks/useShowAllToggle';
@@ -11,14 +11,14 @@ export const DepartmentPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isAdmin = identity?.role === 'admin';
 
-  const { tableProps, setPageSize } = useTable<Department>({
+  const { tableProps, setPageSize, setCurrent, setFilters } = useTable<Department>({
     resource: 'departments',
     pagination: { pageSize: 10 },
     sorters: { initial: [{ field: 'name', order: 'asc' }] },
   });
 
   const total = typeof tableProps.pagination === 'object' ? tableProps.pagination?.total ?? 0 : 0;
-  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total);
+  const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total, 10, setCurrent);
 
   const pagination = {
     ...(typeof tableProps.pagination === 'object' ? tableProps.pagination : {}),
@@ -66,7 +66,13 @@ export const DepartmentPanel: React.FC = () => {
     <div>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Typography.Text type="secondary">ຈັດການລາຍຊື່ພະແນກທັງໝົດໃນອົງກອນ</Typography.Text>
+          <Input.Search
+            placeholder="ຄົ້ນຫາຊື່ພະແນກ"
+            allowClear
+            style={{ width: 220 }}
+            prefix={<SearchOutlined />}
+            onSearch={(value) => setFilters(value ? [{ field: 'q', operator: 'eq', value }] : [], 'replace')}
+          />
           {isAdmin && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => showCreate()}>
               ເພີ່ມພະແນກ

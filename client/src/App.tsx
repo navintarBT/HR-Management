@@ -23,6 +23,7 @@ import {
   SwapOutlined,
   EditOutlined,
   TagsOutlined,
+  CoffeeOutlined,
 } from '@ant-design/icons';
 
 import { dataProvider } from './providers/dataProvider';
@@ -41,6 +42,7 @@ import { OrganizationPage } from './pages/organization';
 import { AttendanceOverviewPage, AttendanceLogsPage, AttendanceDailyPage } from './pages/attendance';
 import { LeaveListPage } from './pages/leaves';
 import { SchedulePage } from './pages/schedule';
+import { MonthlySchedulePage } from './pages/schedule/monthly';
 import { ShiftSwapListPage } from './pages/schedule/swaps';
 import { BulkShiftEditPage } from './pages/schedule/bulk';
 import { ShiftCategoryListPage } from './pages/schedule/categories';
@@ -112,6 +114,11 @@ function RootLayout() {
             meta: { label: 'ຕາຕະລາງກະ', icon: <ScheduleOutlined /> },
           },
           {
+            name: 'schedule-monthly',
+            list: '/schedule/monthly',
+            meta: { label: 'ຕາຕະລາງວັນພັກ', icon: <CoffeeOutlined />, parent: 'schedule' },
+          },
+          {
             name: 'shift-swaps',
             list: '/schedule/swaps',
             meta: { label: 'ຄໍາຂໍສະຫຼັບກະ', icon: <SwapOutlined />, parent: 'schedule' },
@@ -178,6 +185,7 @@ export const appRoutes = (
 
       <Route path="/schedule">
         <Route index element={<SchedulePage />} />
+        <Route path="monthly" element={<MonthlySchedulePage />} />
         <Route path="swaps" element={<ShiftSwapListPage />} />
         <Route path="bulk" element={<BulkShiftEditPage />} />
         <Route path="categories" element={<ShiftCategoryListPage />} />

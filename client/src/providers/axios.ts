@@ -32,6 +32,11 @@ axiosInstance.interceptors.response.use(
     if (error?.response?.data?.message) {
       error.message = error.response.data.message;
     }
+    // @refinedev/simple-rest's error notifications read `error.statusCode`
+    // (its own internal axios instance sets this) — since we pass our own
+    // axiosInstance in instead, that field was never being set, so every
+    // edit/create/delete error notification showed "(ລະຫັດ: )" with no code.
+    error.statusCode = error?.response?.status;
     return Promise.reject(error);
   }
 );
