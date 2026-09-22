@@ -24,6 +24,9 @@ import {
   EditOutlined,
   TagsOutlined,
   CoffeeOutlined,
+  ShopOutlined,
+  MedicineBoxOutlined,
+  UserSwitchOutlined,
 } from '@ant-design/icons';
 
 import { dataProvider } from './providers/dataProvider';
@@ -41,11 +44,16 @@ import { EmployeeList, EmployeeCreate, EmployeeEdit, EmployeeShow } from './page
 import { OrganizationPage } from './pages/organization';
 import { AttendanceOverviewPage, AttendanceLogsPage, AttendanceDailyPage } from './pages/attendance';
 import { LeaveListPage } from './pages/leaves';
+import { OvertimeSummaryPage } from './pages/overtime/summary';
+import { OvertimeManagePage } from './pages/overtime/manage';
 import { SchedulePage } from './pages/schedule';
 import { MonthlySchedulePage } from './pages/schedule/monthly';
 import { ShiftSwapListPage } from './pages/schedule/swaps';
 import { BulkShiftEditPage } from './pages/schedule/bulk';
 import { ShiftCategoryListPage } from './pages/schedule/categories';
+import { HolidayListPage } from './pages/schedule/holidays';
+import { SubstituteRulePage } from './pages/schedule/substituteRule';
+import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
 
@@ -91,12 +99,12 @@ function RootLayout() {
           {
             name: 'attendance',
             list: '/attendance',
-            meta: { label: 'ລົງເວລາ', icon: <ClockCircleOutlined /> },
+            meta: { label: 'ສະແກນ', icon: <ClockCircleOutlined /> },
           },
           {
             name: 'attendance-daily',
             list: '/attendance/daily',
-            meta: { label: 'ບົດລາຍງານລາຍວັນ', icon: <BarChartOutlined />, parent: 'attendance' },
+            meta: { label: 'ລາຍງານການສະແກນ', icon: <BarChartOutlined />, parent: 'attendance' },
           },
           {
             name: 'attendance-logs',
@@ -107,6 +115,26 @@ function RootLayout() {
             name: 'leaves',
             list: '/leaves',
             meta: { label: 'ການລາ', icon: <CalendarOutlined /> },
+          },
+          {
+            name: 'overtime',
+            list: '/overtime',
+            meta: { label: 'OT', icon: <ClockCircleOutlined /> },
+          },
+          {
+            name: 'overtime-summary',
+            list: '/overtime/summary',
+            meta: { label: 'ຕາຕະລາງສະຫຼຸບ', icon: <BarChartOutlined />, parent: 'overtime' },
+          },
+          {
+            name: 'overtime-manage',
+            list: '/overtime/manage',
+            meta: { label: 'ຈັດການ OT', icon: <EditOutlined />, parent: 'overtime' },
+          },
+          {
+            name: 'medicine-expenses',
+            list: '/medicine-expenses',
+            meta: { label: 'ຄ່າຢາ', icon: <MedicineBoxOutlined /> },
           },
           {
             name: 'schedule',
@@ -121,7 +149,7 @@ function RootLayout() {
           {
             name: 'shift-swaps',
             list: '/schedule/swaps',
-            meta: { label: 'ຄໍາຂໍສະຫຼັບກະ', icon: <SwapOutlined />, parent: 'schedule' },
+            meta: { label: 'ສະຫຼັບກະ', icon: <SwapOutlined />, parent: 'schedule' },
           },
           {
             name: 'schedule-bulk',
@@ -132,6 +160,16 @@ function RootLayout() {
             name: 'shift-categories',
             list: '/schedule/categories',
             meta: { label: 'ໝວດໝູ່ກະ', icon: <TagsOutlined />, parent: 'schedule' },
+          },
+          {
+            name: 'holidays',
+            list: '/schedule/holidays',
+            meta: { label: 'ວັນພັກຮ້ານ', icon: <ShopOutlined />, parent: 'schedule' },
+          },
+          {
+            name: 'substitute-rule',
+            list: '/schedule/substitute-rule',
+            meta: { label: 'ຕັ້ງຄ່າກົດຕຳແໜ່ງ', icon: <UserSwitchOutlined />, parent: 'schedule' },
           },
         ]}
         options={{
@@ -182,6 +220,12 @@ export const appRoutes = (
       </Route>
 
       <Route path="/leaves" element={<LeaveListPage />} />
+      <Route path="/medicine-expenses" element={<MedicineExpenseListPage />} />
+      <Route path="/overtime">
+        <Route index element={<Navigate to="/overtime/summary" replace />} />
+        <Route path="summary" element={<OvertimeSummaryPage />} />
+        <Route path="manage" element={<OvertimeManagePage />} />
+      </Route>
 
       <Route path="/schedule">
         <Route index element={<SchedulePage />} />
@@ -189,6 +233,8 @@ export const appRoutes = (
         <Route path="swaps" element={<ShiftSwapListPage />} />
         <Route path="bulk" element={<BulkShiftEditPage />} />
         <Route path="categories" element={<ShiftCategoryListPage />} />
+        <Route path="holidays" element={<HolidayListPage />} />
+        <Route path="substitute-rule" element={<SubstituteRulePage />} />
       </Route>
 
       <Route path="*" element={<ErrorComponent />} />

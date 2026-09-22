@@ -1,11 +1,25 @@
 const express = require('express');
 const Shift = require('../models/Shift');
+const Employee = require('../models/Employee');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { ensureRestDayAllowed } = require('../utils/restDayRules');
 
 const router = express.Router();
 
 function timesOverlap(startA, endA, startB, endB) {
   return startA < endB && startB < endA;
+}
+
+// A company-wide holiday closure (see holidays.js's applyRestDayToAll, which
+// always tags the rows it creates with `holiday`) rests EVERYONE regardless
+// of position — it isn't someone choosing their own day off, so it's exempt
+// from a position's restricted-rest-days rule.
+async function ensurePersonalRestDayAllowed(employeeId, date, holidayId) {
+  if (holidayId) return;
+  const employee = await Employee.findById(employeeId, 'position');
+  if (!employee?.position) return;
+  const dayOfWeek = new Date(`${date}T00:00:00`).getDay();
+  await ensureRestDayAllowed(employee.position, dayOfWeek);
 }
 
 // Shared by the single PATCH and the bulk PATCH below: applies `changes` to
@@ -26,6 +40,9 @@ async function applyShiftUpdate(id, changes) {
     const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
     const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
     if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
+  } else {
+    const holidayId = changes.holiday ?? current.holiday;
+    await ensurePersonalRestDayAllowed(employee, date, holidayId);
   }
 
   Object.assign(current, changes);
@@ -57,7 +74,7 @@ router.get('/', authenticate, async (req, res, next) => {
     }
     const [items, total] = await Promise.all([
       Shift.find(mongoQuery)
-        .populate('employee position category')
+        .populate('employee position category holiday')
         .sort({ [_sort]: _order === 'asc' ? 1 : -1 })
         .skip(_start)
         .limit(_end - _start),
@@ -76,7 +93,7 @@ router.get('/:id', authenticate, async (req, res, next) => {
     if (req.user.role === 'employee') {
       query.employee = req.user.employeeId ? req.user.employeeId._id : null;
     }
-    const item = await Shift.findOne(query).populate('employee position category');
+    const item = await Shift.findOne(query).populate('employee position category holiday');
     if (!item) return res.status(404).json({ message: 'Not found' });
     res.json(item);
   } catch (err) {
@@ -86,16 +103,18 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
 router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const { employee, date, startTime, endTime, status } = req.body;
+    const { employee, date, startTime, endTime, status, holiday } = req.body;
     if (status !== 'rest') {
       const existing = await Shift.find({ employee, date, status: 'scheduled' });
       const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
       if (conflict) {
         return res.status(409).json({ message: 'Employee already has an overlapping shift that day' });
       }
+    } else {
+      await ensurePersonalRestDayAllowed(employee, date, holiday);
     }
     const item = await Shift.create(req.body);
-    const populated = await item.populate('employee position category');
+    const populated = await item.populate('employee position category holiday');
     res.status(201).json(populated);
   } catch (err) {
     next(err);
@@ -125,7 +144,7 @@ router.patch('/bulk', authenticate, requireRole('admin', 'manager'), async (req,
 router.patch('/:id', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
     const updated = await applyShiftUpdate(req.params.id, req.body);
-    const populated = await updated.populate('employee position category');
+    const populated = await updated.populate('employee position category holiday');
     res.json(populated);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ message: err.message });

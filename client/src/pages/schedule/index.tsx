@@ -6,7 +6,6 @@ import { LeftOutlined, RightOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Employee, Position, Shift, ShiftCategory, Identity } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
-import { RequestSwapModal } from './RequestSwapModal';
 import { categorical } from '../../theme/palette';
 import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
 
@@ -64,7 +63,6 @@ const buildShiftPayload = (values: any) => {
 export const SchedulePage: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isManager = identity?.role === 'admin' || identity?.role === 'manager';
-  const myEmployeeId = identity?.employee?._id;
 
   const [weekStart, setWeekStart] = useState(() => mondayOf(dayjs()));
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => weekStart.add(i, 'day')), [weekStart]);
@@ -209,9 +207,6 @@ export const SchedulePage: React.FC = () => {
     );
   };
 
-  // --- swap request modal (employee's own shift) ---
-  const [swapShift, setSwapShift] = useState<Shift | null>(null);
-
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -268,24 +263,24 @@ export const SchedulePage: React.FC = () => {
               width={150}
               render={(_, emp: Employee) => {
                 const cellShifts = shiftsByEmpDate[emp._id]?.[dateKey] ?? [];
-                const isSelf = emp._id === myEmployeeId;
                 return (
                   <Space direction="vertical" size={4} style={{ width: '100%' }}>
                     {cellShifts.map((s) => {
                       const positionId = typeof s.position === 'object' ? s.position?._id : s.position;
                       const isRest = s.status === 'rest';
-                      // A rest entry has no position/time to edit or swap here —
-                      // it's managed on the monthly rest-day table instead.
-                      const clickable = !isRest && (isManager || isSelf);
+                      // A rest entry has no position/time to edit here — it's
+                      // managed on the monthly rest-day table instead. Swaps are
+                      // admin-driven now (see ສະຫຼັບກະ), so only a manager can
+                      // click a cell at all.
+                      const clickable = !isRest && isManager;
                       return (
                         <Tag
                           key={s._id}
                           color={isRest ? 'default' : positionId ? colorForId(positionId) : 'default'}
                           style={{ cursor: clickable ? 'pointer' : 'default', whiteSpace: 'normal', margin: 0 }}
                           onClick={() => {
-                            if (isRest) return;
-                            if (isManager) openEdit(s._id);
-                            else if (isSelf) setSwapShift(s);
+                            if (isRest || !isManager) return;
+                            openEdit(s._id);
                           }}
                         >
                           {isRest ? (
@@ -349,15 +344,6 @@ export const SchedulePage: React.FC = () => {
           </Popconfirm>
         )}
       </Modal>
-
-      <RequestSwapModal
-        open={!!swapShift}
-        onClose={() => setSwapShift(null)}
-        initialShiftId={swapShift?._id}
-        initialShiftLabel={
-          swapShift ? `${dayjs(swapShift.date).format('DD/MM/YYYY')} ${swapShift.startTime}-${swapShift.endTime}` : undefined
-        }
-      />
     </List>
   );
 };

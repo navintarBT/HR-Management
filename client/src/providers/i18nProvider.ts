@@ -36,10 +36,13 @@ const dictionary: Record<string, string> = {
   'departments.departments': 'ພະແນກ',
   'positions.positions': 'ຕໍາແໜ່ງ',
   'attendance-logs.attendance-logs': 'ປະຫວັດການສະແກນ',
-  'attendance-daily.attendance-daily': 'ບົດລາຍງານລາຍວັນ',
+  'attendance-daily.attendance-daily': 'ລາຍງານການສະແກນ',
   'leaves.leaves': 'ໃບລາ',
+  'overtime.overtime': 'OT',
   'shifts.shifts': 'ກະ',
-  'shift-swaps.shift-swaps': 'ຄໍາຂໍສະຫຼັບກະ',
+  'shift-swaps.shift-swaps': 'ສະຫຼັບກະ',
+  'medicine-expenses.medicine-expenses': 'ຄ່າຢາ',
+  'substitute-rule.substitute-rule': 'ກົດ "ມາແທນ"',
 };
 
 function interpolate(template: string, params?: Record<string, any>): string {

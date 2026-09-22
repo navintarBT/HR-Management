@@ -13,6 +13,26 @@ function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
 
+// Same bg/text pairs as the attendance summary grid's CELL_STYLE, so a
+// "late"/"incomplete"/"absent" number reads as the same color everywhere.
+// "earlyLeave" (ກັບກ່ອນ) reuses the "late" look — same severity, opposite end
+// of the shift.
+const BADGE_STYLE = {
+  late: { bg: '#fff7e6', text: '#d46b08' },
+  incomplete: { bg: '#f9f0ff', text: '#722ed1' },
+  absent: { bg: '#fff1f0', text: '#cf1322' },
+};
+
+function Badge({ value, unit, kind }: { value: number; unit: string; kind: keyof typeof BADGE_STYLE }) {
+  if (value <= 0) return <span style={{ color: '#bfbfbf' }}>-</span>;
+  const style = BADGE_STYLE[kind];
+  return (
+    <span style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 500 }}>
+      {value} {unit}
+    </span>
+  );
+}
+
 // One row per employee (pulled fresh from the current employee list, not from
 // whatever AttendanceDaily rows happen to exist — those can be orphaned if an
 // employee was since deleted), aggregated over a chosen date range.
@@ -79,15 +99,26 @@ export const AttendanceDailyPage: React.FC = () => {
   const summaryByEmployee = useMemo(() => {
     const map: Record<
       string,
-      { workedHours: number; lateMinutes: number; lateDays: number; noScanOutDays: number; absentDays: number }
+      {
+        workedHours: number;
+        expectedHours: number;
+        lateMinutes: number;
+        earlyLeaveMinutes: number;
+        lateDays: number;
+        noScanOutDays: number;
+        absentDays: number;
+      }
     > = {};
     for (const d of dailyRows) {
       // A record whose employee was since deleted has nowhere to attribute it to — skip it.
       if (!d.employee) continue;
       const empId = typeof d.employee === 'object' ? d.employee._id : d.employee;
-      if (!map[empId]) map[empId] = { workedHours: 0, lateMinutes: 0, lateDays: 0, noScanOutDays: 0, absentDays: 0 };
+      if (!map[empId])
+        map[empId] = { workedHours: 0, expectedHours: 0, lateMinutes: 0, earlyLeaveMinutes: 0, lateDays: 0, noScanOutDays: 0, absentDays: 0 };
       map[empId].workedHours += d.workedHours || 0;
+      map[empId].expectedHours += d.expectedHours || 0;
       map[empId].lateMinutes += d.lateMinutes || 0;
+      map[empId].earlyLeaveMinutes += d.earlyLeaveMinutes || 0;
       if (d.status === 'late') map[empId].lateDays += 1;
       // "incomplete" = no scan-out recorded that day (a lone scan-in, or a scan-in with no matching scan-out).
       if (d.status === 'incomplete') map[empId].noScanOutDays += 1;
@@ -99,7 +130,7 @@ export const AttendanceDailyPage: React.FC = () => {
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
-    <List title="ບົດລາຍງານການລົງເວລາລາຍວັນ" breadcrumb={false}>
+    <List title="ລາຍງານການສະແກນ" breadcrumb={false}>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <div style={{ marginBottom: 8 }}>
           <Space wrap>
@@ -164,41 +195,39 @@ export const AttendanceDailyPage: React.FC = () => {
           render={(_, emp: Employee) => (typeof emp.position === 'object' ? emp.position?.name : undefined) || '-'}
         />
         <Table.Column
-          title="ຊົ່ວໂມງເຮັດວຽກ"
+          title="ຊົ່ວໂມງທີ່ຈ້ອງເຮັດ"
+          width={140}
+          render={(_, emp: Employee) => `${(summaryByEmployee[emp._id]?.expectedHours ?? 0).toFixed(1)} ຊມ.`}
+        />
+        <Table.Column
+          title="ຊົ່ວໂມງທີ່ເຮັດແທ້"
           width={130}
           render={(_, emp: Employee) => `${(summaryByEmployee[emp._id]?.workedHours ?? 0).toFixed(1)} ຊມ.`}
         />
         <Table.Column
           title="ມາຊ້າ (ນາທີ)"
           width={120}
-          render={(_, emp: Employee) => {
-            const v = summaryByEmployee[emp._id]?.lateMinutes ?? 0;
-            return v > 0 ? <Typography.Text type="warning">{v} ນາທີ</Typography.Text> : '-';
-          }}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.lateMinutes ?? 0} unit="ນາທີ" kind="late" />}
         />
         <Table.Column
           title="ມາຊ້າ (ຈຳນວນມື້)"
           width={130}
-          render={(_, emp: Employee) => {
-            const v = summaryByEmployee[emp._id]?.lateDays ?? 0;
-            return v > 0 ? <Typography.Text type="warning">{v} ມື້</Typography.Text> : '-';
-          }}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.lateDays ?? 0} unit="ມື້" kind="late" />}
+        />
+        <Table.Column
+          title="ກັບກ່ອນ (ນາທີ)"
+          width={130}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.earlyLeaveMinutes ?? 0} unit="ນາທີ" kind="late" />}
         />
         <Table.Column
           title="ສະແກນຄັ້ງດຽວ"
           width={150}
-          render={(_, emp: Employee) => {
-            const v = summaryByEmployee[emp._id]?.noScanOutDays ?? 0;
-            return v > 0 ? <Typography.Text type="danger">{v} ມື້</Typography.Text> : '-';
-          }}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.noScanOutDays ?? 0} unit="ຄັ້ງ" kind="incomplete" />}
         />
         <Table.Column
           title="ມື້ຂາດວຽກ"
           width={110}
-          render={(_, emp: Employee) => {
-            const v = summaryByEmployee[emp._id]?.absentDays ?? 0;
-            return v > 0 ? <Typography.Text type="danger">{v} ວັນ</Typography.Text> : '-';
-          }}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.absentDays ?? 0} unit="ວັນ" kind="absent" />}
         />
       </Table>
     </List>

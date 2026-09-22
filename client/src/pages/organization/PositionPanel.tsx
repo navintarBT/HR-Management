@@ -278,12 +278,16 @@ export const PositionPanel: React.FC = () => {
       </Modal>
 
       <Modal {...createModalProps} title="ເພີ່ມຕໍາແໜ່ງ" destroyOnClose>
-        <Form {...createFormProps} layout="vertical">
+        <Form
+          {...createFormProps}
+          onFinish={(values: any) => createFormProps.onFinish?.({ ...values, departments: values.departments ? [values.departments] : [] })}
+          layout="vertical"
+        >
           <Form.Item label="ຊື່ຕໍາແໜ່ງ" name="name" rules={[{ required: true, message: 'ກະລຸນາປ້ອນຊື່ຕໍາແໜ່ງ' }]}>
             <Input />
           </Form.Item>
-          <Form.Item label="ພະແນກ" name="departments" rules={[{ required: true, message: 'ກະລຸນາເລືອກຢ່າງໜ້ອຍ 1 ພະແນກ' }]}>
-            <Select {...departmentSelect} mode="multiple" allowClear placeholder="ເລືອກໄດ້ຫຼາຍພະແນກ" />
+          <Form.Item label="ພະແນກ" name="departments" rules={[{ required: true, message: 'ກະລຸນາເລືອກພະແນກ' }]}>
+            <Select {...departmentSelect} allowClear placeholder="ເລືອກພະແນກ" />
           </Form.Item>
           <Form.Item label="ຫົວໜ້າຕໍາແໜ່ງ" name="head">
             <Select {...withLocalTextFilter(headSelect)} allowClear placeholder="ເລືອກຫົວໜ້າຕໍາແໜ່ງ" />
@@ -292,19 +296,24 @@ export const PositionPanel: React.FC = () => {
       </Modal>
 
       <Modal {...editModalProps} title="ແກ້ໄຂຕໍາແໜ່ງ" confirmLoading={editFormLoading} destroyOnClose>
-        <Form {...editFormProps} layout="vertical">
+        <Form
+          {...editFormProps}
+          onFinish={(values: any) => editFormProps.onFinish?.({ ...values, departments: values.departments ? [values.departments] : [] })}
+          layout="vertical"
+        >
           <Form.Item label="ຊື່ຕໍາແໜ່ງ" name="name" rules={[{ required: true, message: 'ກະລຸນາປ້ອນຊື່ຕໍາແໜ່ງ' }]}>
             <Input />
           </Form.Item>
           <Form.Item
             label="ພະແນກ"
             name="departments"
-            rules={[{ required: true, message: 'ກະລຸນາເລືອກຢ່າງໜ້ອຍ 1 ພະແນກ' }]}
-            getValueProps={(value) => ({
-              value: Array.isArray(value) ? value.map((d) => (d && typeof d === 'object' ? d._id : d)) : value,
-            })}
+            rules={[{ required: true, message: 'ກະລຸນາເລືອກພະແນກ' }]}
+            getValueProps={(value) => {
+              const first = Array.isArray(value) ? value[0] : value;
+              return { value: first && typeof first === 'object' ? first._id : first };
+            }}
           >
-            <Select {...departmentSelect} mode="multiple" allowClear placeholder="ເລືອກໄດ້ຫຼາຍພະແນກ" />
+            <Select {...departmentSelect} allowClear placeholder="ເລືອກພະແນກ" />
           </Form.Item>
           <Form.Item
             label="ຫົວໜ້າຕໍາແໜ່ງ"

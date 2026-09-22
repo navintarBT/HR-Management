@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
-import { List } from '@refinedev/antd';
+import { List, useSelect } from '@refinedev/antd';
 import { useList, useGetIdentity, useCreate, useUpdate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Typography, Space, Button, Modal, Form, TimePicker, Select } from 'antd';
-import { LeftOutlined, RightOutlined, CalendarOutlined } from '@ant-design/icons';
+import { Table, Typography, Space, Button, Modal, Form, TimePicker, Select, Input, Popconfirm } from 'antd';
+import { LeftOutlined, RightOutlined, CalendarOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import type { Employee, Shift, Identity } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
+import { API_URL, axiosInstance } from '../../providers/axios';
 
 type Cell =
   | { kind: 'unset' }
-  | { kind: 'rest'; isOverride: boolean; overrideId?: string }
-  | { kind: 'work'; start: string; end: string; isOverride: boolean; overrideId?: string };
+  | { kind: 'rest'; isOverride: boolean; overrideId?: string; isHoliday?: boolean; holidayName?: string }
+  | { kind: 'work'; start: string; end: string; isOverride: boolean; overrideId?: string }
+  | { kind: 'substituted' };
 
-function idOf(value: { _id: string } | string | undefined) {
+function idOf(value: { _id: string } | string | null | undefined) {
   return value && typeof value === 'object' ? value._id : value;
 }
 
@@ -32,9 +34,18 @@ function resolveDefaultTime(employee: Employee): { start: string; end: string } 
   return null;
 }
 
-function computeCell(employee: Employee, dateKey: string, override?: Shift): Cell {
+// isSubstituted (AttendanceDaily.status === 'substituted') always wins — once
+// marked, the queued Shift is deleted as part of that action (see
+// attendanceActions.js's mark-substituted), so there's nothing left in
+// `override` to check by that point anyway.
+function computeCell(employee: Employee, dateKey: string, override?: Shift, isSubstituted?: boolean): Cell {
+  if (isSubstituted) return { kind: 'substituted' };
   if (override) {
-    if (override.status === 'rest') return { kind: 'rest', isOverride: true, overrideId: override._id };
+    if (override.status === 'rest') {
+      const holiday = override.holiday;
+      const isHoliday = !!(holiday && typeof holiday === 'object');
+      return { kind: 'rest', isOverride: true, overrideId: override._id, isHoliday, holidayName: isHoliday ? holiday.name : undefined };
+    }
     return { kind: 'work', start: override.startTime!, end: override.endTime!, isOverride: true, overrideId: override._id };
   }
   const dow = dayjs(dateKey).day();
@@ -48,6 +59,7 @@ const CELL_STYLE: Record<Cell['kind'], React.CSSProperties> = {
   unset: { background: 'var(--app-surface-bg)', border: '1px dashed var(--app-border-color, #d9d9d9)' },
   rest: { background: '#f9f0ff' },
   work: { background: 'transparent' },
+  substituted: { background: '#e6fffb' },
 };
 
 export const MonthlySchedulePage: React.FC = () => {
@@ -66,7 +78,55 @@ export const MonthlySchedulePage: React.FC = () => {
     pagination: { pageSize: 500 },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
-  const employees = employeesData?.data ?? [];
+  const allEmployees = employeesData?.data ?? [];
+
+  const [search, setSearch] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState<string>();
+  const [positionFilter, setPositionFilter] = useState<string>();
+  const [shiftCategoryFilter, setShiftCategoryFilter] = useState<string>();
+
+  const { selectProps: departmentSelect } = useSelect<Department>({
+    resource: 'departments',
+    optionLabel: 'name',
+    optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
+  });
+  const { selectProps: positionSelect, query: positionQuery } = useSelect<Position>({
+    resource: 'positions',
+    optionLabel: 'name',
+    optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
+  });
+  const allPositions = positionQuery?.data?.data ?? [];
+  const positionOptionsForDepartment = useMemo(() => {
+    if (!departmentFilter) return undefined;
+    return allPositions
+      .filter((p) => (p.departments ?? []).some((d) => idOf(d) === departmentFilter))
+      .map((p) => ({ label: p.name, value: p._id }));
+  }, [allPositions, departmentFilter]);
+  const { selectProps: shiftCategorySelect } = useSelect<ShiftCategory>({
+    resource: 'shift-categories',
+    optionLabel: (item) => (item.name ? `${item.name} (${item.startTime}-${item.endTime})` : `${item.startTime}-${item.endTime}`),
+    optionValue: '_id',
+    pagination: { pageSize: 100, mode: 'server' },
+  });
+
+  const employees = useMemo(
+    () =>
+      allEmployees.filter((e) => {
+        if (search) {
+          const q = search.trim().toLowerCase();
+          const name = `${e.firstName ?? ''} ${e.lastName ?? ''}`.toLowerCase();
+          const code = (e.employeeCode ?? '').toLowerCase();
+          if (!name.includes(q) && !code.includes(q)) return false;
+        }
+        if (departmentFilter && idOf(e.department) !== departmentFilter) return false;
+        if (positionFilter && idOf(e.position) !== positionFilter) return false;
+        if (shiftCategoryFilter && idOf(e.defaultShiftCategory) !== shiftCategoryFilter) return false;
+        return true;
+      }),
+    [allEmployees, search, departmentFilter, positionFilter, shiftCategoryFilter]
+  );
 
   const { data: shiftsData, isLoading: shiftsLoading } = useList<Shift>({
     resource: 'shifts',
@@ -90,9 +150,30 @@ export const MonthlySchedulePage: React.FC = () => {
     return map;
   }, [shifts]);
 
+  // So a day marked "ມາແທນ" from ປະຫວັດການສະແກນ (or from this page's own modal)
+  // shows up here too, instead of just reverting to blank once its queued
+  // Shift is gone.
+  const { data: attendanceDailyData } = useList<AttendanceDaily>({
+    resource: 'attendance-daily',
+    filters: [
+      { field: 'date', operator: 'gte', value: monthStartKey },
+      { field: 'date', operator: 'lte', value: monthEndKey },
+    ],
+    pagination: { pageSize: 5000 },
+  });
+  const substitutedByEmpDate = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    for (const d of attendanceDailyData?.data ?? []) {
+      if (!d.employee || d.status !== 'substituted') continue;
+      map[`${idOf(typeof d.employee === 'object' ? d.employee._id : d.employee)}_${d.date}`] = true;
+    }
+    return map;
+  }, [attendanceDailyData?.data]);
+
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
   const editingOverride = editing ? overrideByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
-  const editingCell = editing ? computeCell(editing.employee, editing.dateKey, editingOverride) : null;
+  const editingIsSubstituted = editing ? !!substitutedByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : false;
+  const editingCell = editing ? computeCell(editing.employee, editing.dateKey, editingOverride, editingIsSubstituted) : null;
 
   const [timeForm] = Form.useForm();
   useEffect(() => {
@@ -122,13 +203,74 @@ export const MonthlySchedulePage: React.FC = () => {
     setRecurringRestDay(emp.defaultRestDay ?? undefined);
   };
 
-  const saveRecurringRest = () => {
+  const doSaveRecurringRest = () => {
     if (!recurringRestFor) return;
     updateEmployee(
       { resource: 'employees', id: recurringRestFor._id, values: { defaultRestDay: recurringRestDay ?? null } },
       {
         onSuccess: () => {
           notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ' });
+          setRecurringRestFor(null);
+          invalidate({ resource: 'employees', invalidates: ['list'] });
+        },
+      }
+    );
+  };
+
+  // A day-specific queue always wins over the weekly default (see computeCell),
+  // so picking e.g. "rest every Friday" doesn't actually give a rest on a
+  // Friday that already has a queued shift — warn about that up front, using
+  // the days already loaded for the visible month, rather than let HR discover
+  // it later by noticing a "resting" employee still shows up worked that day.
+  const restDayConflicts = useMemo(() => {
+    if (!recurringRestFor || recurringRestDay == null) return [];
+    return days
+      .filter((d) => d.day() === recurringRestDay)
+      .map((d) => d.format('YYYY-MM-DD'))
+      .filter((dateKey) => overrideByEmpDate[`${recurringRestFor._id}_${dateKey}`]?.status === 'scheduled');
+  }, [recurringRestFor, recurringRestDay, days, overrideByEmpDate]);
+
+  const restrictedDaysForRecurring =
+    (recurringRestFor && typeof recurringRestFor.position === 'object' ? recurringRestFor.position?.restrictedRestDays : undefined) ?? [];
+  const weekdayOptionsForRecurringRest = useMemo(
+    () => WEEKDAY_OPTIONS.map((opt) => ({ ...opt, disabled: restrictedDaysForRecurring.includes(opt.value) })),
+    [restrictedDaysForRecurring]
+  );
+
+  const saveRecurringRest = () => {
+    if (!recurringRestFor) return;
+    if (!restDayConflicts.length) {
+      doSaveRecurringRest();
+      return;
+    }
+    Modal.confirm({
+      title: 'ພັກບໍ່ໄດ້ບາງວັນ ເພາະມີຄິວແລ້ວ',
+      content: (
+        <div>
+          <p>ວັນທີ່ຕໍ່ໄປນີ້ຍັງມີຄິວຈັດໄວ້ຢູ່ ຈະບໍ່ໄດ້ພັກຈົນກວ່າຈະໄປລຶບຄິວອອກ:</p>
+          <ul>
+            {restDayConflicts.map((d) => (
+              <li key={d}>{dayjs(d).format('DD/MM/YYYY')}</li>
+            ))}
+          </ul>
+        </div>
+      ),
+      okText: 'ບັນທຶກຕໍ່',
+      cancelText: 'ຍົກເລີກ',
+      onOk: doSaveRecurringRest,
+    });
+  };
+
+  // A separate, explicit action (with its own confirm step) rather than just
+  // clearing the Select and saving — clearing a dropdown is an easy accidental
+  // click that silently wipes someone's recurring rest day with no warning.
+  const cancelRecurringRest = () => {
+    if (!recurringRestFor) return;
+    updateEmployee(
+      { resource: 'employees', id: recurringRestFor._id, values: { defaultRestDay: null } },
+      {
+        onSuccess: () => {
+          notify?.({ type: 'success', message: 'ຍົກເລີກວັນພັກປະຈຳສຳເລັດ' });
           setRecurringRestFor(null);
           invalidate({ resource: 'employees', invalidates: ['list'] });
         },
@@ -155,6 +297,10 @@ export const MonthlySchedulePage: React.FC = () => {
     upsertOverride({ employee: editing.employee._id, date: editing.dateKey, status: 'rest' });
   };
 
+  const restrictedDaysForEditing =
+    (editing && typeof editing.employee.position === 'object' ? editing.employee.position?.restrictedRestDays : undefined) ?? [];
+  const isEditingDateRestDayBlocked = !!editing && restrictedDaysForEditing.includes(dayjs(editing.dateKey).day());
+
   const handleSaveTime = () => {
     if (!editing) return;
     const time = timeForm.getFieldValue('time') as [Dayjs, Dayjs] | undefined;
@@ -174,6 +320,53 @@ export const MonthlySchedulePage: React.FC = () => {
     deleteShift({ resource: 'shifts', id: editingOverride._id }, { onSuccess: onSaved });
   };
 
+  // Only offered on employees/positions flagged for it (see ຕັ້ງຄ່າກົດ "ມາແທນ")
+  // — someone else covers the shift instead, so this employee never scans.
+  // Triggered here on the schedule since that's where a queued shift already
+  // is; the result then just shows up on ປະຫວັດການສະແກນ (attendance) as usual.
+  const canSubstitute =
+    !!editing &&
+    (editing.employee.allowsSubstituteStatus ??
+      (typeof editing.employee.position === 'object' ? editing.employee.position?.allowsSubstituteStatus : false)) === true;
+  const [submittingSubstitute, setSubmittingSubstitute] = useState(false);
+
+  const handleSubstitute = async () => {
+    if (!editing) return;
+    setSubmittingSubstitute(true);
+    try {
+      await axiosInstance.post(`${API_URL}/attendance/mark-substituted`, {
+        employeeId: editing.employee._id,
+        date: editing.dateKey,
+      });
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
+      invalidate({ resource: 'attendance-daily', invalidates: ['list'] });
+      onSaved();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
+    } finally {
+      setSubmittingSubstitute(false);
+    }
+  };
+
+  // Reverts back to blank — there's no raw scan to recompute from, unlike a
+  // manual-fix correction, so this is a straight delete rather than a re-derive.
+  const handleCancelSubstitute = async () => {
+    if (!editing) return;
+    setSubmittingSubstitute(true);
+    try {
+      await axiosInstance.post(`${API_URL}/attendance/cancel-substituted`, {
+        employeeId: editing.employee._id,
+        date: editing.dateKey,
+      });
+      invalidate({ resource: 'attendance-daily', invalidates: ['list'] });
+      onSaved();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
+    } finally {
+      setSubmittingSubstitute(false);
+    }
+  };
+
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -187,6 +380,45 @@ export const MonthlySchedulePage: React.FC = () => {
               ເດືອນນີ້
             </Button>
             <Button icon={<RightOutlined />} onClick={() => setMonthStart(monthStart.add(1, 'month'))} />
+          </Space>
+          <Space wrap>
+            <Input.Search
+              placeholder="ຄົ້ນຫາລະຫັດ ຫຼື ຊື່ພະນັກງານ"
+              allowClear
+              style={{ width: 220 }}
+              prefix={<SearchOutlined />}
+              onSearch={(v) => setSearch(v)}
+              onChange={(e) => !e.target.value && setSearch('')}
+            />
+            <Select
+              {...departmentSelect}
+              placeholder="ກອງຕາມພະແນກ"
+              allowClear
+              style={{ width: 180 }}
+              value={departmentFilter}
+              onChange={(v: any) => {
+                setDepartmentFilter(v);
+                const stillValid = !v || !positionFilter || allPositions.find((p) => p._id === positionFilter)?.departments?.some((d) => idOf(d) === v);
+                if (!stillValid) setPositionFilter(undefined);
+              }}
+            />
+            <Select
+              {...positionSelect}
+              options={positionOptionsForDepartment}
+              placeholder="ກອງຕາມຕຳແໜ່ງ"
+              allowClear
+              style={{ width: 180 }}
+              value={positionFilter}
+              onChange={(v: any) => setPositionFilter(v)}
+            />
+            <Select
+              {...shiftCategorySelect}
+              placeholder="ກອງຕາມໝວດໝູ່ກະ"
+              allowClear
+              style={{ width: 200 }}
+              value={shiftCategoryFilter}
+              onChange={(v: any) => setShiftCategoryFilter(v)}
+            />
           </Space>
           <Space size={16} wrap>
             <Space size={6}>
@@ -207,6 +439,12 @@ export const MonthlySchedulePage: React.FC = () => {
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 ຍັງບໍ່ຕັ້ງຄ່າປົກກະຕິ
+              </Typography.Text>
+            </Space>
+            <Space size={6}>
+              <span style={{ width: 14, height: 14, background: '#e6fffb', display: 'inline-block', borderRadius: 2 }} />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                ມາແທນ
               </Typography.Text>
             </Space>
           </Space>
@@ -285,13 +523,15 @@ export const MonthlySchedulePage: React.FC = () => {
               width={72}
               render={(_, emp: Employee) => {
                 const override = overrideByEmpDate[`${emp._id}_${dateKey}`];
-                const cell = computeCell(emp, dateKey, override);
+                const isSubstituted = !!substitutedByEmpDate[`${emp._id}_${dateKey}`];
+                const cell = computeCell(emp, dateKey, override, isSubstituted);
+                const isOverride = (cell.kind === 'rest' || cell.kind === 'work') && cell.isOverride;
                 return (
                   <div
                     onClick={() => isManager && setEditing({ employee: emp, dateKey })}
                     style={{
                       ...CELL_STYLE[cell.kind],
-                      borderLeft: cell.kind !== 'unset' && cell.isOverride ? '3px solid #d46b08' : CELL_STYLE[cell.kind].borderLeft,
+                      borderLeft: isOverride ? '3px solid #d46b08' : CELL_STYLE[cell.kind].borderLeft,
                       cursor: isManager ? 'pointer' : 'default',
                       minHeight: 40,
                       padding: '4px 6px',
@@ -302,7 +542,11 @@ export const MonthlySchedulePage: React.FC = () => {
                     }}
                   >
                     {cell.kind === 'unset' && <span style={{ color: '#bfbfbf' }}>-</span>}
-                    {cell.kind === 'rest' && <span style={{ color: '#722ed1' }}>ພັກ</span>}
+                    {cell.kind === 'rest' && (
+                      <span style={{ color: '#722ed1' }} title={cell.holidayName}>
+                        {cell.isHoliday ? 'ຮ້ານປິດ' : 'ພັກ'}
+                      </span>
+                    )}
                     {cell.kind === 'work' && (
                       <>
                         {cell.start}
@@ -310,6 +554,7 @@ export const MonthlySchedulePage: React.FC = () => {
                         {cell.end}
                       </>
                     )}
+                    {cell.kind === 'substituted' && <span style={{ color: '#08979c' }}>ມາແທນ</span>}
                   </div>
                 );
               }}
@@ -327,20 +572,51 @@ export const MonthlySchedulePage: React.FC = () => {
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
-            {editingCell?.kind === 'rest' && `ປັດຈຸບັນ: ພັກ${editingCell.isOverride ? ' (ແກ້ໄຂພິເສດ)' : ' (ຄ່າປົກກະຕິ)'}`}
+            {editingCell?.kind === 'rest' &&
+              `ປັດຈຸບັນ: ${editingCell.isHoliday ? `ຮ້ານປິດ (${editingCell.holidayName})` : 'ພັກ'}${editingCell.isOverride ? ' (ແກ້ໄຂພິເສດ)' : ' (ຄ່າປົກກະຕິ)'}`}
             {editingCell?.kind === 'work' &&
               `ປັດຈຸບັນ: ${editingCell.start}-${editingCell.end}${editingCell.isOverride ? ' (ແກ້ໄຂພິເສດ)' : ' (ຄ່າປົກກະຕິ)'}`}
             {editingCell?.kind === 'unset' && 'ປັດຈຸບັນ: ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ'}
+            {editingCell?.kind === 'substituted' && 'ປັດຈຸບັນ: ມາແທນ (ມີຄົນອື່ນມາແທນ)'}
           </Typography.Text>
 
-          <Space>
-            <Button onClick={handleSetRest} loading={saving}>
+          <Space wrap>
+            <Button
+              onClick={handleSetRest}
+              loading={saving}
+              disabled={isEditingDateRestDayBlocked}
+              title={isEditingDateRestDayBlocked ? 'ຕຳແໜ່ງນີ້ຫ້າມພັກວັນນີ້' : undefined}
+            >
               ຕັ້ງເປັນວັນພັກ
             </Button>
             {editingOverride && (
               <Button onClick={handleRevert} loading={saving}>
                 ຄືນຄ່າປົກກະຕິ
               </Button>
+            )}
+            {canSubstitute && editingCell?.kind === 'substituted' && (
+              <Popconfirm
+                title="ຍົກເລີກ ມາແທນ?"
+                description="ຈະກັບໄປວ່າງເປົ່າຄືເດີມ — ຕ້ອງໄປຈັດຄິວ ຫຼື ຕັ້ງວັນພັກໃຫ້ໃໝ່ຖ້າຕ້ອງການ"
+                okText="ຍົກເລີກມາແທນ"
+                cancelText="ບໍ່"
+                onConfirm={handleCancelSubstitute}
+              >
+                <Button danger loading={submittingSubstitute}>
+                  ຍົກເລີກ "ມາແທນ"
+                </Button>
+              </Popconfirm>
+            )}
+            {canSubstitute && editingCell?.kind !== 'substituted' && (
+              <Popconfirm
+                title="ຕັ້ງເປັນ ມາແທນ?"
+                description="ໝາຍຄວາມວ່າມື້ນີ້ມີຄົນອື່ນມາແທນ — ຈະບໍ່ຖືກຄິດເປັນວັນຂາດງານ, ແລະຄິວທີ່ຈັດໄວ້ໃນມື້ນີ້ (ຖ້າມີ) ຈະຖືກລຶບອອກໃຫ້ອັດຕະໂນມັດ"
+                okText="ຕັ້ງເປັນມາແທນ"
+                cancelText="ບໍ່"
+                onConfirm={handleSubstitute}
+              >
+                <Button loading={submittingSubstitute}>ຕັ້ງເປັນ "ມາແທນ" (ມີຄົນອື່ນມາແທນ)</Button>
+              </Popconfirm>
             )}
           </Space>
 
@@ -370,12 +646,29 @@ export const MonthlySchedulePage: React.FC = () => {
         </Typography.Paragraph>
         <Select
           style={{ width: '100%' }}
-          options={WEEKDAY_OPTIONS}
-          allowClear
+          options={weekdayOptionsForRecurringRest}
           placeholder="ບໍ່ມີວັນພັກປະຈຳ"
           value={recurringRestDay}
           onChange={(v) => setRecurringRestDay(v)}
         />
+        {restrictedDaysForRecurring.length > 0 && (
+          <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }}>
+            ຕຳແໜ່ງນີ້ຫ້າມພັກ: {restrictedDaysForRecurring.map((d: number) => WEEKDAY_OPTIONS[d].label).join(', ')}
+          </Typography.Paragraph>
+        )}
+        {recurringRestFor?.defaultRestDay != null && (
+          <Popconfirm
+            title={`ຍົກເລີກວັນພັກປະຈຳຂອງ ${recurringRestFor.firstName}?`}
+            description="ຫຼັງຈາກນີ້ຈະບໍ່ມີວັນພັກປະຈຳອາທິດອີກ — ຕ້ອງໄປຕັ້ງວັນພັກເອງທີລະວັນຖ້າຕ້ອງການ"
+            okText="ຍົກເລີກວັນພັກປະຈຳ"
+            cancelText="ບໍ່"
+            onConfirm={cancelRecurringRest}
+          >
+            <Button danger style={{ marginTop: 12 }} loading={savingRestDay}>
+              ຍົກເລີກວັນພັກປະຈຳ
+            </Button>
+          </Popconfirm>
+        )}
       </Modal>
     </List>
   );

@@ -14,11 +14,16 @@ const attendanceLogRoutes = require('./routes/attendanceLogs');
 const attendanceDailyRoutes = require('./routes/attendanceDaily');
 const attendanceActionRoutes = require('./routes/attendanceActions');
 const leaveRoutes = require('./routes/leaves');
+const overtimeRoutes = require('./routes/overtime');
 const shiftRoutes = require('./routes/shifts');
 const shiftSwapRoutes = require('./routes/shiftSwaps');
+const positionSwapRoutes = require('./routes/positionSwaps');
 const shiftCategoryRoutes = require('./routes/shiftCategories');
+const holidayRoutes = require('./routes/holidays');
+const medicineExpenseRoutes = require('./routes/medicineExpenses');
 const dashboardRoutes = require('./routes/dashboard');
 const admsRoutes = require('./routes/adms');
+const { runDueScheduledSwaps } = require('./utils/positionSwap');
 
 const app = express();
 
@@ -45,9 +50,13 @@ app.use('/api/attendance-logs', attendanceLogRoutes);
 app.use('/api/attendance-daily', attendanceDailyRoutes);
 app.use('/api/attendance', attendanceActionRoutes);
 app.use('/api/leaves', leaveRoutes);
+app.use('/api/overtime', overtimeRoutes);
 app.use('/api/shifts', shiftRoutes);
 app.use('/api/shift-swaps', shiftSwapRoutes);
+app.use('/api/position-swaps', positionSwapRoutes);
 app.use('/api/shift-categories', shiftCategoryRoutes);
+app.use('/api/holidays', holidayRoutes);
+app.use('/api/medicine-expenses', medicineExpenseRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
@@ -65,6 +74,13 @@ const PORT = process.env.PORT || 4000;
 connectDB()
   .then(() => {
     app.listen(PORT, () => console.log(`[server] listening on http://localhost:${PORT}`));
+    // Catches any position swap scheduled for a date that's already arrived
+    // (including while the server was down), then re-checks periodically so
+    // one left running overnight still fires without anyone's browser open.
+    runDueScheduledSwaps().catch((err) => console.error('[position-swaps] startup check failed', err));
+    setInterval(() => {
+      runDueScheduledSwaps().catch((err) => console.error('[position-swaps] scheduled check failed', err));
+    }, 15 * 60 * 1000);
   })
   .catch((err) => {
     console.error('[server] failed to connect to MongoDB', err);

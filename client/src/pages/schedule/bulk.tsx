@@ -1,13 +1,12 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Select, DatePicker, TimePicker, Button, Space, Typography, Modal, Form, Input } from 'antd';
-import { ApartmentOutlined, IdcardOutlined, ClockCircleOutlined, SwapOutlined, SearchOutlined } from '@ant-design/icons';
+import { Table, Select, TimePicker, Button, Space, Typography, Modal, Form, Input } from 'antd';
+import { ApartmentOutlined, IdcardOutlined, ClockCircleOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import type { Employee, Department, Position, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
-import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 
 const { RangePicker: TimeRangePicker } = TimePicker;
@@ -74,21 +73,6 @@ export const BulkShiftEditPage: React.FC = () => {
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const employees = employeesData?.data ?? [];
-
-  const { selectProps: employeeSelect, query: employeeQuery } = useSelect<Employee>({
-    resource: 'employees',
-    optionLabel: (item) => `${item.firstName} ${item.lastName}`,
-    optionValue: '_id',
-    filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500, mode: 'server' },
-  });
-  // Broader than the (possibly filtered) main table — used to resolve an
-  // employee's own position when scheduling a shift swap for anyone active.
-  const employeeById = useMemo(() => {
-    const map: Record<string, Employee> = {};
-    for (const e of employeeQuery?.data?.data ?? []) map[e._id] = e;
-    return map;
-  }, [employeeQuery?.data?.data]);
 
   const { data: categoriesData } = useList<ShiftCategory>({ resource: 'shift-categories', pagination: { pageSize: 100 } });
   const categories = categoriesData?.data ?? [];
@@ -202,59 +186,6 @@ export const BulkShiftEditPage: React.FC = () => {
     refreshAll();
   };
 
-  // ---- 4. ສະຫຼັບກະລ່ວງໜ້າ (ສ້າງ Shift ຈິງສຳລັບມື້ໃດໜຶ່ງໃນອະນາຄົດ) ----
-  const [swapModalOpen, setSwapModalOpen] = useState(false);
-  const [swapEmployees, setSwapEmployees] = useState<string[]>([]);
-  const [swapDate, setSwapDate] = useState<Dayjs>();
-  const [swapCategory, setSwapCategory] = useState<string>();
-  const [swapTime, setSwapTime] = useState<[Dayjs, Dayjs] | null>(null);
-  const [swapping, setSwapping] = useState(false);
-
-  const openSwapModal = () => {
-    setSwapEmployees(selectedIds);
-    setSwapModalOpen(true);
-  };
-
-  const submitSwap = async () => {
-    if (!swapEmployees.length || !swapDate) return;
-    const category = categories.find((c) => c._id === swapCategory);
-    const startTime = swapTime?.[0]?.format('HH:mm') ?? category?.startTime;
-    const endTime = swapTime?.[1]?.format('HH:mm') ?? category?.endTime;
-    if (!startTime || !endTime) {
-      notify?.({ type: 'error', message: 'ກະລຸນາເລືອກໝວດໝູ່ກະ ຫຼື ກຳນົດເວລາເອງ' });
-      return;
-    }
-    const dateStr = swapDate.format('YYYY-MM-DD');
-    setSwapping(true);
-    const results = await Promise.allSettled(
-      swapEmployees.map((employeeId) =>
-        axiosInstance.post(`${API_URL}/shifts`, {
-          employee: employeeId,
-          position: idOf(employeeById[employeeId]?.position),
-          date: dateStr,
-          status: 'scheduled',
-          startTime,
-          endTime,
-        })
-      )
-    );
-    setSwapping(false);
-    const failCount = results.filter((r) => r.status === 'rejected').length;
-    notify?.({
-      type: failCount ? 'error' : 'success',
-      message: `ສ້າງກະສຳເລັດ ${results.length - failCount}/${results.length} ລາຍການ${
-        failCount ? ' (ບາງລາຍການອາດຊ້ຳກັບກະທີ່ມີຢູ່ແລ້ວໃນມື້ນັ້ນ)' : ''
-      }`,
-    });
-    if (results.length - failCount > 0) {
-      setSwapModalOpen(false);
-      setSwapEmployees([]);
-      setSwapDate(undefined);
-      setSwapCategory(undefined);
-      setSwapTime(null);
-    }
-  };
-
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -304,9 +235,6 @@ export const BulkShiftEditPage: React.FC = () => {
           </Button>
           <Button icon={<ClockCircleOutlined />} disabled={!selectedIds.length} onClick={() => setShiftModalOpen(true)}>
             ຍ້າຍກະ (ປ່ຽນກະປະຈຳ)
-          </Button>
-          <Button icon={<SwapOutlined />} onClick={openSwapModal}>
-            ສະຫຼັບກະລ່ວງໜ້າ
           </Button>
         </Space>
       </div>
@@ -415,50 +343,6 @@ export const BulkShiftEditPage: React.FC = () => {
           </Form.Item>
           <Form.Item label="ຫຼື ກຳນົດເວລາເອງ" tooltip="ຖ້າຕື່ມທັງສອງຢ່າງ ຈະໃຊ້ຄ່າທີ່ກຳນົດເອງແທນ">
             <TimeRangePicker style={{ width: '100%' }} format="HH:mm" value={moveTime} onChange={(v) => setMoveTime(v as [Dayjs, Dayjs] | null)} allowClear />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal
-        title="ສະຫຼັບກະລ່ວງໜ້າ"
-        open={swapModalOpen}
-        onCancel={() => setSwapModalOpen(false)}
-        onOk={submitSwap}
-        confirmLoading={swapping}
-        okText="ສ້າງກະ"
-        okButtonProps={{ disabled: !swapEmployees.length || !swapDate || (!swapCategory && !swapTime) }}
-        cancelText="ຍົກເລີກ"
-        destroyOnClose
-      >
-        <Typography.Paragraph type="secondary">
-          ສຳລັບມື້ໃດໜຶ່ງໃນອະນາຄົດ (ເຊັ່ນ: ມື້ສະຫຼັບກະປະຈຳເດືອນ) — ຈະສ້າງກະຈິງໃຫ້ທຸກຄົນທີ່ເລືອກໃນມື້ດຽວກັນ, ຕໍາແໜ່ງໃຊ້ຂອງແຕ່ລະຄົນເອງ
-        </Typography.Paragraph>
-        <Form layout="vertical">
-          <Form.Item label="ພະນັກງານ (ເລືອກໄດ້ຫຼາຍຄົນ)">
-            <Select
-              {...withTextFilter(employeeSelect)}
-              mode="multiple"
-              placeholder="ເລືອກພະນັກງານ"
-              allowClear
-              style={{ width: '100%' }}
-              value={swapEmployees}
-              onChange={(v: any) => setSwapEmployees(v)}
-            />
-          </Form.Item>
-          <Form.Item label="ວັນທີ">
-            <DatePicker style={{ width: '100%' }} placeholder="ວັນທີ" format="DD/MM/YYYY" value={swapDate} onChange={(v) => setSwapDate(v ?? undefined)} />
-          </Form.Item>
-          <Form.Item label="ໝວດໝູ່ກະ">
-            <Select {...categorySelect} placeholder="ໝວດໝູ່ກະ" allowClear style={{ width: '100%' }} value={swapCategory} onChange={(v: any) => setSwapCategory(v)} />
-          </Form.Item>
-          <Form.Item label="ຫຼື ກຳນົດເວລາເອງ" tooltip="ຖ້າຕື່ມທັງສອງຢ່າງ ຈະໃຊ້ຄ່າທີ່ກຳນົດເອງແທນ">
-            <TimeRangePicker
-              style={{ width: '100%' }}
-              format="HH:mm"
-              placeholder={['ເລີ່ມ', 'ສິ້ນສຸດ']}
-              value={swapTime}
-              onChange={(v) => setSwapTime(v as [Dayjs, Dayjs] | null)}
-            />
           </Form.Item>
         </Form>
       </Modal>

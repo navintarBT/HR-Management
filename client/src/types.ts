@@ -11,6 +11,8 @@ export interface Position {
   name: string;
   departments?: (Department | string)[];
   head?: Employee | string;
+  allowsSubstituteStatus?: boolean;
+  restrictedRestDays?: number[];
 }
 
 export interface EmploymentType {
@@ -42,6 +44,7 @@ export interface Employee {
   defaultRestDay?: number | null; // 0 = Sunday .. 6 = Saturday
   salary?: number | null;
   annualLeaveDays?: number | null;
+  allowsSubstituteStatus?: boolean | null; // overrides Position.allowsSubstituteStatus when set
 }
 
 export interface Identity {
@@ -63,7 +66,7 @@ export interface AttendanceLog {
   type: AttendanceLogType;
 }
 
-export type AttendanceStatus = 'present' | 'late' | 'absent' | 'leave' | 'incomplete';
+export type AttendanceStatus = 'present' | 'late' | 'absent' | 'leave' | 'incomplete' | 'substituted';
 
 export interface AttendanceDaily {
   _id: string;
@@ -72,7 +75,9 @@ export interface AttendanceDaily {
   firstIn?: string | null;
   lastOut?: string | null;
   workedHours: number;
+  expectedHours: number;
   lateMinutes: number;
+  earlyLeaveMinutes: number;
   otHours: number;
   status: AttendanceStatus;
 }
@@ -90,6 +95,53 @@ export interface Leave {
   status: LeaveStatus;
   approver?: Employee | string;
   decidedAt?: string;
+  deductDaysX1?: number | null;
+  deductDaysX2?: number | null;
+  billableDays?: number;
+  deductAmount?: number | null;
+  deductNote?: string | null;
+}
+
+export type ScheduledPositionSwapStatus = 'pending' | 'applied' | 'cancelled';
+
+export interface ScheduledPositionSwap {
+  _id: string;
+  positionA: Position | string;
+  positionB: Position | string;
+  effectiveDate: string; // YYYY-MM-DD
+  status: ScheduledPositionSwapStatus;
+  createdBy?: Employee | string;
+  appliedAt?: string;
+  movedFromA?: number;
+  movedFromB?: number;
+  createdAt: string;
+}
+
+export type OvertimeStatus = 'pending' | 'approved' | 'rejected';
+
+export interface Overtime {
+  _id: string;
+  employee: Employee | string;
+  date: string;
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  proposedBy?: Employee | string;
+  reason?: string;
+  status: OvertimeStatus;
+  approver?: Employee | string;
+  decidedAt?: string;
+  note?: string;
+}
+
+export interface MedicineExpense {
+  _id: string;
+  employee: Employee | string;
+  date: string;
+  billDate?: string;
+  items?: string;
+  billAmount?: number;
+  shopPayAmount?: number;
+  note?: string;
 }
 
 export interface ShiftCategory {
@@ -114,6 +166,13 @@ export interface Shift {
   endTime?: string; // HH:mm — not set for a 'rest' entry
   note?: string;
   status: ShiftStatus;
+  holiday?: Holiday | string | null; // set when this 'rest' entry came from a company-wide holiday
+}
+
+export interface Holiday {
+  _id: string;
+  date: string; // YYYY-MM-DD
+  name: string; // occasion, e.g. "ວັນປີໃໝ່"
 }
 
 export type ShiftSwapStatus = 'pending' | 'approved' | 'rejected';

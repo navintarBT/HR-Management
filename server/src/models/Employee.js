@@ -31,6 +31,17 @@ const employeeSchema = new mongoose.Schema(
     defaultRestDay: { type: Number, min: 0, max: 6 }, // 0 = Sunday .. 6 = Saturday
     salary: { type: Number, min: 0 },
     annualLeaveDays: { type: Number, min: 0 },
+    // Individual override of Position.allowsSubstituteStatus — unset inherits
+    // the position's setting; true/false forces it on/off for this one person
+    // regardless of position (e.g. one server who also covers DJ nights).
+    allowsSubstituteStatus: { type: Boolean },
+    // Snapshot of defaultShiftCategory/Start/End taken the moment the
+    // substitute rule turns on for this employee (see utils/substituteRule.js)
+    // — restored when the rule turns back off, since that clears the live
+    // fields with nothing else keeping a copy.
+    substituteBackupShiftCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'ShiftCategory' },
+    substituteBackupShiftStart: { type: String, trim: true },
+    substituteBackupShiftEnd: { type: String, trim: true },
   },
   { timestamps: true }
 );

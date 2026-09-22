@@ -5,7 +5,10 @@ const path = require('path');
 const fs = require('fs');
 const Employee = require('../models/Employee');
 const User = require('../models/User');
+const Position = require('../models/Position');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
+const { ensureRestDayAllowed } = require('../utils/restDayRules');
 
 const router = express.Router();
 const POPULATE = 'department position supervisor positionHead employmentType defaultShiftCategory';
@@ -99,13 +102,43 @@ function cleanEmployeePayload(body) {
   };
 }
 
+// Plain numeric, zero-padded to 4 digits (e.g. "0212") — no "EMP" prefix, so
+// the same value can double as the scan-device user id (deviceUserId), which
+// on most ADMS hardware only accepts a numeric id anyway.
 async function generateEmployeeCode() {
-  const existing = await Employee.find({ employeeCode: { $regex: /^EMP\d+$/ } }, 'employeeCode');
+  const existing = await Employee.find({ employeeCode: { $regex: /^\d+$/ } }, 'employeeCode');
   const max = existing.reduce((acc, e) => {
-    const n = parseInt(e.employeeCode.slice(3), 10);
+    const n = parseInt(e.employeeCode, 10);
     return Number.isFinite(n) && n > acc ? n : acc;
   }, 0);
-  return `EMP${String(max + 1).padStart(3, '0')}`;
+  return String(max + 1).padStart(4, '0');
+}
+
+// Resolves "ມາແທນ" eligibility: an explicit true/false wins outright, otherwise
+// falls back to whatever the position currently has set.
+async function effectiveAllowsSubstitute(allowsOverride, positionId) {
+  if (allowsOverride === true || allowsOverride === false) return allowsOverride;
+  if (!positionId) return false;
+  const position = await Position.findById(positionId);
+  return position?.allowsSubstituteStatus === true;
+}
+
+// Keeps defaultShiftCategory/Start/End in sync with the employee's effective
+// eligibility computed above — backs up the current shift time the moment it
+// turns on (nothing else keeps a copy once cleared), and restores it the
+// moment it turns back off, whether the change came from this employee's own
+// override or from being moved into/out of a flagged position. Only affects
+// how NEW scans get judged from now on — past AttendanceDaily records are
+// untouched either way. `current` is null on create (nothing existed before).
+async function syncSubstituteShiftTime(current, payload) {
+  const wasEnabled = current ? await effectiveAllowsSubstitute(current.allowsSubstituteStatus, current.position) : false;
+
+  const nextAllows = 'allowsSubstituteStatus' in payload ? payload.allowsSubstituteStatus : current?.allowsSubstituteStatus;
+  const nextPositionId = payload.position !== undefined ? payload.position : current?.position;
+  const willBeEnabled = await effectiveAllowsSubstitute(nextAllows, nextPositionId);
+
+  const transition = computeSubstituteTransitionUpdate(current ?? payload, wasEnabled, willBeEnabled);
+  if (transition) Object.assign(payload, transition);
 }
 
 async function ensureUniqueEmployeeFields(payload, currentId) {
@@ -180,8 +213,16 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
   try {
     const { employeePayload, userPayload } = cleanEmployeePayload(req.body);
     employeePayload.employeeCode = await generateEmployeeCode();
+    // Same number doubles as the scan-device id unless the admin set a
+    // different one explicitly (a device that's already provisioned with its
+    // own numbering, say).
+    if (!employeePayload.deviceUserId) employeePayload.deviceUserId = employeePayload.employeeCode;
     validateEmployee(employeePayload);
     await ensureUniqueEmployeeFields(employeePayload);
+    await syncSubstituteShiftTime(null, employeePayload);
+    if (employeePayload.defaultRestDay != null) {
+      await ensureRestDayAllowed(employeePayload.position, employeePayload.defaultRestDay);
+    }
 
     if (userPayload.createUser) {
       if (!userPayload.email || !userPayload.password) {
@@ -234,6 +275,11 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     };
     validateEmployee(nextPayload);
     await ensureUniqueEmployeeFields(employeePayload, req.params.id);
+    await syncSubstituteShiftTime(current, employeePayload);
+    if (employeePayload.defaultRestDay != null) {
+      const effectivePosition = employeePayload.position !== undefined ? employeePayload.position : current.position;
+      await ensureRestDayAllowed(effectivePosition, employeePayload.defaultRestDay);
+    }
 
     const item = await Employee.findByIdAndUpdate(req.params.id, employeePayload, {
       new: true,

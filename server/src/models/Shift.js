@@ -16,6 +16,10 @@ const shiftSchema = new mongoose.Schema(
     // 'rest' marks a one-off day-off override in the monthly schedule table —
     // distinct from 'cancelled', which means a previously scheduled shift fell through.
     status: { type: String, enum: ['scheduled', 'cancelled', 'rest'], default: 'scheduled' },
+    // Set only when this 'rest' entry was created/overwritten by a company-wide
+    // holiday — lets deleting that Holiday clean up exactly the Shift rows it
+    // created, without touching an employee's own unrelated rest-day picks.
+    holiday: { type: mongoose.Schema.Types.ObjectId, ref: 'Holiday' },
   },
   { timestamps: true }
 );

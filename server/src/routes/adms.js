@@ -2,7 +2,7 @@ const express = require('express');
 const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
 const Device = require('../models/Device');
-const { recomputeDay, toDateKey } = require('../utils/attendanceProcessor');
+const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attendanceProcessor');
 
 // ZKTeco's "push" (ADMS) protocol. Real terminals are configured with this
 // server's URL and hit these fixed paths on their own — no Authorization
@@ -24,10 +24,12 @@ async function findOrTouchDevice(serialNumber) {
 
 // Mirrors routes/attendanceActions.js's heuristic so both ingestion paths
 // (simulator + real terminal) agree on in/out — device Status codes aren't
-// reliable enough across firmware/models to trust directly.
+// reliable enough across firmware/models to trust directly. Looks back to the
+// resolved shift-day's start (not just today's midnight) so an overnight
+// shift's early-morning punch still alternates against last night's punch.
 async function inferType(employeeId, timestamp) {
-  const dateKey = toDateKey(timestamp);
-  const start = new Date(`${dateKey}T00:00:00`);
+  const shiftDateKey = await resolveShiftDateKey(employeeId, timestamp);
+  const { start } = dayRange(shiftDateKey);
   const last = await AttendanceLog.findOne({
     employee: employeeId,
     timestamp: { $gte: start, $lt: timestamp },
@@ -110,7 +112,7 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
           { upsert: true, setDefaultsOnInsert: true }
         );
 
-        if (employee) affected.set(`${employee._id}|${toDateKey(timestamp)}`, true);
+        if (employee) affected.set(`${employee._id}|${await resolveShiftDateKey(employee._id, timestamp)}`, true);
       }
 
       for (const key of affected.keys()) {

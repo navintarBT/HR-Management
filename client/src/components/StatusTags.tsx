@@ -1,5 +1,5 @@
 import { Tag } from 'antd';
-import type { AttendanceStatus, LeaveStatus, LeaveType, ShiftSwapStatus } from '../types';
+import type { AttendanceStatus, LeaveStatus, LeaveType, OvertimeStatus, ShiftSwapStatus } from '../types';
 
 const leaveStatusMap: Record<LeaveStatus, { label: string; color: string }> = {
   pending: { label: 'ລໍຖ້າອະນຸມັດ', color: 'gold' },
@@ -19,6 +19,7 @@ const attendanceStatusMap: Record<AttendanceStatus, { label: string; color: stri
   absent: { label: 'ຂາດງານ', color: 'red' },
   leave: { label: 'ລາ', color: 'purple' },
   incomplete: { label: 'ລືມສະແກນອອກ', color: 'default' },
+  substituted: { label: 'ມາແທນ', color: 'cyan' },
 };
 
 export const LeaveStatusTag: React.FC<{ status: LeaveStatus }> = ({ status }) => {
@@ -28,6 +29,11 @@ export const LeaveStatusTag: React.FC<{ status: LeaveStatus }> = ({ status }) =>
 
 // Same pending/approved/rejected shape as leave requests — reuse the wording.
 export const ShiftSwapStatusTag: React.FC<{ status: ShiftSwapStatus }> = ({ status }) => {
+  const item = leaveStatusMap[status];
+  return <Tag color={item.color}>{item.label}</Tag>;
+};
+
+export const OvertimeStatusTag: React.FC<{ status: OvertimeStatus }> = ({ status }) => {
   const item = leaveStatusMap[status];
   return <Tag color={item.color}>{item.label}</Tag>;
 };
