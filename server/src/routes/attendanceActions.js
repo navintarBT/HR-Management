@@ -4,7 +4,16 @@ const AttendanceLog = require('../models/AttendanceLog');
 const AttendanceDaily = require('../models/AttendanceDaily');
 const Shift = require('../models/Shift');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { recomputeDay, reprocessFromLogs, dayRange, resolveShiftDateKey, markSubstituted } = require('../utils/attendanceProcessor');
+const {
+  recomputeDay,
+  reprocessFromLogs,
+  dayRange,
+  resolveShiftDateKey,
+  resolveExpectedShift,
+  resolveShiftWindow,
+  isOvernightShift,
+  markSubstituted,
+} = require('../utils/attendanceProcessor');
 
 const router = express.Router();
 
@@ -101,16 +110,36 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const checkInTs = new Date(`${date}T${checkIn}:00`);
-    const checkOutTs = checkOut ? new Date(`${date}T${checkOut}:00`) : null;
+    let checkOutTs = checkOut ? new Date(`${date}T${checkOut}:00`) : null;
     if (Number.isNaN(checkInTs.getTime()) || (checkOutTs && Number.isNaN(checkOutTs.getTime()))) {
       return res.status(400).json({ message: 'ຮູບແບບເວລາບໍ່ຖືກຕ້ອງ' });
+    }
+    // `date` is the shift-DAY, not necessarily the calendar day checkOut falls
+    // on — for someone on an overnight shift (e.g. 22:00-06:00), a checkOut
+    // typed as "06:00" is naively parsed onto the SAME date as checkIn here,
+    // landing before it. Roll it onto the next calendar day instead of
+    // rejecting it, but only when this employee's shift actually is overnight
+    // that day — otherwise a genuinely backwards time (same-day shift) still
+    // gets caught below.
+    if (checkOutTs && checkOutTs <= checkInTs) {
+      const expected = await resolveExpectedShift(employeeId, date);
+      if (isOvernightShift(expected)) {
+        checkOutTs = new Date(checkOutTs.getTime() + 24 * 3600000);
+      }
     }
     if (checkOutTs && checkOutTs <= checkInTs) {
       return res.status(400).json({ message: 'ເວລາອອກຕ້ອງຢູ່ຫຼັງເວລາເຂົ້າ' });
     }
 
-    const { start, end } = dayRange(date);
-    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: start, $lte: end } });
+    // Must clear the SAME window recomputeDay will read back from below — for
+    // an overnight shift that window extends past plain calendar-day midnight
+    // (see resolveShiftWindow). Deleting only this literal calendar day would
+    // leave an old scan-out from the small hours of the NEXT day behind: it
+    // survives the cleanup, recomputeDay still finds it, and the edit looks
+    // like it silently did nothing (e.g. clearing checkOut to downgrade to a
+    // single scan never actually takes, because the stale checkout persists).
+    const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
+    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } });
 
     const raw = { manual: true, note: note || undefined, editedBy: req.user?.email };
     await AttendanceLog.create({
@@ -163,8 +192,11 @@ router.post('/mark-substituted', authenticate, requireRole('admin', 'manager'), 
       return res.status(403).json({ message: 'ພະນັກງານ/ຕຳແໜ່ງນີ້ບໍ່ອະນຸຍາດໃຫ້ໃຊ້ສະຖານະ "ມາແທນ"' });
     }
 
-    const { start, end } = dayRange(date);
-    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: start, $lte: end } });
+    // Same overnight-aware window as manual-fix's cleanup — a plain calendar
+    // day would leave a genuine scan-out from the small hours of the next day
+    // behind, which a later reprocess could still pick up and attribute here.
+    const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
+    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } });
     await Shift.deleteMany({ employee: employeeId, date });
 
     const daily = await markSubstituted(employeeId, date);

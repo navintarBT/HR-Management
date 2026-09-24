@@ -23,35 +23,22 @@ const CategoryFormItems: React.FC = () => (
     <Form.Item label="ສີ (ບໍ່ບັງຄັບ)" name="color">
       <ColorPicker format="hex" />
     </Form.Item>
-    <Form.Item
-      label="ສາຍໄດ້ບໍ່ເກີນ (ນາທີ)"
-      name="graceMinutes"
-      rules={[{ required: true, message: 'ກະລຸນາປ້ອນຈໍານວນນາທີ' }]}
-      tooltip="ຖ້າມາຊ້າບໍ່ເກີນຈໍານວນນີ້ຈະຍັງນັບວ່າມາເຮັດວຽກ (present)"
-    >
-      <InputNumber min={0} max={240} style={{ width: '100%' }} addonAfter="ນາທີ" />
-    </Form.Item>
-    <Form.Item
-      label="ສາຍເກີນເທົ່າໃດນັບເປັນຂາດງານ (ບໍ່ບັງຄັບ)"
-      name="autoAbsentMinutes"
-      tooltip="ຖ້າມາຊ້າເກີນຈໍານວນນີ້ຈະຖືກນັບເປັນຂາດງານ (absent) ແທນທີ່ຈະເປັນມາຊ້າ — ປະໄວ້ຫວ່າງຖ້າບໍ່ຕ້ອງການນະໂຍບາຍນີ້"
-    >
-      <InputNumber min={0} max={480} style={{ width: '100%' }} addonAfter="ນາທີ" placeholder="ບໍ່ນັບ" />
-    </Form.Item>
+    <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+      ນະໂຍບາຍມາຊ້າ (ຊ້າທຳມະດາ / ຮ້າຍແຮງ / ຂາດວຽກ) ຖືກລັອກໄວ້ໃຫ້ຄ່າດຽວກັນທຸກໝວດໝູ່ — ແກ້ໄດ້ສະເພາະປຸ່ມ
+      "ຕັ້ງນະໂຍບາຍມາຊ້າໃຫ້ທຸກໝວດໝູ່" ຢູ່ດ້ານເທິງ ບໍ່ສາມາດແກ້ໄຂແຍກຕໍ່ໝວດໝູ່ຢູ່ບ່ອນນີ້ອີກຕໍ່ໄປ
+    </Typography.Paragraph>
   </>
 );
 
 const buildCategoryPayload = (values: any) => {
   const [startTime, endTime] = values.time.map((t: any) => t.format('HH:mm'));
   const color = typeof values.color === 'string' ? values.color : values.color?.toHexString?.();
-  return {
-    name: values.name,
-    startTime,
-    endTime,
-    color,
-    graceMinutes: values.graceMinutes ?? 15,
-    autoAbsentMinutes: values.autoAbsentMinutes ?? null,
-  };
+  // Late-policy fields (graceMinutes/autoAbsentMinutes/severeLateMinutes) are
+  // deliberately left out — they're no longer editable from this form, only
+  // via the "ຕັ້ງນະໂຍບາຍມາຊ້າໃຫ້ທຸກໝວດໝູ່" bulk button, so omitting them here
+  // means a create gets the schema's own defaults and an edit leaves an
+  // existing category's policy untouched.
+  return { name: values.name, startTime, endTime, color };
 };
 
 export const ShiftCategoryListPage: React.FC = () => {
@@ -91,6 +78,7 @@ export const ShiftCategoryListPage: React.FC = () => {
           axiosInstance.patch(`${API_URL}/shift-categories/${key}`, {
             graceMinutes: values.graceMinutes,
             autoAbsentMinutes: values.autoAbsentMinutes ?? null,
+            severeLateMinutes: values.severeLateMinutes,
           })
         )
       );
@@ -133,8 +121,6 @@ export const ShiftCategoryListPage: React.FC = () => {
       name: editingRecord.name,
       time: [dayjs(editingRecord.startTime, 'HH:mm'), dayjs(editingRecord.endTime, 'HH:mm')],
       color: editingRecord.color,
-      graceMinutes: editingRecord.graceMinutes,
-      autoAbsentMinutes: editingRecord.autoAbsentMinutes,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editModalProps.open, editingRecord]);
@@ -164,7 +150,19 @@ export const ShiftCategoryListPage: React.FC = () => {
               icon={<ClockCircleOutlined />}
               style={{ backgroundColor: palette.warning, borderColor: palette.warning }}
               onClick={() => {
+                // Pre-fill with whatever's actually saved right now (every
+                // category shares the same policy, since this button is the
+                // only way to change it) — resetFields() alone would fall
+                // back to a hardcoded 15/60 every time, which would silently
+                // revert a previously-changed policy back to that default if
+                // confirmed without noticing.
+                const current = allCategoriesData?.data?.[0];
                 bulkPolicyForm.resetFields();
+                bulkPolicyForm.setFieldsValue({
+                  graceMinutes: current?.graceMinutes ?? 15,
+                  autoAbsentMinutes: current?.autoAbsentMinutes ?? undefined,
+                  severeLateMinutes: current?.severeLateMinutes ?? 60,
+                });
                 setBulkPolicyOpen(true);
               }}
             >
@@ -194,9 +192,12 @@ export const ShiftCategoryListPage: React.FC = () => {
           dataIndex="graceMinutes"
           render={(_, record: ShiftCategory) => (
             <Space direction="vertical" size={0}>
-              <Typography.Text>ສາຍໄດ້ບໍ່ເກີນ {record.graceMinutes} ນທ</Typography.Text>
+              <Typography.Text>ຊ້າທຳມະດາບໍ່ເກີນ {record.graceMinutes} ນທ</Typography.Text>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {record.autoAbsentMinutes != null ? `ສາຍເກີນ ${record.autoAbsentMinutes} ນທ ນັບເປັນຂາດງານ` : 'ບໍ່ນັບເປັນຂາດງານອັດຕະໂນມັດ'}
+                ຊ້າຮ້າຍແຮງເກີນ {record.severeLateMinutes ?? 60} ນທ
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {record.autoAbsentMinutes != null ? `ສາຍເກີນ ${record.autoAbsentMinutes} ນທ ນັບເປັນຂາດວຽກ` : 'ບໍ່ນັບເປັນຂາດວຽກອັດຕະໂນມັດ'}
               </Typography.Text>
             </Space>
           )}
@@ -228,19 +229,26 @@ export const ShiftCategoryListPage: React.FC = () => {
         <Typography.Paragraph type="secondary">
           ຄ່າທີ່ຕັ້ງນີ້ຈະໄປແທນທີ່ນະໂຍບາຍມາຊ້າເດີມຂອງທຸກໝວດໝູ່ກະທີ່ມີຢູ່ໃນລະບົບ
         </Typography.Paragraph>
-        <Form form={bulkPolicyForm} layout="vertical" initialValues={{ graceMinutes: 15 }}>
+        <Form form={bulkPolicyForm} layout="vertical" initialValues={{ graceMinutes: 15, severeLateMinutes: 60 }}>
           <Form.Item
-            label="ສາຍໄດ້ບໍ່ເກີນ (ນາທີ)"
+            label="ຊ້າລະດັບທຳມະດາບໍ່ເກີນ (ນາທີ)"
             name="graceMinutes"
             rules={[{ required: true, message: 'ກະລຸນາປ້ອນຈໍານວນນາທີ' }]}
           >
             <InputNumber min={0} max={240} style={{ width: '100%' }} addonAfter="ນາທີ" />
           </Form.Item>
           <Form.Item
-            label="ສາຍເກີນເທົ່າໃດນັບເປັນຂາດງານ (ບໍ່ບັງຄັບ)"
+            label="ສາຍເກີນເທົ່າໃດນັບເປັນຂາດວຽກ (ບໍ່ບັງຄັບ)"
             name="autoAbsentMinutes"
           >
             <InputNumber min={0} max={480} style={{ width: '100%' }} addonAfter="ນາທີ" placeholder="ບໍ່ນັບ" />
+          </Form.Item>
+          <Form.Item
+            label="ຊ້າຮ້າຍແຮງເກີນ (ນາທີ)"
+            name="severeLateMinutes"
+            rules={[{ required: true, message: 'ກະລຸນາປ້ອນຈໍານວນນາທີ' }]}
+          >
+            <InputNumber min={0} max={1440} style={{ width: '100%' }} addonAfter="ນາທີ" />
           </Form.Item>
         </Form>
       </Modal>
@@ -250,7 +258,6 @@ export const ShiftCategoryListPage: React.FC = () => {
           {...createFormProps}
           form={createForm}
           layout="vertical"
-          initialValues={{ graceMinutes: 15 }}
           onFinish={(values: any) => createFormProps.onFinish?.(buildCategoryPayload(values))}
         >
           <CategoryFormItems />

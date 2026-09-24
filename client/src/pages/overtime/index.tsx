@@ -265,6 +265,10 @@ export const OvertimeDetailList: React.FC = () => {
   const { modalProps, formProps, show } = useModalForm<Overtime>({
     resource: 'overtime',
     action: 'create',
+    // Without this, Refine's default post-submit redirect bounces to
+    // /overtime's own list route, which immediately redirects to
+    // /overtime/summary via its index route — same fix as the leaves pages.
+    redirect: false,
   });
   const submitCreate = (values: any) =>
     formProps.onFinish?.({ ...values, date: values.date ? dayjs(values.date).toISOString() : undefined });
@@ -278,6 +282,7 @@ export const OvertimeDetailList: React.FC = () => {
   } = useModalForm<Overtime>({
     resource: 'overtime',
     action: 'edit',
+    redirect: false,
   });
   const submitEdit = (values: any) =>
     editFormProps.onFinish?.({ ...values, date: values.date ? dayjs(values.date).toISOString() : undefined });

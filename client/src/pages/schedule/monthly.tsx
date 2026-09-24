@@ -4,7 +4,7 @@ import { useList, useGetIdentity, useCreate, useUpdate, useDelete, useInvalidate
 import { Table, Typography, Space, Button, Modal, Form, TimePicker, Select, Input, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, CalendarOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory, Leave } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
@@ -13,7 +13,8 @@ type Cell =
   | { kind: 'unset' }
   | { kind: 'rest'; isOverride: boolean; overrideId?: string; isHoliday?: boolean; holidayName?: string }
   | { kind: 'work'; start: string; end: string; isOverride: boolean; overrideId?: string }
-  | { kind: 'substituted' };
+  | { kind: 'substituted' }
+  | { kind: 'leave' };
 
 function idOf(value: { _id: string } | string | null | undefined) {
   return value && typeof value === 'object' ? value._id : value;
@@ -37,9 +38,13 @@ function resolveDefaultTime(employee: Employee): { start: string; end: string } 
 // isSubstituted (AttendanceDaily.status === 'substituted') always wins — once
 // marked, the queued Shift is deleted as part of that action (see
 // attendanceActions.js's mark-substituted), so there's nothing left in
-// `override` to check by that point anyway.
-function computeCell(employee: Employee, dateKey: string, override?: Shift, isSubstituted?: boolean): Cell {
+// `override` to check by that point anyway. An approved leave comes next,
+// ahead of any Shift override — it's this table's ultimate source of truth
+// for "is this person actually coming in," so it should show even if a
+// stale/conflicting Shift row says otherwise underneath.
+function computeCell(employee: Employee, dateKey: string, override?: Shift, isSubstituted?: boolean, isOnLeave?: boolean): Cell {
   if (isSubstituted) return { kind: 'substituted' };
+  if (isOnLeave) return { kind: 'leave' };
   if (override) {
     if (override.status === 'rest') {
       const holiday = override.holiday;
@@ -60,6 +65,7 @@ const CELL_STYLE: Record<Cell['kind'], React.CSSProperties> = {
   rest: { background: '#f9f0ff' },
   work: { background: 'transparent' },
   substituted: { background: '#e6fffb' },
+  leave: { background: '#fffbe6' },
 };
 
 export const MonthlySchedulePage: React.FC = () => {
@@ -170,10 +176,37 @@ export const MonthlySchedulePage: React.FC = () => {
     return map;
   }, [attendanceDailyData?.data]);
 
+  // A position's restrictedRestDays exists to stop a discretionary rest-day
+  // swap away from a day that needs staffing — it isn't meant to also block
+  // marking a date "rest" when the employee is already out on approved leave
+  // that day regardless (nothing about the restriction changes the fact that
+  // they're not coming in). Fetched unfiltered by month, like other
+  // client-side-filtered lists in this app — leave records are few per
+  // employee either way.
+  const { data: approvedLeavesData } = useList<Leave>({
+    resource: 'leaves',
+    filters: [{ field: 'status', operator: 'eq', value: 'approved' }],
+    pagination: { pageSize: 2000, mode: 'server' },
+  });
+  const approvedLeaveRangesByEmployee = useMemo(() => {
+    const map: Record<string, { start: Dayjs; end: Dayjs }[]> = {};
+    for (const l of approvedLeavesData?.data ?? []) {
+      const empId = idOf(l.employee);
+      if (!empId) continue;
+      (map[empId] ??= []).push({ start: dayjs(l.startDate), end: dayjs(l.endDate) });
+    }
+    return map;
+  }, [approvedLeavesData?.data]);
+  const hasApprovedLeaveOn = (employeeId: string, dateKey: string) => {
+    const date = dayjs(dateKey);
+    return !!approvedLeaveRangesByEmployee[employeeId]?.some((r) => !date.isBefore(r.start, 'day') && !date.isAfter(r.end, 'day'));
+  };
+
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
   const editingOverride = editing ? overrideByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
   const editingIsSubstituted = editing ? !!substitutedByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : false;
-  const editingCell = editing ? computeCell(editing.employee, editing.dateKey, editingOverride, editingIsSubstituted) : null;
+  const editingIsOnLeave = editing ? hasApprovedLeaveOn(editing.employee._id, editing.dateKey) : false;
+  const editingCell = editing ? computeCell(editing.employee, editing.dateKey, editingOverride, editingIsSubstituted, editingIsOnLeave) : null;
 
   const [timeForm] = Form.useForm();
   useEffect(() => {
@@ -299,7 +332,10 @@ export const MonthlySchedulePage: React.FC = () => {
 
   const restrictedDaysForEditing =
     (editing && typeof editing.employee.position === 'object' ? editing.employee.position?.restrictedRestDays : undefined) ?? [];
-  const isEditingDateRestDayBlocked = !!editing && restrictedDaysForEditing.includes(dayjs(editing.dateKey).day());
+  const isEditingDateRestDayBlocked =
+    !!editing &&
+    restrictedDaysForEditing.includes(dayjs(editing.dateKey).day()) &&
+    !hasApprovedLeaveOn(editing.employee._id, editing.dateKey);
 
   const handleSaveTime = () => {
     if (!editing) return;
@@ -524,7 +560,8 @@ export const MonthlySchedulePage: React.FC = () => {
               render={(_, emp: Employee) => {
                 const override = overrideByEmpDate[`${emp._id}_${dateKey}`];
                 const isSubstituted = !!substitutedByEmpDate[`${emp._id}_${dateKey}`];
-                const cell = computeCell(emp, dateKey, override, isSubstituted);
+                const isOnLeave = hasApprovedLeaveOn(emp._id, dateKey);
+                const cell = computeCell(emp, dateKey, override, isSubstituted, isOnLeave);
                 const isOverride = (cell.kind === 'rest' || cell.kind === 'work') && cell.isOverride;
                 return (
                   <div
@@ -555,6 +592,7 @@ export const MonthlySchedulePage: React.FC = () => {
                       </>
                     )}
                     {cell.kind === 'substituted' && <span style={{ color: '#08979c' }}>ມາແທນ</span>}
+                    {cell.kind === 'leave' && <span style={{ color: '#d48806' }}>ລາ</span>}
                   </div>
                 );
               }}
@@ -578,6 +616,7 @@ export const MonthlySchedulePage: React.FC = () => {
               `ປັດຈຸບັນ: ${editingCell.start}-${editingCell.end}${editingCell.isOverride ? ' (ແກ້ໄຂພິເສດ)' : ' (ຄ່າປົກກະຕິ)'}`}
             {editingCell?.kind === 'unset' && 'ປັດຈຸບັນ: ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ'}
             {editingCell?.kind === 'substituted' && 'ປັດຈຸບັນ: ມາແທນ (ມີຄົນອື່ນມາແທນ)'}
+            {editingCell?.kind === 'leave' && 'ປັດຈຸບັນ: ລາ (ມີໃບລາອະນຸມັດແລ້ວຄຸມວັນນີ້)'}
           </Typography.Text>
 
           <Space wrap>
@@ -610,7 +649,7 @@ export const MonthlySchedulePage: React.FC = () => {
             {canSubstitute && editingCell?.kind !== 'substituted' && (
               <Popconfirm
                 title="ຕັ້ງເປັນ ມາແທນ?"
-                description="ໝາຍຄວາມວ່າມື້ນີ້ມີຄົນອື່ນມາແທນ — ຈະບໍ່ຖືກຄິດເປັນວັນຂາດງານ, ແລະຄິວທີ່ຈັດໄວ້ໃນມື້ນີ້ (ຖ້າມີ) ຈະຖືກລຶບອອກໃຫ້ອັດຕະໂນມັດ"
+                description="ໝາຍຄວາມວ່າມື້ນີ້ມີຄົນອື່ນມາແທນ — ຈະບໍ່ຖືກຄິດເປັນວັນຂາດວຽກ, ແລະຄິວທີ່ຈັດໄວ້ໃນມື້ນີ້ (ຖ້າມີ) ຈະຖືກລຶບອອກໃຫ້ອັດຕະໂນມັດ"
                 okText="ຕັ້ງເປັນມາແທນ"
                 cancelText="ບໍ່"
                 onConfirm={handleSubstitute}

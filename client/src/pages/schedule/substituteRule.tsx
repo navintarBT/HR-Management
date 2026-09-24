@@ -112,7 +112,7 @@ const PositionRuleTable: React.FC<{ employeesByPosition: Record<string, number> 
               ອະນຸຍາດສະຖານະ ມາແທນ (ໃຊ້ກັບທຸກຄົນໃນຕຳແໜ່ງນີ້)
               <br />
               <Typography.Text type="secondary" style={{ fontSize: 11, fontWeight: 'normal' }}>
-                ສຳລັບຕຳແໜ່ງທີ່ມີຄົນອື່ນມາແທນແທນທີ່ຈະຂາດງານ
+                ສຳລັບຕຳແໜ່ງທີ່ມີຄົນອື່ນມາແທນແທນທີ່ຈະຂາດວຽກ
               </Typography.Text>
             </span>
           }
@@ -456,7 +456,7 @@ export const SubstituteRulePage: React.FC = () => {
     <List title="ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ" breadcrumb={false}>
       <Typography.Title level={5}>ກົດ "ມາແທນ"</Typography.Title>
       <Typography.Paragraph type="secondary">
-        ຄົນທີ່ເປີດໃຊ້ກົດນີ້ (ຈາກຕຳແໜ່ງ ຫຼື ຕັ້ງພິເສດເປັນລາຍບຸກຄົນ) ຈະບໍ່ຖືກຕັດສິນວ່າມາຊ້າ/ຂາດງານຈາກເວລາສະແກນ ແລະ ສາມາດໃຊ້ສະຖານະ
+        ຄົນທີ່ເປີດໃຊ້ກົດນີ້ (ຈາກຕຳແໜ່ງ ຫຼື ຕັ້ງພິເສດເປັນລາຍບຸກຄົນ) ຈະບໍ່ຖືກຕັດສິນວ່າມາຊ້າ/ຂາດວຽກຈາກເວລາສະແກນ ແລະ ສາມາດໃຊ້ສະຖານະ
         "ມາແທນ" ໃນຕາຕະລາງ ປະຫວັດການສະແກນ ໄດ້ — ການເປີດໃຊ້ຈະລ້າງເວລາເຂົ້າວຽກປົກກະຕິຂອງຄົນນັ້ນອອກໃຫ້ອັດຕະໂນມັດ
       </Typography.Paragraph>
 

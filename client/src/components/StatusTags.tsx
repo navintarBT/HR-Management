@@ -16,7 +16,7 @@ const leaveTypeMap: Record<LeaveType, { label: string; color: string }> = {
 const attendanceStatusMap: Record<AttendanceStatus, { label: string; color: string }> = {
   present: { label: 'ມາເຮັດວຽກ', color: 'green' },
   late: { label: 'ມາຊ້າ', color: 'orange' },
-  absent: { label: 'ຂາດງານ', color: 'red' },
+  absent: { label: 'ຂາດວຽກ', color: 'red' },
   leave: { label: 'ລາ', color: 'purple' },
   incomplete: { label: 'ລືມສະແກນອອກ', color: 'default' },
   substituted: { label: 'ມາແທນ', color: 'cyan' },
@@ -53,7 +53,7 @@ export const employeeStatusMap = {
   active: { label: 'ກຳລັງເຮັດວຽກ', color: 'green' },
   inactive: { label: 'ບໍ່ໃຊ້ງານ', color: 'default' },
   resigned: { label: 'ລາອອກ', color: 'red' },
-  suspended: { label: 'ພັກງານ', color: 'orange' },
+  suspended: { label: 'ພັກວຽກ', color: 'orange' },
 } as const;
 
 export const EmployeeStatusTag: React.FC<{ status: keyof typeof employeeStatusMap }> = ({ status }) => {

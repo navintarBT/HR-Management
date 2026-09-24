@@ -20,6 +20,16 @@ export interface EmploymentType {
   name: string;
 }
 
+export interface RestDayHistory {
+  _id: string;
+  employee: Employee | string;
+  previousRestDay: number | null; // 0 = Sunday .. 6 = Saturday, null = had none set before
+  newRestDay: number | null; // null = cleared to none
+  changedBy?: Employee | string;
+  changedByEmail?: string; // fallback identity when changedBy has no linked Employee (e.g. a pure admin account)
+  createdAt: string;
+}
+
 export interface Employee {
   _id: string;
   employeeCode?: string;
@@ -77,6 +87,8 @@ export interface AttendanceDaily {
   workedHours: number;
   expectedHours: number;
   lateMinutes: number;
+  graceMinutes?: number | null; // the shift category's late policy in effect when this was computed — sizes the "ຊ້າ"/"ຊ້າເກີນ" label tiers, not a threshold that suppresses "late" itself
+  severeLateMinutes?: number | null; // top-tier boundary in effect when this was computed
   earlyLeaveMinutes: number;
   otHours: number;
   status: AttendanceStatus;
@@ -98,8 +110,16 @@ export interface Leave {
   deductDaysX1?: number | null;
   deductDaysX2?: number | null;
   billableDays?: number;
-  deductAmount?: number | null;
+  deductAmount?: 'X0' | 'X1' | 'X2' | 'X3' | null;
+  deductAmountTotal?: number | null;
   deductNote?: string | null;
+  restDayOverlaps?: { date: string; type: 'personal' | 'holiday'; holidayName?: string }[];
+  // Set only when this request's dates crossed the employee's own 1-year
+  // tenure anniversary — the server splits it into two linked records
+  // sharing the same splitGroupId (one 'before', one 'after' the
+  // anniversary). null/unset for an ordinary, unsplit leave.
+  splitGroupId?: string | null;
+  splitPart?: 'before' | 'after' | null;
 }
 
 export type ScheduledPositionSwapStatus = 'pending' | 'applied' | 'cancelled';
@@ -150,8 +170,9 @@ export interface ShiftCategory {
   startTime: string; // HH:mm
   endTime: string; // HH:mm
   color?: string;
-  graceMinutes: number; // late by up to this many minutes still counts as "present"
+  graceMinutes: number; // late by up to this many minutes shows the plain "ຊ້າ" label (no longer "present")
   autoAbsentMinutes?: number | null; // late beyond this many minutes is recorded as "absent" instead of "late"
+  severeLateMinutes?: number; // late beyond this many minutes shows the most severe "ຊ້າເກີນ..." label
 }
 
 export type ShiftStatus = 'scheduled' | 'cancelled' | 'rest';

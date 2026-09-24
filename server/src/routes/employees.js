@@ -6,6 +6,7 @@ const fs = require('fs');
 const Employee = require('../models/Employee');
 const User = require('../models/User');
 const Position = require('../models/Position');
+const RestDayHistory = require('../models/RestDayHistory');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
 const { ensureRestDayAllowed } = require('../utils/restDayRules');
@@ -281,10 +282,26 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       await ensureRestDayAllowed(effectivePosition, employeePayload.defaultRestDay);
     }
 
+    // 'defaultRestDay' in employeePayload (rather than a truthy check) also
+    // catches deliberately clearing it back to none — cleanEmployeePayload
+    // already strips the key entirely when the field wasn't touched at all,
+    // so its presence here always means an intentional value/no-value.
+    const restDayChanged = 'defaultRestDay' in employeePayload && employeePayload.defaultRestDay !== (current.defaultRestDay ?? null);
+
     const item = await Employee.findByIdAndUpdate(req.params.id, employeePayload, {
       new: true,
       runValidators: true,
     }).populate(POPULATE);
+
+    if (restDayChanged) {
+      await RestDayHistory.create({
+        employee: current._id,
+        previousRestDay: current.defaultRestDay ?? null,
+        newRestDay: employeePayload.defaultRestDay,
+        changedBy: req.user.employeeId ? req.user.employeeId._id : undefined,
+        changedByEmail: req.user.email,
+      });
+    }
 
     if (['inactive', 'resigned', 'suspended'].includes(item.status)) {
       await User.updateMany({ employeeId: item._id }, { isActive: false });

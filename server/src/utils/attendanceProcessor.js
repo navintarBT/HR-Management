@@ -4,6 +4,7 @@ const Shift = require('../models/Shift');
 const Employee = require('../models/Employee');
 
 const GRACE_MINUTES = 15;
+const SEVERE_LATE_MINUTES = 60;
 const STANDARD_WORK_HOURS = 8;
 // How long after the expected shift end a scan-out still counts as part of
 // that same overnight shift (covers reasonable OT/cleanup) before it's
@@ -70,6 +71,7 @@ async function resolveExpectedShift(employeeId, dateKey) {
       endMinute,
       graceMinutes: shift.category?.graceMinutes ?? GRACE_MINUTES,
       autoAbsentMinutes: shift.category?.autoAbsentMinutes ?? null,
+      severeLateMinutes: shift.category?.severeLateMinutes ?? SEVERE_LATE_MINUTES,
     };
   }
 
@@ -85,12 +87,13 @@ async function resolveExpectedShift(employeeId, dateKey) {
       endMinute,
       graceMinutes: category.graceMinutes ?? GRACE_MINUTES,
       autoAbsentMinutes: category.autoAbsentMinutes ?? null,
+      severeLateMinutes: category.severeLateMinutes ?? SEVERE_LATE_MINUTES,
     };
   }
   if (employee?.defaultShiftStart && employee?.defaultShiftEnd) {
     const [startHour, startMinute] = employee.defaultShiftStart.split(':').map(Number);
     const [endHour, endMinute] = employee.defaultShiftEnd.split(':').map(Number);
-    return { startHour, startMinute, endHour, endMinute, graceMinutes: GRACE_MINUTES, autoAbsentMinutes: null };
+    return { startHour, startMinute, endHour, endMinute, graceMinutes: GRACE_MINUTES, autoAbsentMinutes: null, severeLateMinutes: SEVERE_LATE_MINUTES };
   }
 
   return null;
@@ -163,8 +166,12 @@ async function recomputeDay(employeeId, dateKey) {
   let earlyLeaveMinutes = 0;
   let autoAbsentMinutes = null;
   if (expected) {
+    // Measured from the exact shift start — graceMinutes no longer shifts
+    // this threshold (and so no longer keeps a slightly-late scan classified
+    // as "present"); it now only sizes the "ຊ້າ" vs "ຊ້າເກີນ X ນາທີ" label
+    // tiers on the attendance-log UI, against the raw minutes here.
     const standardStart = new Date(`${dateKey}T00:00:00`);
-    standardStart.setHours(expected.startHour, expected.startMinute + expected.graceMinutes, 0, 0);
+    standardStart.setHours(expected.startHour, expected.startMinute, 0, 0);
     lateMinutes = firstIn > standardStart ? Math.round((firstIn - standardStart) / 60000) : 0;
     autoAbsentMinutes = expected.autoAbsentMinutes;
 
@@ -192,7 +199,20 @@ async function recomputeDay(employeeId, dateKey) {
 
   return AttendanceDaily.findOneAndUpdate(
     { employee: employeeId, date: dateKey },
-    { employee: employeeId, date: dateKey, firstIn, lastOut, workedHours, expectedHours, lateMinutes, earlyLeaveMinutes, otHours, status },
+    {
+      employee: employeeId,
+      date: dateKey,
+      firstIn,
+      lastOut,
+      workedHours,
+      expectedHours,
+      lateMinutes,
+      graceMinutes: expected?.graceMinutes ?? null,
+      severeLateMinutes: expected?.severeLateMinutes ?? null,
+      earlyLeaveMinutes,
+      otHours,
+      status,
+    },
     { upsert: true, new: true }
   );
 }
@@ -293,6 +313,9 @@ module.exports = {
   toDateKey,
   dayRange,
   resolveShiftDateKey,
+  resolveExpectedShift,
+  resolveShiftWindow,
+  isOvernightShift,
   recomputeDay,
   markAbsent,
   markLeave,

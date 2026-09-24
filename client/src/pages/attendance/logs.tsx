@@ -7,6 +7,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Department, Employee, Identity, Position, Shift } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL, axiosInstance } from '../../providers/axios';
+import { lateLabel } from '../../utils/lateSeverity';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -21,7 +22,7 @@ const { RangePicker } = DatePicker;
 const CELL_STYLE: Record<string, { bg: string; text: string; label: string }> = {
   late: { bg: '#fff7e6', text: '#d46b08', label: 'ຊ້າ' },
   incomplete: { bg: '#f9f0ff', text: '#722ed1', label: 'ສະແກນຄັ້ງດຽວ' },
-  absent: { bg: '#fff1f0', text: '#cf1322', label: 'ຂາດງານ' },
+  absent: { bg: '#fff1f0', text: '#cf1322', label: 'ຂາດວຽກ' },
   leave: { bg: '#e6f4ff', text: '#1677ff', label: 'ລາ' },
   rest: { bg: '#f6ffed', text: '#389e0d', label: 'ພັກ' },
   substituted: { bg: '#e6fffb', text: '#08979c', label: 'ມາແທນ' },
@@ -276,6 +277,33 @@ const AttendanceSummaryGrid: React.FC = () => {
               onChange={(v: any) => setPositionFilter(v)}
             />
           </Space>
+          <Space wrap size={[14, 6]}>
+            {[
+              { color: '#8c8c8c', outline: true, label: 'ມາເຮັດວຽກ (ບໍ່ມີສີ — ໂຊວ໌ແຕ່ເວລາສະແກນ)' },
+              { color: CELL_STYLE.late.text, label: 'ຊ້າ / ຊ້າເກີນ X ນາທີ / ຊ້າເກີນ Y (3 ລະດັບ, ສີດຽວກັນ)' },
+              { color: CELL_STYLE.incomplete.text, label: 'ສະແກນຄັ້ງດຽວ' },
+              { color: CELL_STYLE.absent.text, label: 'ຂາດວຽກ' },
+              { color: CELL_STYLE.leave.text, label: 'ລາ' },
+              { color: CELL_STYLE.rest.text, label: 'ພັກ / ຮ້ານປິດ' },
+              { color: CELL_STYLE.substituted.text, label: 'ມາແທນ' },
+            ].map((item) => (
+              <Space key={item.label} size={6}>
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 14,
+                    height: 14,
+                    borderRadius: 3,
+                    background: item.outline ? 'transparent' : item.color,
+                    border: item.outline ? `2px solid ${item.color}` : 'none',
+                  }}
+                />
+                <Typography.Text strong style={{ fontSize: 13, color: item.color }}>
+                  {item.label}
+                </Typography.Text>
+              </Space>
+            ))}
+          </Space>
         </Space>
       </div>
 
@@ -334,9 +362,10 @@ const AttendanceSummaryGrid: React.FC = () => {
                 const style = row ? CELL_STYLE[row.status] : undefined;
                 if (style) {
                   const time = timeText(row!);
+                  const label = row!.status === 'late' ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes) : style.label;
                   return (
                     <div style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}>
-                      <div style={{ fontSize: 11, fontWeight: 500 }}>{style.label}</div>
+                      <div style={{ fontSize: 11, fontWeight: 500 }}>{label}</div>
                       {time && <div style={{ fontSize: 11 }}>{time}</div>}
                     </div>
                   );

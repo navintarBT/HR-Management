@@ -1,6 +1,7 @@
 const express = require('express');
 const Shift = require('../models/Shift');
 const Employee = require('../models/Employee');
+const Leave = require('../models/Leave');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { ensureRestDayAllowed } = require('../utils/restDayRules');
 
@@ -16,6 +17,16 @@ function timesOverlap(startA, endA, startB, endB) {
 // from a position's restricted-rest-days rule.
 async function ensurePersonalRestDayAllowed(employeeId, date, holidayId) {
   if (holidayId) return;
+  // Already on approved leave that day — this isn't a discretionary swap
+  // away from a day the position needs staffed, since they're not coming in
+  // either way, so the restriction doesn't apply.
+  const onLeave = await Leave.exists({
+    employee: employeeId,
+    status: 'approved',
+    startDate: { $lte: new Date(`${date}T23:59:59.999`) },
+    endDate: { $gte: new Date(`${date}T00:00:00.000`) },
+  });
+  if (onLeave) return;
   const employee = await Employee.findById(employeeId, 'position');
   if (!employee?.position) return;
   const dayOfWeek = new Date(`${date}T00:00:00`).getDay();

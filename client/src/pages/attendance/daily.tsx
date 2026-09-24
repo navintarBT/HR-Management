@@ -4,8 +4,9 @@ import { useList } from '@refinedev/core';
 import { Table, Select, Button, Space, Typography, Input, DatePicker } from 'antd';
 import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee } from '../../types';
+import type { AttendanceDaily, Employee, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
+import { lateTier, formatMinutes } from '../../utils/lateSeverity';
 
 const { RangePicker } = DatePicker;
 
@@ -21,6 +22,7 @@ const BADGE_STYLE = {
   late: { bg: '#fff7e6', text: '#d46b08' },
   incomplete: { bg: '#f9f0ff', text: '#722ed1' },
   absent: { bg: '#fff1f0', text: '#cf1322' },
+  substituted: { bg: '#e6fffb', text: '#08979c' },
 };
 
 function Badge({ value, unit, kind }: { value: number; unit: string; kind: keyof typeof BADGE_STYLE }) {
@@ -92,9 +94,26 @@ export const AttendanceDailyPage: React.FC = () => {
       { field: 'date', operator: 'gte', value: rangeStartKey },
       { field: 'date', operator: 'lte', value: rangeEndKey },
     ],
-    pagination: { pageSize: 5000 },
+    // 192 active employees × 31 days is already 5952 — past the old 5000
+    // cap, which Refine's simple-rest provider truncates silently (no error,
+    // just missing rows) rather than paginating further. Comfortable
+    // headroom past that ceiling for a while yet.
+    pagination: { pageSize: 20000 },
   });
   const dailyRows = dailyData?.data ?? [];
+
+  // Late policy is now locked to one shared value across every shift
+  // category (see ໝວດໝູ່ກະ — only the "apply to every category" bulk tool can
+  // change it), so any one category's numbers are the real, current
+  // system-wide grace/severe boundary — used to spell out the actual minute
+  // counts in these column headers instead of a generic "X"/"1 ຊົ່ວໂມງ".
+  const { data: categoriesData } = useList<ShiftCategory>({
+    resource: 'shift-categories',
+    pagination: { pageSize: 1 },
+  });
+  const latePolicy = categoriesData?.data?.[0];
+  const graceLabel = latePolicy ? formatMinutes(latePolicy.graceMinutes) : 'X ນາທີ';
+  const severeLabel = latePolicy?.severeLateMinutes != null ? formatMinutes(latePolicy.severeLateMinutes) : 'X';
 
   const summaryByEmployee = useMemo(() => {
     const map: Record<
@@ -105,8 +124,11 @@ export const AttendanceDailyPage: React.FC = () => {
         lateMinutes: number;
         earlyLeaveMinutes: number;
         lateDays: number;
+        moderateLateDays: number;
+        severeLateDays: number;
         noScanOutDays: number;
         absentDays: number;
+        substitutedDays: number;
       }
     > = {};
     for (const d of dailyRows) {
@@ -114,15 +136,34 @@ export const AttendanceDailyPage: React.FC = () => {
       if (!d.employee) continue;
       const empId = typeof d.employee === 'object' ? d.employee._id : d.employee;
       if (!map[empId])
-        map[empId] = { workedHours: 0, expectedHours: 0, lateMinutes: 0, earlyLeaveMinutes: 0, lateDays: 0, noScanOutDays: 0, absentDays: 0 };
+        map[empId] = {
+          workedHours: 0,
+          expectedHours: 0,
+          lateMinutes: 0,
+          earlyLeaveMinutes: 0,
+          lateDays: 0,
+          moderateLateDays: 0,
+          severeLateDays: 0,
+          noScanOutDays: 0,
+          absentDays: 0,
+          substitutedDays: 0,
+        };
       map[empId].workedHours += d.workedHours || 0;
       map[empId].expectedHours += d.expectedHours || 0;
       map[empId].lateMinutes += d.lateMinutes || 0;
       map[empId].earlyLeaveMinutes += d.earlyLeaveMinutes || 0;
-      if (d.status === 'late') map[empId].lateDays += 1;
+      if (d.status === 'late') {
+        map[empId].lateDays += 1;
+        // Sub-tiers of "late", same boundaries (graceMinutes/severeLateMinutes
+        // as they stood on this specific day) as ປະຫວັດການສະແກນເຂົ້າ-ອອກວຽກ's labels.
+        const tier = lateTier(d.lateMinutes, d.graceMinutes, d.severeLateMinutes);
+        if (tier === 'moderate') map[empId].moderateLateDays += 1;
+        else if (tier === 'severe') map[empId].severeLateDays += 1;
+      }
       // "incomplete" = no scan-out recorded that day (a lone scan-in, or a scan-in with no matching scan-out).
       if (d.status === 'incomplete') map[empId].noScanOutDays += 1;
       if (d.status === 'absent') map[empId].absentDays += 1;
+      if (d.status === 'substituted') map[empId].substitutedDays += 1;
     }
     return map;
   }, [dailyRows]);
@@ -182,8 +223,13 @@ export const AttendanceDailyPage: React.FC = () => {
         scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader }}
       >
-        <Table.Column title="ລະຫັດພະນັກງານ" width={110} dataIndex="employeeCode" />
-        <Table.Column title="ຊື່ພະນັກງານ" width={180} render={(_, emp: Employee) => `${emp.firstName ?? ''} ${emp.lastName ?? ''}`} />
+        <Table.Column title="ລະຫັດ" fixed="left" width={110} dataIndex="employeeCode" />
+        <Table.Column
+          title="ຊື່ພະນັກງານ"
+          fixed="left"
+          width={180}
+          render={(_, emp: Employee) => `${emp.firstName ?? ''} ${emp.lastName ?? ''}`}
+        />
         <Table.Column
           title="ພະແນກ"
           width={130}
@@ -195,7 +241,7 @@ export const AttendanceDailyPage: React.FC = () => {
           render={(_, emp: Employee) => (typeof emp.position === 'object' ? emp.position?.name : undefined) || '-'}
         />
         <Table.Column
-          title="ຊົ່ວໂມງທີ່ຈ້ອງເຮັດ"
+          title="ຊົ່ວໂມງທີ່ຕ້ອງເຮັດ"
           width={140}
           render={(_, emp: Employee) => `${(summaryByEmployee[emp._id]?.expectedHours ?? 0).toFixed(1)} ຊມ.`}
         />
@@ -210,12 +256,27 @@ export const AttendanceDailyPage: React.FC = () => {
           render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.lateMinutes ?? 0} unit="ນາທີ" kind="late" />}
         />
         <Table.Column
-          title="ມາຊ້າ (ຈຳນວນມື້)"
+          title="ມາຊ້າ (ມື້)"
           width={130}
           render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.lateDays ?? 0} unit="ມື້" kind="late" />}
         />
         <Table.Column
-          title="ກັບກ່ອນ (ນາທີ)"
+          title={`ຊ້າເກີນ ${graceLabel}`}
+          width={160}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.moderateLateDays ?? 0} unit="ຄັ້ງ" kind="late" />}
+        />
+        <Table.Column
+          title={`ຊ້າເກີນ ${severeLabel}`}
+          width={170}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.severeLateDays ?? 0} unit="ຄັ້ງ" kind="late" />}
+        />
+        <Table.Column
+          title="ມາແທນ(ຄັ້ງ)"
+          width={140}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.substitutedDays ?? 0} unit="ຄັ້ງ" kind="substituted" />}
+        />
+        <Table.Column
+          title="ກັບກ່ອນ(ນາທີ)"
           width={130}
           render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.earlyLeaveMinutes ?? 0} unit="ນາທີ" kind="late" />}
         />

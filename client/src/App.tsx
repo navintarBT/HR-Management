@@ -43,7 +43,8 @@ import { DashboardPage } from './pages/dashboard';
 import { EmployeeList, EmployeeCreate, EmployeeEdit, EmployeeShow } from './pages/employees';
 import { OrganizationPage } from './pages/organization';
 import { AttendanceOverviewPage, AttendanceLogsPage, AttendanceDailyPage } from './pages/attendance';
-import { LeaveListPage } from './pages/leaves';
+import { LeaveSummaryPage } from './pages/leaves/summary';
+import { LeaveManagePage } from './pages/leaves/manage';
 import { OvertimeSummaryPage } from './pages/overtime/summary';
 import { OvertimeManagePage } from './pages/overtime/manage';
 import { SchedulePage } from './pages/schedule';
@@ -53,6 +54,7 @@ import { BulkShiftEditPage } from './pages/schedule/bulk';
 import { ShiftCategoryListPage } from './pages/schedule/categories';
 import { HolidayListPage } from './pages/schedule/holidays';
 import { SubstituteRulePage } from './pages/schedule/substituteRule';
+import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
@@ -117,6 +119,16 @@ function RootLayout() {
             meta: { label: 'ການລາ', icon: <CalendarOutlined /> },
           },
           {
+            name: 'leaves-summary',
+            list: '/leaves/summary',
+            meta: { label: 'ຕາຕະລາງສະຫຼຸບ', icon: <BarChartOutlined />, parent: 'leaves' },
+          },
+          {
+            name: 'leaves-manage',
+            list: '/leaves/manage',
+            meta: { label: 'ລາຍການຄໍາຂໍລາ', icon: <EditOutlined />, parent: 'leaves' },
+          },
+          {
             name: 'overtime',
             list: '/overtime',
             meta: { label: 'OT', icon: <ClockCircleOutlined /> },
@@ -171,6 +183,11 @@ function RootLayout() {
             list: '/schedule/substitute-rule',
             meta: { label: 'ຕັ້ງຄ່າກົດຕຳແໜ່ງ', icon: <UserSwitchOutlined />, parent: 'schedule' },
           },
+          {
+            name: 'rest-day-history',
+            list: '/schedule/rest-day-history',
+            meta: { label: 'ປະຫວັດການປ່ຽນວັນພັກປະຈຳ', icon: <HistoryOutlined />, parent: 'schedule' },
+          },
         ]}
         options={{
           syncWithLocation: true,
@@ -219,7 +236,11 @@ export const appRoutes = (
         <Route path="logs" element={<AttendanceLogsPage />} />
       </Route>
 
-      <Route path="/leaves" element={<LeaveListPage />} />
+      <Route path="/leaves">
+        <Route index element={<Navigate to="/leaves/summary" replace />} />
+        <Route path="summary" element={<LeaveSummaryPage />} />
+        <Route path="manage" element={<LeaveManagePage />} />
+      </Route>
       <Route path="/medicine-expenses" element={<MedicineExpenseListPage />} />
       <Route path="/overtime">
         <Route index element={<Navigate to="/overtime/summary" replace />} />
@@ -235,6 +256,7 @@ export const appRoutes = (
         <Route path="categories" element={<ShiftCategoryListPage />} />
         <Route path="holidays" element={<HolidayListPage />} />
         <Route path="substitute-rule" element={<SubstituteRulePage />} />
+        <Route path="rest-day-history" element={<RestDayHistoryPage />} />
       </Route>
 
       <Route path="*" element={<ErrorComponent />} />

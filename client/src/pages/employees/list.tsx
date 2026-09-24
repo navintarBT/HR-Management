@@ -207,7 +207,7 @@ export const EmployeeList: React.FC = () => {
               { label: 'ກຳລັງເຮັດວຽກ', value: 'active' },
               { label: 'ບໍ່ໃຊ້ງານ', value: 'inactive' },
               { label: 'ລາອອກ', value: 'resigned' },
-              { label: 'ພັກງານ', value: 'suspended' },
+              { label: 'ພັກວຽກ', value: 'suspended' },
             ]}
             onChange={(v: any) => {
               setStatusFilter(v);

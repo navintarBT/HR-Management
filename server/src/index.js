@@ -22,6 +22,7 @@ const shiftCategoryRoutes = require('./routes/shiftCategories');
 const holidayRoutes = require('./routes/holidays');
 const medicineExpenseRoutes = require('./routes/medicineExpenses');
 const dashboardRoutes = require('./routes/dashboard');
+const restDayHistoryRoutes = require('./routes/restDayHistory');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
 
@@ -58,6 +59,7 @@ app.use('/api/shift-categories', shiftCategoryRoutes);
 app.use('/api/holidays', holidayRoutes);
 app.use('/api/medicine-expenses', medicineExpenseRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/rest-day-history', restDayHistoryRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
