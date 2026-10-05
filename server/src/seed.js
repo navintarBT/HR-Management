@@ -64,7 +64,26 @@ const SHIFT_SLOTS = [
 const SHIFT_WINDOW_PAST_DAYS = 14;
 const SHIFT_WINDOW_FUTURE_DAYS = 7;
 
+// This script deletes every collection before reseeding — a single accidental run
+// against a live database would destroy real employee/attendance data. Refuses to
+// run against anything that doesn't look like a local dev database. Bypass only
+// when you are certain via: node src/seed.js --force
+function assertSafeToSeed() {
+  if (process.argv.includes('--force')) return;
+  const uri = process.env.MONGO_URI || '';
+  const looksLocal = /^mongodb:\/\/(127\.0\.0\.1|localhost)[:/]/.test(uri);
+  if (process.env.NODE_ENV === 'production' || !looksLocal) {
+    console.error(
+      '[seed] refusing to run: this does not look like a local dev database ' +
+        `(NODE_ENV=${process.env.NODE_ENV || '(unset)'}, MONGO_URI=${uri.replace(/:\/\/[^@]+@/, '://<redacted>@') || '(unset)'}).\n` +
+        '[seed] this script deletes every collection before reseeding. If you are SURE, re-run with --force.'
+    );
+    process.exit(1);
+  }
+}
+
 async function run() {
+  assertSafeToSeed();
   await connectDB();
 
   console.log('[seed] clearing existing collections...');
