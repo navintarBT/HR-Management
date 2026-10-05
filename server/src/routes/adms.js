@@ -113,8 +113,12 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
 
         // Upsert on (device, pin, timestamp) so a re-sent/duplicate punch (the
         // terminal retries if it never saw our "OK") doesn't create a second
-        // log row or double-count worked hours.
-        const before = await AttendanceLog.findOneAndUpdate(
+        // log row or double-count worked hours. Checked for existence first
+        // (rather than inspecting the upsert's result metadata, whose shape
+        // isn't stable across mongoose/driver versions) purely so the log
+        // line below can distinguish a genuinely new punch from a resend.
+        const existed = await AttendanceLog.exists({ deviceId: SN, deviceUserId: row.pin, timestamp });
+        await AttendanceLog.findOneAndUpdate(
           { deviceId: SN, deviceUserId: row.pin, timestamp },
           {
             employee: employee ? employee._id : undefined,
@@ -124,9 +128,9 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
             type,
             raw: { line: row.raw },
           },
-          { upsert: true, setDefaultsOnInsert: true, rawResult: true }
+          { upsert: true, setDefaultsOnInsert: true }
         );
-        if (!before.lastErrorObject?.updatedExisting) stored += 1;
+        if (!existed) stored += 1;
 
         if (employee) affected.set(`${employee._id}|${await resolveShiftDateKey(employee._id, timestamp)}`, true);
       }
