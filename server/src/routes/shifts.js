@@ -7,9 +7,14 @@ const { resolveRestDay, nearestDateForWeekday } = require('../utils/restDayRules
 
 const router = express.Router();
 
+// employee/coveringFor both reference a full Employee document (salary, phone,
+// email included) — scoped to display fields so a shift's own API response
+// (readable by any authenticated 'employee', not just admin/manager) never
+// exposes a covered-for colleague's pay or contact details.
+const SAFE_PERSON_FIELDS = 'firstName lastName employeeCode photoUrl department position';
 const SHIFT_POPULATE = [
-  { path: 'employee', populate: 'department position' },
-  { path: 'coveringFor', populate: 'department position' },
+  { path: 'employee', select: SAFE_PERSON_FIELDS, populate: 'department position' },
+  { path: 'coveringFor', select: SAFE_PERSON_FIELDS, populate: 'department position' },
   'position',
   'category',
   'holiday',
