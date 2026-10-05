@@ -1,119 +1,151 @@
 const express = require('express');
 const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
-const { recomputeDay, toDateKey, inferType } = require('../utils/attendanceProcessor');
+const Device = require('../models/Device');
+const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attendanceProcessor');
 
-// Real ZKTeco "ADMS" push protocol (the mode most current terminals — uFace, SpeedFace,
-// iFace, MB-series — support out of the box). The device is configured with this
-// server's URL and does the polling itself; nothing here is invoked by our own UI.
+// ZKTeco's "push" (ADMS) protocol. Real terminals are configured with this
+// server's URL and hit these fixed paths on their own — no Authorization
+// header (the device can't be given a JWT), so this router is intentionally
+// unauthenticated. Bodies are tab-separated plaintext, not JSON.
+//   GET  /iclock/cdata?SN=<serial>&options=all   device handshake / config pull
+//   POST /iclock/cdata?SN=<serial>&table=ATTLOG  attendance punches (body: one per line)
+//   GET  /iclock/getrequest?SN=<serial>           device polls for pending commands
 //
-// Why this matters for "scans go missing when the network drops": these terminals keep
-// every punch in local flash until THIS endpoint acknowledges it with a plain-text "OK".
-// If the network is down, or this endpoint errors, or it replies with anything other
-// than "OK", the device keeps the record queued and retries on its next poll — so the
-// device already does its part. What was missing is that this endpoint never actually
-// stored anything (it only logged to the console and always replied "OK"), so every
-// punch was acknowledged and discarded whether or not the network had dropped.
+// Why this matters for "scans go missing when the network drops": the terminal keeps
+// every punch in local flash until this endpoint acknowledges it with a plain-text
+// "OK". If the network is down, or this endpoint errors, or it replies with anything
+// other than "OK", the device keeps the record queued and retries on its next poll —
+// so a device that catches up after an outage re-sends its whole unacknowledged
+// backlog in one batch. Ingestion below is upsert-based (keyed on device + PIN +
+// timestamp) so a resend — or a firmware retry that never saw our "OK" — never
+// creates a duplicate punch.
 //
-// A device catching up after an outage re-sends its whole unacknowledged backlog in one
-// batch, and firmware bugs/retries can occasionally resend a record we already have —
-// ingestion below is upsert-based (keyed on device + device-user + timestamp) so that
-// never creates a duplicate punch.
-//
-// NOTE: this has been implemented against the widely-documented ADMS wire format but not
-// yet against a physical terminal. Before relying on it in production, run one real
-// device against it (point its server URL here) and confirm its punches show up.
-
+// NOTE: implemented against the documented ADMS wire format but not yet against a
+// physical terminal — run one real device against it before relying on this broadly.
 const router = express.Router();
 
-function respondOk(res) {
-  res.type('text/plain').send('OK');
+async function findOrTouchDevice(serialNumber) {
+  const device = await Device.findOneAndUpdate(
+    { serialNumber },
+    { $setOnInsert: { attStamp: 0, opStamp: 0 }, $set: { lastSeenAt: new Date() } },
+    { upsert: true, new: true }
+  );
+  return device;
 }
 
-// Device handshake / periodic check-in. Real firmware expects a config block back, not
-// just "OK" — these are conservative defaults (poll every minute, upload attendance
-// logs, no encryption) that make the device proceed to POST its data rather than stall.
-router.get('/iclock/cdata', (req, res) => {
-  const { SN } = req.query;
-  console.log(`[adms] handshake from SN=${SN ?? 'unknown'}`);
-  res.type('text/plain').send(
-    ['GET OPTION FROM: ' + (SN ?? ''), 'Stamp=9999', 'OpStamp=9999', 'ErrorDelay=30', 'Delay=30', 'TransFlag=1111000000', 'Realtime=1', 'Encrypt=0'].join(
-      '\r\n'
-    )
-  );
+// Mirrors routes/attendanceActions.js's heuristic so both ingestion paths
+// (simulator + real terminal) agree on in/out — device Status codes aren't
+// reliable enough across firmware/models to trust directly. Looks back to the
+// resolved shift-day's start (not just today's midnight) so an overnight
+// shift's early-morning punch still alternates against last night's punch.
+async function inferType(employeeId, timestamp) {
+  const shiftDateKey = await resolveShiftDateKey(employeeId, timestamp);
+  const { start } = dayRange(shiftDateKey);
+  const last = await AttendanceLog.findOne({
+    employee: employeeId,
+    timestamp: { $gte: start, $lt: timestamp },
+  }).sort('-timestamp');
+  return last && last.type === 'in' ? 'out' : 'in';
+}
+
+// Each line: "PIN\tDateTime\tStatus\tVerifyType\tWorkCode\t..." — one punch
+// per line. DateTime is "YYYY-MM-DD HH:mm:ss" in the terminal's local time.
+function parseAttLog(body) {
+  return (body || '')
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const fields = line.split('\t');
+      return { pin: (fields[0] || '').trim(), dateTime: (fields[1] || '').trim(), raw: line };
+    })
+    .filter((row) => row.pin && row.dateTime);
+}
+
+router.get('/iclock/cdata', async (req, res, next) => {
+  try {
+    const { SN, options } = req.query;
+    if (!SN) return res.type('text/plain').send('ERROR');
+    const device = await findOrTouchDevice(SN);
+
+    if (options === 'all') {
+      const lines = [
+        `GET OPTION FROM: ${SN}`,
+        `Stamp=${device.attStamp}`,
+        `OpStamp=${device.opStamp}`,
+        'ErrorDelay=60',
+        'Delay=30',
+        'TransTimes=00:00;14:05',
+        'TransInterval=1',
+        'TransFlag=TransData AttLog OpLog AttPhoto',
+        'Realtime=1',
+        'Encrypt=0',
+      ];
+      return res.type('text/plain').send(lines.join('\n'));
+    }
+
+    res.type('text/plain').send('OK');
+  } catch (err) {
+    next(err);
+  }
 });
 
-// Parses one ATTLOG line. Column order per the ADMS spec: PIN, timestamp, status,
-// verify-method, work-code, then reserved/firmware-specific fields we don't need.
-function parseAttLogLine(line) {
-  const cols = line.split('\t').map((c) => c.trim());
-  const [pin, dateTime] = cols;
-  if (!pin || !dateTime) return null;
-  const timestamp = new Date(dateTime.replace(' ', 'T'));
-  if (Number.isNaN(timestamp.getTime())) return null;
-  return { pin, timestamp, raw: cols };
-}
-
-router.post('/iclock/cdata', express.text({ type: '*/*', limit: '2mb' }), async (req, res, next) => {
-  const { SN, table } = req.query;
-  const deviceId = SN ? String(SN) : 'UNKNOWN-DEVICE';
-
-  // Terminals also push OPERLOG/USERINFO/BIOPHOTO/etc during a full sync — we only
-  // process attendance punches for now, but must still ack everything else with "OK"
-  // or the device will treat it as failed and keep retrying it forever.
-  if (table !== 'ATTLOG') {
-    console.log(`[adms] ignoring table=${table ?? '(none)'} from SN=${deviceId} (${(req.body || '').length} bytes)`);
-    return respondOk(res);
-  }
-
+router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, next) => {
   try {
-    const lines = (req.body || '').split('\n').map((l) => l.trim()).filter(Boolean);
-    const affected = new Set(); // `${employeeId}|${dateKey}` — recompute each once, not per line
-    let stored = 0;
-    let unmatched = 0;
+    const { SN, table, Stamp } = req.query;
+    if (!SN || !table) return res.type('text/plain').send('ERROR');
+    const device = await findOrTouchDevice(SN);
 
-    for (const line of lines) {
-      const parsed = parseAttLogLine(line);
-      if (!parsed) {
-        console.warn(`[adms] unparsable ATTLOG line from SN=${deviceId}:`, line);
-        continue;
-      }
-      const { pin, timestamp, raw } = parsed;
+    if (table.toUpperCase() === 'ATTLOG') {
+      const rows = parseAttLog(req.body);
+      const affected = new Map();
+      let stored = 0;
+      let unmatched = 0;
 
-      // eslint-disable-next-line no-await-in-loop
-      const employee = await Employee.findOne({ deviceUserId: pin });
-      if (!employee) unmatched += 1;
+      for (const row of rows) {
+        const timestamp = new Date(row.dateTime.replace(' ', 'T'));
+        if (Number.isNaN(timestamp.getTime())) continue;
 
-      // eslint-disable-next-line no-await-in-loop
-      const type = employee ? await inferType(employee._id, timestamp) : 'auto';
+        const employee = await Employee.findOne({ deviceUserId: row.pin });
+        if (!employee) unmatched += 1;
+        const type = employee ? await inferType(employee._id, timestamp) : 'auto';
 
-      try {
-        // Upsert on the natural device key so a re-sent backlog (post-outage, or a
-        // firmware retry that never saw our "OK") never creates a duplicate punch.
-        // eslint-disable-next-line no-await-in-loop
-        const result = await AttendanceLog.updateOne(
-          { deviceId, deviceUserId: pin, timestamp },
-          { $setOnInsert: { employee: employee?._id, deviceId, deviceUserId: pin, timestamp, type, raw } },
-          { upsert: true }
+        // Upsert on (device, pin, timestamp) so a re-sent/duplicate punch (the
+        // terminal retries if it never saw our "OK") doesn't create a second
+        // log row or double-count worked hours.
+        const before = await AttendanceLog.findOneAndUpdate(
+          { deviceId: SN, deviceUserId: row.pin, timestamp },
+          {
+            employee: employee ? employee._id : undefined,
+            deviceUserId: row.pin,
+            deviceId: SN,
+            timestamp,
+            type,
+            raw: { line: row.raw },
+          },
+          { upsert: true, setDefaultsOnInsert: true, rawResult: true }
         );
-        if (result.upsertedCount) stored += 1;
-      } catch (err) {
-        if (err.code !== 11000) throw err; // 11000 = duplicate key, i.e. we already had this exact punch
+        if (!before.lastErrorObject?.updatedExisting) stored += 1;
+
+        if (employee) affected.set(`${employee._id}|${await resolveShiftDateKey(employee._id, timestamp)}`, true);
       }
 
-      if (employee) affected.add(`${employee._id}|${toDateKey(timestamp)}`);
+      for (const key of affected.keys()) {
+        const [employeeId, dateKey] = key.split('|');
+        await recomputeDay(employeeId, dateKey);
+      }
+
+      if (Stamp) {
+        await Device.updateOne({ serialNumber: SN }, { attStamp: Math.max(device.attStamp, Number(Stamp) || 0) });
+      }
+
+      console.log(`[adms] SN=${SN} ATTLOG batch: ${rows.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
+    } else {
+      console.log(`[adms] ignoring table=${table} from SN=${SN} (${(req.body || '').length} bytes)`);
     }
 
-    for (const key of affected) {
-      const [employeeId, dateKey] = key.split('|');
-      // eslint-disable-next-line no-await-in-loop
-      await recomputeDay(employeeId, dateKey);
-    }
-
-    console.log(
-      `[adms] SN=${deviceId} ATTLOG batch: ${lines.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`
-    );
-    respondOk(res);
+    res.type('text/plain').send('OK');
   } catch (err) {
     // Not responding "OK" here is deliberate — that's what makes the device keep this
     // batch queued and retry it later, which is exactly what we want if something went
@@ -122,14 +154,15 @@ router.post('/iclock/cdata', express.text({ type: '*/*', limit: '2mb' }), async 
   }
 });
 
-// Device polls for pending remote commands (reboot, resync users, etc.) — we don't
-// issue any, so always "OK" (empty command queue).
 router.get('/iclock/getrequest', (req, res) => {
-  respondOk(res);
+  // No pending device commands (e.g. "enroll new user") to push right now.
+  res.type('text/plain').send('OK');
 });
 
 // Must be registered after every route above — Express only routes an error to
-// handlers declared later in the same chain.
+// handlers declared later in the same chain. A JSON error body (the app-level
+// default) isn't something the device's plaintext parser expects; replying in
+// its own protocol keeps its retry behavior sane.
 // eslint-disable-next-line no-unused-vars
 router.use((err, req, res, next) => {
   console.error('[adms] ingestion error, device will retry this batch:', err);

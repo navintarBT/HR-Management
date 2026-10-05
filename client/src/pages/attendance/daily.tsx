@@ -1,101 +1,295 @@
-import { List, useTable, useSelect } from '@refinedev/antd';
-import { Table, Form, Select, DatePicker, Button, Space, Typography } from 'antd';
-import { SearchOutlined, ReloadOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
-import type { AttendanceDaily, Employee } from '../../types';
-import { AttendanceStatusTag } from '../../components/StatusTags';
+import { useMemo, useState } from 'react';
+import { List } from '@refinedev/antd';
+import { useList } from '@refinedev/core';
+import { Table, Select, Button, Space, Typography, Input, DatePicker } from 'antd';
+import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import dayjs, { type Dayjs } from 'dayjs';
+import type { AttendanceDaily, Employee, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
+import { lateTier, formatMinutes } from '../../utils/lateSeverity';
 
 const { RangePicker } = DatePicker;
 
+function idOf(value: unknown) {
+  return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
+}
+
+// Same bg/text pairs as the attendance summary grid's CELL_STYLE, so a
+// "late"/"incomplete"/"absent" number reads as the same color everywhere.
+// "earlyLeave" (ກັບກ່ອນ) reuses the "late" look — same severity, opposite end
+// of the shift.
+const BADGE_STYLE = {
+  late: { bg: '#fff7e6', text: '#d46b08' },
+  incomplete: { bg: '#f9f0ff', text: '#722ed1' },
+  absent: { bg: '#fff1f0', text: '#cf1322' },
+  substituted: { bg: '#e6fffb', text: '#08979c' },
+};
+
+function Badge({ value, unit, kind }: { value: number; unit: string; kind: keyof typeof BADGE_STYLE }) {
+  if (value <= 0) return <span style={{ color: '#bfbfbf' }}>-</span>;
+  const style = BADGE_STYLE[kind];
+  return (
+    <span style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 500 }}>
+      {value} {unit}
+    </span>
+  );
+}
+
+// One row per employee (pulled fresh from the current employee list, not from
+// whatever AttendanceDaily rows happen to exist — those can be orphaned if an
+// employee was since deleted), aggregated over a chosen date range.
 export const AttendanceDailyPage: React.FC = () => {
-  const { tableProps, setFilters } = useTable<AttendanceDaily>({
-    resource: 'attendance-daily',
-    pagination: { pageSize: 15 },
-    sorters: { initial: [{ field: 'date', order: 'desc' }] },
-  });
+  const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().startOf('month'), dayjs().endOf('month')]);
+  const rangeStartKey = range[0].format('YYYY-MM-DD');
+  const rangeEndKey = range[1].format('YYYY-MM-DD');
+  const goToMonth = (m: Dayjs) => setRange([m.startOf('month'), m.endOf('month')]);
 
-  const { selectProps: employeeSelect } = useSelect<Employee>({
+  const [search, setSearch] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState<string>();
+  const [positionFilter, setPositionFilter] = useState<string>();
+
+  const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
-    optionLabel: (item) => `${item.firstName} ${item.lastName}`,
-    optionValue: '_id',
-    pagination: { pageSize: 200, mode: 'server' },
+    filters: [{ field: 'status', operator: 'eq', value: 'active' }],
+    pagination: { pageSize: 500 },
+    sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
+  const allEmployees = employeesData?.data ?? [];
 
-  const [form] = Form.useForm();
+  const departmentOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEmployees) {
+      const dept = e.department;
+      if (dept && typeof dept === 'object') map.set(dept._id, dept.name);
+    }
+    return Array.from(map, ([value, label]) => ({ value, label }));
+  }, [allEmployees]);
 
-  const onSearch = (values: any) => {
-    const filters: any[] = [];
-    if (values.employee) filters.push({ field: 'employee', operator: 'eq', value: values.employee });
-    if (values.range?.[0]) filters.push({ field: 'date', operator: 'gte', value: values.range[0].format('YYYY-MM-DD') });
-    if (values.range?.[1]) filters.push({ field: 'date', operator: 'lte', value: values.range[1].format('YYYY-MM-DD') });
-    setFilters(filters, 'replace');
-  };
+  const positionOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEmployees) {
+      const pos = e.position;
+      if (pos && typeof pos === 'object') map.set(pos._id, pos.name);
+    }
+    return Array.from(map, ([value, label]) => ({ value, label }));
+  }, [allEmployees]);
 
-  const onReset = () => {
-    form.resetFields();
-    setFilters([], 'replace');
-  };
+  const employees = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allEmployees.filter((e) => {
+      if (q) {
+        const name = `${e.firstName ?? ''} ${e.lastName ?? ''}`.toLowerCase();
+        const code = (e.employeeCode ?? '').toLowerCase();
+        if (!name.includes(q) && !code.includes(q)) return false;
+      }
+      if (departmentFilter && idOf(e.department) !== departmentFilter) return false;
+      if (positionFilter && idOf(e.position) !== positionFilter) return false;
+      return true;
+    });
+  }, [allEmployees, search, departmentFilter, positionFilter]);
+
+  const { data: dailyData, isLoading: dailyLoading } = useList<AttendanceDaily>({
+    resource: 'attendance-daily',
+    filters: [
+      { field: 'date', operator: 'gte', value: rangeStartKey },
+      { field: 'date', operator: 'lte', value: rangeEndKey },
+    ],
+    // 192 active employees × 31 days is already 5952 — past the old 5000
+    // cap, which Refine's simple-rest provider truncates silently (no error,
+    // just missing rows) rather than paginating further. Comfortable
+    // headroom past that ceiling for a while yet.
+    pagination: { pageSize: 20000 },
+  });
+  const dailyRows = dailyData?.data ?? [];
+
+  // Late policy is now locked to one shared value across every shift
+  // category (see ໝວດໝູ່ກະ — only the "apply to every category" bulk tool can
+  // change it), so any one category's numbers are the real, current
+  // system-wide grace/severe boundary — used to spell out the actual minute
+  // counts in these column headers instead of a generic "X"/"1 ຊົ່ວໂມງ".
+  const { data: categoriesData } = useList<ShiftCategory>({
+    resource: 'shift-categories',
+    pagination: { pageSize: 1 },
+  });
+  const latePolicy = categoriesData?.data?.[0];
+  const graceLabel = latePolicy ? formatMinutes(latePolicy.graceMinutes) : 'X ນາທີ';
+  const severeLabel = latePolicy?.severeLateMinutes != null ? formatMinutes(latePolicy.severeLateMinutes) : 'X';
+
+  const summaryByEmployee = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        workedHours: number;
+        expectedHours: number;
+        lateMinutes: number;
+        earlyLeaveMinutes: number;
+        lateDays: number;
+        moderateLateDays: number;
+        severeLateDays: number;
+        noScanOutDays: number;
+        absentDays: number;
+        substitutedDays: number;
+      }
+    > = {};
+    for (const d of dailyRows) {
+      // A record whose employee was since deleted has nowhere to attribute it to — skip it.
+      if (!d.employee) continue;
+      const empId = typeof d.employee === 'object' ? d.employee._id : d.employee;
+      if (!map[empId])
+        map[empId] = {
+          workedHours: 0,
+          expectedHours: 0,
+          lateMinutes: 0,
+          earlyLeaveMinutes: 0,
+          lateDays: 0,
+          moderateLateDays: 0,
+          severeLateDays: 0,
+          noScanOutDays: 0,
+          absentDays: 0,
+          substitutedDays: 0,
+        };
+      map[empId].workedHours += d.workedHours || 0;
+      map[empId].expectedHours += d.expectedHours || 0;
+      map[empId].lateMinutes += d.lateMinutes || 0;
+      map[empId].earlyLeaveMinutes += d.earlyLeaveMinutes || 0;
+      if (d.status === 'late') {
+        map[empId].lateDays += 1;
+        // Sub-tiers of "late", same boundaries (graceMinutes/severeLateMinutes
+        // as they stood on this specific day) as ປະຫວັດການສະແກນເຂົ້າ-ອອກວຽກ's labels.
+        const tier = lateTier(d.lateMinutes, d.graceMinutes, d.severeLateMinutes);
+        if (tier === 'moderate') map[empId].moderateLateDays += 1;
+        else if (tier === 'severe') map[empId].severeLateDays += 1;
+      }
+      // "incomplete" = no scan-out recorded that day (a lone scan-in, or a scan-in with no matching scan-out).
+      if (d.status === 'incomplete') map[empId].noScanOutDays += 1;
+      if (d.status === 'absent') map[empId].absentDays += 1;
+      if (d.status === 'substituted') map[empId].substitutedDays += 1;
+    }
+    return map;
+  }, [dailyRows]);
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
-    <List title="ບົດລາຍງານການລົງເວລາລາຍວັນ" breadcrumb={false}>
+    <List title="ລາຍງານການສະແກນ" breadcrumb={false}>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
-        <Form form={form} layout="inline" onFinish={onSearch} style={{ rowGap: 8 }}>
-          <Form.Item name="employee">
-            <Select
-              {...employeeSelect}
-              onSearch={undefined}
-              filterOption={(input, option) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase())}
-              placeholder="ເລືອກພະນັກງານ"
-              style={{ width: 220 }}
-              allowClear
-              showSearch
+        <div style={{ marginBottom: 8 }}>
+          <Space wrap>
+            <Button icon={<LeftOutlined />} onClick={() => goToMonth(range[0].subtract(1, 'month'))} />
+            <Button onClick={() => goToMonth(dayjs())}>ເດືອນນີ້</Button>
+            <Button icon={<RightOutlined />} onClick={() => goToMonth(range[0].add(1, 'month'))} />
+            <Typography.Text type="secondary">ຫຼືເລືອກຊ່ວງເອງ:</Typography.Text>
+            <RangePicker
+              value={range}
+              onChange={(v) => v && v[0] && v[1] && setRange([v[0], v[1]])}
+              format="DD/MM/YYYY"
+              allowClear={false}
             />
-          </Form.Item>
-          <Form.Item name="range">
-            <RangePicker format="DD/MM/YYYY" />
-          </Form.Item>
-          <Space>
-            <Button type="primary" icon={<SearchOutlined />} htmlType="submit">
-              ຄົ້ນຫາ
-            </Button>
-            <Button icon={<ReloadOutlined />} onClick={onReset}>
-              ລ້າງຕົວກອງ
-            </Button>
           </Space>
-        </Form>
+        </div>
+        <Space wrap>
+          <Input.Search
+            placeholder="ຄົ້ນຫາລະຫັດ ຫຼື ຊື່ພະນັກງານ"
+            allowClear
+            style={{ width: 220 }}
+            prefix={<SearchOutlined />}
+            onSearch={(v) => setSearch(v)}
+            onChange={(e) => !e.target.value && setSearch('')}
+          />
+          <Select
+            options={departmentOptions}
+            placeholder="ກອງຕາມພະແນກ"
+            allowClear
+            style={{ width: 180 }}
+            value={departmentFilter}
+            onChange={(v) => setDepartmentFilter(v)}
+          />
+          <Select
+            options={positionOptions}
+            placeholder="ກອງຕາມຕຳແໜ່ງ"
+            allowClear
+            style={{ width: 180 }}
+            value={positionFilter}
+            onChange={(v) => setPositionFilter(v)}
+          />
+        </Space>
       </div>
 
-      <Table {...tableProps} rowKey="_id" scroll={{ x: true }} sticky={{ offsetHeader }}>
+      <Table
+        dataSource={employees}
+        rowKey="_id"
+        loading={employeesLoading || dailyLoading}
+        pagination={false}
+        scroll={{ x: 'max-content' }}
+        sticky={{ offsetHeader }}
+      >
+        <Table.Column title="ລະຫັດ" fixed="left" width={110} dataIndex="employeeCode" />
         <Table.Column
-          title="ພະນັກງານ"
-          render={(_, record: AttendanceDaily) =>
-            typeof record.employee === 'object'
-              ? `${(record.employee as Employee).firstName} ${(record.employee as Employee).lastName}`
-              : '-'
-          }
+          title="ຊື່ພະນັກງານ"
+          fixed="left"
+          width={180}
+          render={(_, emp: Employee) => `${emp.firstName ?? ''} ${emp.lastName ?? ''}`}
         />
-        <Table.Column title="ວັນທີ" dataIndex="date" render={(v) => dayjs(v).format('DD/MM/YYYY')} />
-        <Table.Column title="ເຂົ້າວຽກ" dataIndex="firstIn" render={(v) => (v ? dayjs(v).format('HH:mm') : '-')} />
-        <Table.Column title="ອອກວຽກ" dataIndex="lastOut" render={(v) => (v ? dayjs(v).format('HH:mm') : '-')} />
         <Table.Column
-          title="ຊົ່ວໂມງເຮັດວຽກ"
-          dataIndex="workedHours"
-          render={(v) => <Typography.Text>{v?.toFixed(1)} ຊມ.</Typography.Text>}
+          title="ພະແນກ"
+          width={130}
+          render={(_, emp: Employee) => (typeof emp.department === 'object' ? emp.department?.name : undefined) || '-'}
+        />
+        <Table.Column
+          title="ຕຳແໜ່ງ"
+          width={150}
+          render={(_, emp: Employee) => (typeof emp.position === 'object' ? emp.position?.name : undefined) || '-'}
+        />
+        <Table.Column
+          title="ຊົ່ວໂມງທີ່ຕ້ອງເຮັດ"
+          width={140}
+          render={(_, emp: Employee) => `${(summaryByEmployee[emp._id]?.expectedHours ?? 0).toFixed(1)} ຊມ.`}
+        />
+        <Table.Column
+          title="ຊົ່ວໂມງທີ່ເຮັດແທ້"
+          width={130}
+          render={(_, emp: Employee) => `${(summaryByEmployee[emp._id]?.workedHours ?? 0).toFixed(1)} ຊມ.`}
         />
         <Table.Column
           title="ມາຊ້າ (ນາທີ)"
-          dataIndex="lateMinutes"
-          render={(v) => (v > 0 ? <Typography.Text type="warning">{v} ນາທີ</Typography.Text> : '-')}
+          width={120}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.lateMinutes ?? 0} unit="ນາທີ" kind="late" />}
         />
         <Table.Column
-          title="OT (ຊມ.)"
-          dataIndex="otHours"
-          render={(v) => (v > 0 ? <Typography.Text type="success">{v.toFixed(1)} ຊມ.</Typography.Text> : '-')}
+          title="ມາຊ້າ (ມື້)"
+          width={130}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.lateDays ?? 0} unit="ມື້" kind="late" />}
         />
-        <Table.Column title="ສະຖານະ" dataIndex="status" render={(v) => <AttendanceStatusTag status={v} />} />
+        <Table.Column
+          title={`ຊ້າເກີນ ${graceLabel}`}
+          width={160}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.moderateLateDays ?? 0} unit="ຄັ້ງ" kind="late" />}
+        />
+        <Table.Column
+          title={`ຊ້າເກີນ ${severeLabel}`}
+          width={170}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.severeLateDays ?? 0} unit="ຄັ້ງ" kind="late" />}
+        />
+        <Table.Column
+          title="ມາແທນ(ຄັ້ງ)"
+          width={140}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.substitutedDays ?? 0} unit="ຄັ້ງ" kind="substituted" />}
+        />
+        <Table.Column
+          title="ກັບກ່ອນ(ນາທີ)"
+          width={130}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.earlyLeaveMinutes ?? 0} unit="ນາທີ" kind="late" />}
+        />
+        <Table.Column
+          title="ສະແກນຄັ້ງດຽວ"
+          width={150}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.noScanOutDays ?? 0} unit="ຄັ້ງ" kind="incomplete" />}
+        />
+        <Table.Column
+          title="ມື້ຂາດວຽກ"
+          width={110}
+          render={(_, emp: Employee) => <Badge value={summaryByEmployee[emp._id]?.absentDays ?? 0} unit="ວັນ" kind="absent" />}
+        />
       </Table>
     </List>
   );

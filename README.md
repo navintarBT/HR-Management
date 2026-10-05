@@ -7,7 +7,7 @@
 
 - **Frontend:** React + Vite + [Refine](https://refine.dev) (`@refinedev/core`, `@refinedev/antd`) + Ant Design
 - **Backend:** Node.js + Express + Mongoose
-- **Database:** MongoDB (ແລ່ນຜ່ານ docker-compose)
+- **Database:** MongoDB (MongoDB Atlas)
 - **Auth:** JWT + role-based (`admin`, `manager`, `employee`)
 
 ## ໂຄງສ້າງໂປຣເຈັກ
@@ -15,22 +15,20 @@
 ```
 /server              Express API + Mongoose models + seed script
 /client              React + Vite + Refine + Ant Design
-/docker-compose.yml  MongoDB
 ```
 
 ## ວິທີແລ່ນ
 
-### 1. ເລີ່ມ MongoDB
+### 1. ຕັ້ງຄ່າ MongoDB Atlas
 
-```bash
-docker compose up -d
-```
+ສ້າງ cluster ໃນ [MongoDB Atlas](https://www.mongodb.com/atlas) (ຫຼືໃຊ້ cluster ທີ່ມີຢູ່ແລ້ວ), ເພີ່ມ IP ຂອງເຄື່ອງໃນ Network Access,
+ແລ້ວເອົາ connection string ມາໃສ່ `MONGO_URI` ໃນ `server/.env` (ຮູບແບບຢູ່ໃນ `server/.env.example`)
 
 ### 2. ຕິດຕັ້ງ ແລະ ແລ່ນ backend
 
 ```bash
 cd server
-cp .env.example .env
+cp .env.example .env   # ແລ້ວແກ້ MONGO_URI ໃຫ້ເປັນ Atlas connection string ຂອງທ່ານ
 npm install
 npm run seed   # ລ້າງຂໍ້ມູນເກົ່າແລ້ວສ້າງຂໍ້ມູນຕົວຢ່າງທັງໝົດ
 npm run dev    # http://localhost:4000
@@ -76,20 +74,20 @@ npm run dev    # http://localhost:5173
 5. **ການລາ**: ຂໍລາ, ອະນຸມັດ/ປະຕິເສດ (manager/admin), ສະແດງສະຖານະດ້ວຍ Tag ສີ
 6. **ແດຊບອດ**: ສະຫຼຸບຍອດມື້ນີ້ + ກຣາບແນວໂນ້ມຍ້ອນຫຼັງ 14 ວັນ (ສະແດງທັນທີຫຼັງ login)
 
-## ການເຊື່ອມຕໍ່ເຄື່ອງສະແກນແທ້ (ADMS)
+## ການເຊື່ອມຕໍ່ເຄື່ອງສະແກນແທ້ (ZKTeco ADMS)
 
 ເຄື່ອງສະແກນລາຍນິ້ວມື/ບັດ ຍີ່ຫໍ້ ZKTeco ສ່ວນຫຼາຍລົມກັນດ້ວຍໂປຣໂຕຄອນ **ADMS**
 (HTTP ແບບຂໍ້ຄວາມ tab-separated ທີ່ path `/iclock/cdata`, ບໍ່ແມ່ນ JSON) ເຊິ່ງແຕກຕ່າງຈາກ
-endpoint `POST /api/attendance/push` (JSON) ທີ່ໃຊ້ໂດຍປຸ່ມຈໍາລອງການສະແກນ
+endpoint `POST /api/attendance/push` (ໃຊ້ໂດຍປຸ່ມ "ຈໍາລອງການສະແກນ" ໃນ UI)
 
-ໄຟລ໌ [`server/src/routes/adms.js`](server/src/routes/adms.js) ຮັບ-ບັນທຶກຂໍ້ມູນຈິງແລ້ວ
-(parse ATTLOG, ຈັບຄູ່ deviceUserId → employee, upsert ກັນຂໍ້ມູນຊ້ໍາ, ຕອບ `OK`/`ERROR`
-ຕາມແຕ່ລະກໍລະນີ). ຕັ້ງ server URL ຂອງເຄື່ອງໃຫ້ຊີ້ມາ backend ນີ້ (path `/iclock/cdata`)
-ໄດ້ເລີຍ — ແຕ່ຍັງບໍ່ທັນໄດ້ທົດສອບກັບເຄື່ອງແທ້ຈິງ ຄວນລອງກັບເຄື່ອງດຽວກ່ອນຂະຫຍາຍໄປໃຊ້ທັງໝົດ
+ໄຟລ໌ [`server/src/routes/adms.js`](server/src/routes/adms.js) implement ໂປຣໂຕຄອນນີ້ແລ້ວ:
+- `GET /iclock/cdata?SN=...&options=all` — device handshake, ຕອບກັບ config + sync stamp (ເກັບໄວ້ຕໍ່ເຄື່ອງໃນ `Device` model)
+- `POST /iclock/cdata?SN=...&table=ATTLOG` — ຮັບ punch logs (tab-separated), map `PIN` → `Employee.deviceUserId`, upsert ເປັນ `AttendanceLog` (ກັນຂໍ້ມູນຊ້ໍາຖ້າເຄື່ອງສົ່ງຄືນມາຕອນເນັດກັບມາ), ແລ້ວ recompute ບົດລາຍງານລາຍວັນ — ຕອບ `OK`/`ERROR` ຕາມແຕ່ລະກໍລະນີ ເພື່ອໃຫ້ເຄື່ອງຮູ້ວ່າຕ້ອງ retry ບໍ່
+- `GET /iclock/getrequest?SN=...` — device poll ຫາຄໍາສັ່ງຄ້າງ (ຕອນນີ້ຕອບ `OK` ສະເໝີ, ຍັງບໍ່ມີ command queue)
 
-ເຄື່ອງທີ່ຮອງຮັບ ADMS ໂດຍທົ່ວໄປຈະເກັບຂໍ້ມູນໄວ້ໃນໜ່ວຍຄວາມຈໍາຂອງມັນເອງ ແລະ ຈະສົ່ງຄືນອັດຕະໂນມັດ
-ເມື່ອເນັດກັບມາ (ຈົນກວ່າຈະໄດ້ຮັບ `OK` ຈາກ server) — endpoint ນີ້ຈຶ່ງອອກແບບໃຫ້ upsert ຕາມ
-(deviceId, deviceUserId, timestamp) ເພື່ອບໍ່ໃຫ້ຂໍ້ມູນທີ່ສົ່ງຄືນມາຊໍ້າກັນສ້າງ log ຊໍ້າ
+ຕັ້ງຄ່າທີ່ຕົວເຄື່ອງ (device admin menu): server address = URL ຂອງ backend ນີ້, port ຕາມທີ່ຕັ້ງໄວ້ໃນ `PORT`
+(ບໍ່ຕ້ອງມີ `/api` prefix, ເພາະ endpoint ພວກນີ້ຢູ່ນອກ `/api`) — ຍັງບໍ່ໄດ້ທົດສອບກັບເຄື່ອງແທ້,
+ອີງໃສ່ spec ຂອງໂປຣໂຕຄອນເທົ່ານັ້ນ ດັ່ງນັ້ນອາດຕ້ອງປັບແກ້ເລັກນ້ອຍເມື່ອທົດສອບກັບເຄື່ອງແທ້ຄັ້ງທໍາອິດ
 
 ## .env ທີ່ຕ້ອງຕັ້ງຄ່າ
 

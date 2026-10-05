@@ -4,6 +4,7 @@ const connectDB = require('./config/db');
 
 const Department = require('./models/Department');
 const Position = require('./models/Position');
+const EmploymentType = require('./models/EmploymentType');
 const Employee = require('./models/Employee');
 const User = require('./models/User');
 const AttendanceLog = require('./models/AttendanceLog');
@@ -70,6 +71,7 @@ async function run() {
   await Promise.all([
     Department.deleteMany({}),
     Position.deleteMany({}),
+    EmploymentType.deleteMany({}),
     Employee.deleteMany({}),
     User.deleteMany({}),
     AttendanceLog.deleteMany({}),
@@ -82,17 +84,24 @@ async function run() {
 
   console.log('[seed] creating departments & positions...');
   const [deptKitchen, deptBar, deptFront] = await Department.insertMany([
-    { name: 'ຄົວ', description: 'ຄົວອາຫານ ແລະ ຈັດກຽມວັດຖຸດິບ' },
-    { name: 'ບາ', description: 'ຊົງ ແລະ ເສີບເຄື່ອງດື່ມ' },
-    { name: 'ໜ້າຮ້ານ', description: 'ຕ້ອນຮັບ ແລະ ບໍລິການລູກຄ້າ' },
+    { name: 'ຄົວ' },
+    { name: 'ບາ' },
+    { name: 'ໜ້າຮ້ານ' },
   ]);
 
   const [posServer, posBartender, posCook, posCashier, posLead] = await Position.insertMany([
-    { name: 'ພະນັກງານເສີບ', level: 'staff' },
-    { name: 'ບາເທັນເດີ', level: 'staff' },
-    { name: 'ກຸ໊ກ', level: 'staff' },
-    { name: 'ແຄສເຊຍ', level: 'staff' },
-    { name: 'ຫົວໜ້າກະ', level: 'lead' },
+    { name: 'ພະນັກງານເສີບ' },
+    { name: 'ບາເທັນເດີ' },
+    { name: 'ກຸ໊ກ' },
+    { name: 'ແຄສເຊຍ' },
+    { name: 'ຫົວໜ້າກະ' },
+  ]);
+
+  const [empTypeFullTime] = await EmploymentType.insertMany([
+    { name: 'ເຕັມເວລາ' },
+    { name: 'ບາງເວລາ' },
+    { name: 'ທົດລອງງານ' },
+    { name: 'ສັນຍາຈ້າງ' },
   ]);
 
   const positionByKey = {
@@ -152,6 +161,7 @@ async function run() {
       lastName,
       department: department._id,
       position: position._id,
+      employmentType: empTypeFullTime._id,
       hireDate,
       status,
       deviceUserId: String(i + 1),

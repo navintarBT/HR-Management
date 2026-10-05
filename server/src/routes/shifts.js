@@ -1,11 +1,36 @@
 const express = require('express');
 const Shift = require('../models/Shift');
+const Employee = require('../models/Employee');
+const Leave = require('../models/Leave');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { ensureRestDayAllowed } = require('../utils/restDayRules');
 
 const router = express.Router();
 
 function timesOverlap(startA, endA, startB, endB) {
   return startA < endB && startB < endA;
+}
+
+// A company-wide holiday closure (see holidays.js's applyRestDayToAll, which
+// always tags the rows it creates with `holiday`) rests EVERYONE regardless
+// of position — it isn't someone choosing their own day off, so it's exempt
+// from a position's restricted-rest-days rule.
+async function ensurePersonalRestDayAllowed(employeeId, date, holidayId) {
+  if (holidayId) return;
+  // Already on approved leave that day — this isn't a discretionary swap
+  // away from a day the position needs staffed, since they're not coming in
+  // either way, so the restriction doesn't apply.
+  const onLeave = await Leave.exists({
+    employee: employeeId,
+    status: 'approved',
+    startDate: { $lte: new Date(`${date}T23:59:59.999`) },
+    endDate: { $gte: new Date(`${date}T00:00:00.000`) },
+  });
+  if (onLeave) return;
+  const employee = await Employee.findById(employeeId, 'position');
+  if (!employee?.position) return;
+  const dayOfWeek = new Date(`${date}T00:00:00`).getDay();
+  await ensureRestDayAllowed(employee.position, dayOfWeek);
 }
 
 // Shared by the single PATCH and the bulk PATCH below: applies `changes` to
@@ -20,10 +45,16 @@ async function applyShiftUpdate(id, changes) {
   const date = changes.date ?? current.date;
   const startTime = changes.startTime ?? current.startTime;
   const endTime = changes.endTime ?? current.endTime;
+  const status = changes.status ?? current.status;
 
-  const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
-  const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
-  if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
+  if (status !== 'rest') {
+    const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
+    const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
+    if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
+  } else {
+    const holidayId = changes.holiday ?? current.holiday;
+    await ensurePersonalRestDayAllowed(employee, date, holidayId);
+  }
 
   Object.assign(current, changes);
   await current.save();
@@ -49,9 +80,12 @@ function buildQuery(query) {
 router.get('/', authenticate, async (req, res, next) => {
   try {
     const { mongoQuery, _start, _end, _sort, _order } = buildQuery(req.query);
+    if (req.user.role === 'employee') {
+      mongoQuery.employee = req.user.employeeId ? req.user.employeeId._id : null;
+    }
     const [items, total] = await Promise.all([
       Shift.find(mongoQuery)
-        .populate('employee position category')
+        .populate('employee position category holiday')
         .sort({ [_sort]: _order === 'asc' ? 1 : -1 })
         .skip(_start)
         .limit(_end - _start),
@@ -66,7 +100,11 @@ router.get('/', authenticate, async (req, res, next) => {
 
 router.get('/:id', authenticate, async (req, res, next) => {
   try {
-    const item = await Shift.findById(req.params.id).populate('employee position category');
+    const query = { _id: req.params.id };
+    if (req.user.role === 'employee') {
+      query.employee = req.user.employeeId ? req.user.employeeId._id : null;
+    }
+    const item = await Shift.findOne(query).populate('employee position category holiday');
     if (!item) return res.status(404).json({ message: 'Not found' });
     res.json(item);
   } catch (err) {
@@ -76,14 +114,18 @@ router.get('/:id', authenticate, async (req, res, next) => {
 
 router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const { employee, date, startTime, endTime } = req.body;
-    const existing = await Shift.find({ employee, date, status: 'scheduled' });
-    const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
-    if (conflict) {
-      return res.status(409).json({ message: 'Employee already has an overlapping shift that day' });
+    const { employee, date, startTime, endTime, status, holiday } = req.body;
+    if (status !== 'rest') {
+      const existing = await Shift.find({ employee, date, status: 'scheduled' });
+      const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
+      if (conflict) {
+        return res.status(409).json({ message: 'Employee already has an overlapping shift that day' });
+      }
+    } else {
+      await ensurePersonalRestDayAllowed(employee, date, holiday);
     }
     const item = await Shift.create(req.body);
-    const populated = await item.populate('employee position category');
+    const populated = await item.populate('employee position category holiday');
     res.status(201).json(populated);
   } catch (err) {
     next(err);
@@ -113,7 +155,7 @@ router.patch('/bulk', authenticate, requireRole('admin', 'manager'), async (req,
 router.patch('/:id', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
     const updated = await applyShiftUpdate(req.params.id, req.body);
-    const populated = await updated.populate('employee position category');
+    const populated = await updated.populate('employee position category holiday');
     res.json(populated);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ message: err.message });

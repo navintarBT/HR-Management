@@ -7,11 +7,36 @@ const attendanceDailySchema = new mongoose.Schema(
     firstIn: { type: Date },
     lastOut: { type: Date },
     workedHours: { type: Number, default: 0 },
+    // Length of the shift the employee was expected to work this day (0 when
+    // there's no resolvable schedule, e.g. DJ/no-fixed-schedule positions) —
+    // "ຊົ່ວໂມງທີ່ຕ້ອງເຮັດ" on ລາຍງານການສະແກນ, shown next to workedHours
+    // ("ຊົ່ວໂມງທີ່ເຮັດແທ້") so a shortfall is visible at a glance.
+    expectedHours: { type: Number, default: 0 },
     lateMinutes: { type: Number, default: 0 },
+    // The shift category's ນะโยบายมาช้า (graceMinutes) that was in effect
+    // when this was last computed — lateMinutes itself is measured from the
+    // exact shift start with no grace offset (see recomputeDay), so this is
+    // purely for the UI to size its "ຊ້າ" vs "ຊ້າເກີນ X ນາທີ" label tiers
+    // against whatever grace actually applies to this employee/day, without
+    // re-resolving the category client-side. null when there's no resolvable
+    // shift at all that day.
+    graceMinutes: { type: Number, default: null },
+    // Same idea as graceMinutes, for the top-severity tier boundary
+    // (the category's severeLateMinutes) — "ຊ້າເກີນ X" on the UI switches to
+    // this once lateMinutes passes it, instead of a hardcoded 1-hour mark.
+    severeLateMinutes: { type: Number, default: null },
+    // Minutes the last scan-out happened before the expected shift end (an
+    // overnight shift's end time is understood to fall the next calendar
+    // day) — "ກັບກ່ອນ" on ລາຍງານການສະແກນ. Purely informational; doesn't
+    // affect `status` the way lateMinutes does.
+    earlyLeaveMinutes: { type: Number, default: 0 },
     otHours: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ['present', 'late', 'absent', 'leave', 'incomplete'],
+      // 'substituted' = someone else covered this shift for this employee, so
+      // they never scan themselves — only settable on positions flagged
+      // Position.allowsSubstituteStatus (e.g. DJ), see routes/attendanceActions.js.
+      enum: ['present', 'late', 'absent', 'leave', 'incomplete', 'substituted'],
       default: 'absent',
     },
   },

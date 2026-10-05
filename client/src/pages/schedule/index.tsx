@@ -6,8 +6,8 @@ import { LeftOutlined, RightOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Employee, Position, Shift, ShiftCategory, Identity } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
-import { RequestSwapModal } from './RequestSwapModal';
 import { categorical } from '../../theme/palette';
+import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
 
 const colorForId = (id: string) => categorical[id.charCodeAt(id.length - 1) % categorical.length];
 
@@ -16,13 +16,6 @@ function mondayOf(d: dayjs.Dayjs) {
   const diffToMonday = dow === 0 ? -6 : 1 - dow;
   return d.add(diffToMonday, 'day').startOf('day');
 }
-
-const withTextFilter = (selectProps: any) => ({
-  ...selectProps,
-  onSearch: undefined,
-  filterOption: (input: string, option: any) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase()),
-  showSearch: true,
-});
 
 // Shared between the create and edit shift modals — only the Form/formProps wrapping differs.
 const ShiftFormItems: React.FC<{
@@ -70,7 +63,6 @@ const buildShiftPayload = (values: any) => {
 export const SchedulePage: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isManager = identity?.role === 'admin' || identity?.role === 'manager';
-  const myEmployeeId = identity?.employee?._id;
 
   const [weekStart, setWeekStart] = useState(() => mondayOf(dayjs()));
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => weekStart.add(i, 'day')), [weekStart]);
@@ -98,6 +90,8 @@ export const SchedulePage: React.FC = () => {
   const shiftsByEmpDate = useMemo(() => {
     const map: Record<string, Record<string, Shift[]>> = {};
     for (const s of shifts) {
+      // A shift whose employee was since deleted has nowhere to render — skip it.
+      if (!s.employee) continue;
       const empId = typeof s.employee === 'object' ? s.employee._id : s.employee;
       map[empId] = map[empId] || {};
       map[empId][s.date] = map[empId][s.date] || [];
@@ -147,8 +141,8 @@ export const SchedulePage: React.FC = () => {
   useEffect(() => {
     if (!editModalProps.open || !editingRecord) return;
     editForm.setFieldsValue({
-      employee: typeof editingRecord.employee === 'object' ? editingRecord.employee._id : editingRecord.employee,
-      position: typeof editingRecord.position === 'object' ? editingRecord.position._id : editingRecord.position,
+      employee: editingRecord.employee && typeof editingRecord.employee === 'object' ? editingRecord.employee._id : editingRecord.employee,
+      position: editingRecord.position && typeof editingRecord.position === 'object' ? editingRecord.position._id : editingRecord.position,
       category: typeof editingRecord.category === 'object' ? editingRecord.category?._id : editingRecord.category,
       date: dayjs(editingRecord.date),
       time: [dayjs(`${editingRecord.date} ${editingRecord.startTime}`), dayjs(`${editingRecord.date} ${editingRecord.endTime}`)],
@@ -169,6 +163,7 @@ export const SchedulePage: React.FC = () => {
     resource: 'positions',
     optionLabel: 'name',
     optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
   });
 
   const { data: categoriesData } = useList<ShiftCategory>({
@@ -178,7 +173,7 @@ export const SchedulePage: React.FC = () => {
   const categories = categoriesData?.data ?? [];
   const { selectProps: categorySelect } = useSelect<ShiftCategory>({
     resource: 'shift-categories',
-    optionLabel: (item) => `${item.name} (${item.startTime}-${item.endTime})`,
+    optionLabel: (item) => (item.name ? `${item.name} (${item.startTime}-${item.endTime})` : `${item.startTime}-${item.endTime}`),
     optionValue: '_id',
     pagination: { pageSize: 100, mode: 'server' },
   });
@@ -212,9 +207,6 @@ export const SchedulePage: React.FC = () => {
     );
   };
 
-  // --- swap request modal (employee's own shift) ---
-  const [swapShift, setSwapShift] = useState<Shift | null>(null);
-
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -237,7 +229,7 @@ export const SchedulePage: React.FC = () => {
         rowKey="_id"
         loading={employeesLoading || shiftsLoading}
         pagination={false}
-        scroll={{ x: true }}
+        scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader }}
       >
         <Table.Column
@@ -271,24 +263,38 @@ export const SchedulePage: React.FC = () => {
               width={150}
               render={(_, emp: Employee) => {
                 const cellShifts = shiftsByEmpDate[emp._id]?.[dateKey] ?? [];
-                const isSelf = emp._id === myEmployeeId;
                 return (
                   <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                    {cellShifts.map((s) => (
-                      <Tag
-                        key={s._id}
-                        color={colorForId(typeof s.position === 'object' ? s.position._id : s.position)}
-                        style={{ cursor: isManager || isSelf ? 'pointer' : 'default', whiteSpace: 'normal', margin: 0 }}
-                        onClick={() => {
-                          if (isManager) openEdit(s._id);
-                          else if (isSelf) setSwapShift(s);
-                        }}
-                      >
-                        {typeof s.position === 'object' ? s.position?.name : ''}
-                        <br />
-                        {s.startTime}-{s.endTime}
-                      </Tag>
-                    ))}
+                    {cellShifts.map((s) => {
+                      const positionId = typeof s.position === 'object' ? s.position?._id : s.position;
+                      const isRest = s.status === 'rest';
+                      // A rest entry has no position/time to edit here — it's
+                      // managed on the monthly rest-day table instead. Swaps are
+                      // admin-driven now (see ສະຫຼັບກະ), so only a manager can
+                      // click a cell at all.
+                      const clickable = !isRest && isManager;
+                      return (
+                        <Tag
+                          key={s._id}
+                          color={isRest ? 'default' : positionId ? colorForId(positionId) : 'default'}
+                          style={{ cursor: clickable ? 'pointer' : 'default', whiteSpace: 'normal', margin: 0 }}
+                          onClick={() => {
+                            if (isRest || !isManager) return;
+                            openEdit(s._id);
+                          }}
+                        >
+                          {isRest ? (
+                            'ພັກ'
+                          ) : (
+                            <>
+                              {typeof s.position === 'object' ? s.position?.name : ''}
+                              <br />
+                              {s.startTime}-{s.endTime}
+                            </>
+                          )}
+                        </Tag>
+                      );
+                    })}
                     {isManager && (
                       <Button type="dashed" size="small" block icon={<PlusOutlined />} onClick={() => openCreate(emp._id, dateKey)} />
                     )}
@@ -338,15 +344,6 @@ export const SchedulePage: React.FC = () => {
           </Popconfirm>
         )}
       </Modal>
-
-      <RequestSwapModal
-        open={!!swapShift}
-        onClose={() => setSwapShift(null)}
-        initialShiftId={swapShift?._id}
-        initialShiftLabel={
-          swapShift ? `${dayjs(swapShift.date).format('DD/MM/YYYY')} ${swapShift.startTime}-${swapShift.endTime}` : undefined
-        }
-      />
     </List>
   );
 };

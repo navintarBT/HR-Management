@@ -34,7 +34,7 @@ const statCards = [
   { key: 'presentToday', label: 'ມາເຮັດວຽກມື້ນີ້', icon: <CheckCircleOutlined />, color: palette.success },
   { key: 'lateToday', label: 'ມາຊ້າມື້ນີ້', icon: <ClockCircleOutlined />, color: palette.warning },
   { key: 'onLeaveToday', label: 'ລາມື້ນີ້', icon: <CalendarOutlined />, color: palette.leave },
-  { key: 'absentToday', label: 'ຂາດງານມື້ນີ້', icon: <CloseCircleOutlined />, color: palette.error },
+  { key: 'absentToday', label: 'ຂາດວຽກມື້ນີ້', icon: <CloseCircleOutlined />, color: palette.error },
   { key: 'pendingLeaves', label: 'ຄໍາຂໍລາລໍຖ້າອະນຸມັດ', icon: <FileTextOutlined />, color: palette.info },
 ] as const;
 
@@ -133,12 +133,12 @@ export const DashboardPage: React.FC = () => {
               <Tooltip
                 labelFormatter={(v) => dayjs(v as string).format('DD MMM YYYY')}
                 formatter={(value: number, name: string) =>
-                  [value, ({ present: 'ມາເຮັດວຽກ', late: 'ມາຊ້າ', absent: 'ຂາດງານ', leave: 'ລາ' } as Record<string, string>)[name] ?? name]
+                  [value, ({ present: 'ມາເຮັດວຽກ', late: 'ມາຊ້າ', absent: 'ຂາດວຽກ', leave: 'ລາ' } as Record<string, string>)[name] ?? name]
                 }
               />
               <Legend
                 formatter={(value) =>
-                  ({ present: 'ມາເຮັດວຽກ', late: 'ມາຊ້າ', absent: 'ຂາດງານ', leave: 'ລາ' } as Record<string, string>)[value] ??
+                  ({ present: 'ມາເຮັດວຽກ', late: 'ມາຊ້າ', absent: 'ຂາດວຽກ', leave: 'ລາ' } as Record<string, string>)[value] ??
                   value
                 }
               />

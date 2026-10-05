@@ -1,5 +1,5 @@
 import { Tag } from 'antd';
-import type { AttendanceStatus, LeaveStatus, LeaveType, ShiftSwapStatus } from '../types';
+import type { AttendanceStatus, LeaveStatus, LeaveType, OvertimeStatus, ShiftSwapStatus } from '../types';
 
 const leaveStatusMap: Record<LeaveStatus, { label: string; color: string }> = {
   pending: { label: 'ລໍຖ້າອະນຸມັດ', color: 'gold' },
@@ -16,9 +16,10 @@ const leaveTypeMap: Record<LeaveType, { label: string; color: string }> = {
 const attendanceStatusMap: Record<AttendanceStatus, { label: string; color: string }> = {
   present: { label: 'ມາເຮັດວຽກ', color: 'green' },
   late: { label: 'ມາຊ້າ', color: 'orange' },
-  absent: { label: 'ຂາດງານ', color: 'red' },
+  absent: { label: 'ຂາດວຽກ', color: 'red' },
   leave: { label: 'ລາ', color: 'purple' },
   incomplete: { label: 'ລືມສະແກນອອກ', color: 'default' },
+  substituted: { label: 'ມາແທນ', color: 'cyan' },
 };
 
 export const LeaveStatusTag: React.FC<{ status: LeaveStatus }> = ({ status }) => {
@@ -28,6 +29,11 @@ export const LeaveStatusTag: React.FC<{ status: LeaveStatus }> = ({ status }) =>
 
 // Same pending/approved/rejected shape as leave requests — reuse the wording.
 export const ShiftSwapStatusTag: React.FC<{ status: ShiftSwapStatus }> = ({ status }) => {
+  const item = leaveStatusMap[status];
+  return <Tag color={item.color}>{item.label}</Tag>;
+};
+
+export const OvertimeStatusTag: React.FC<{ status: OvertimeStatus }> = ({ status }) => {
   const item = leaveStatusMap[status];
   return <Tag color={item.color}>{item.label}</Tag>;
 };
@@ -43,11 +49,14 @@ export const AttendanceStatusTag: React.FC<{ status: AttendanceStatus }> = ({ st
 };
 
 export const employeeStatusMap = {
-  active: { label: 'ກໍາລັງເຮັດວຽກ', color: 'green' },
-  inactive: { label: 'ພົ້ນສະພາບ', color: 'default' },
+  draft: { label: 'ຮ່າງ', color: 'blue' },
+  active: { label: 'ກຳລັງເຮັດວຽກ', color: 'green' },
+  inactive: { label: 'ບໍ່ໃຊ້ງານ', color: 'default' },
+  resigned: { label: 'ລາອອກ', color: 'red' },
+  suspended: { label: 'ພັກວຽກ', color: 'orange' },
 } as const;
 
-export const EmployeeStatusTag: React.FC<{ status: 'active' | 'inactive' }> = ({ status }) => {
+export const EmployeeStatusTag: React.FC<{ status: keyof typeof employeeStatusMap }> = ({ status }) => {
   const item = employeeStatusMap[status];
   return <Tag color={item.color}>{item.label}</Tag>;
 };
