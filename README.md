@@ -13,7 +13,7 @@
 ## ໂຄງສ້າງໂປຣເຈັກ
 
 ```
-/server              Express API + Mongoose models + seed script
+/server              Express API + Mongoose models
 /client              React + Vite + Refine + Ant Design
 ```
 
@@ -30,7 +30,7 @@
 cd server
 cp .env.example .env   # ແລ້ວແກ້ MONGO_URI ໃຫ້ເປັນ Atlas connection string ຂອງທ່ານ
 npm install
-npm run seed   # ລ້າງຂໍ້ມູນເກົ່າແລ້ວສ້າງຂໍ້ມູນຕົວຢ່າງທັງໝົດ
+npm run create-user -- you@example.com yourpassword admin   # ສ້າງບັນຊີ login ທໍາອິດ (role ເລືອກໄດ້: admin/manager/employee)
 npm run dev    # http://localhost:4000
 ```
 
@@ -46,20 +46,17 @@ npm run dev    # http://localhost:5173
 ເປີດເບຣົາເຊີໄປທີ່ `http://localhost:5173` ແລ້ວເຂົ້າສູ່ລະບົບດ້ວຍບັນຊີຕົວຢ່າງທາງລຸ່ມ
 (ໜ້າ login ມີປຸ່ມກອກໃຫ້ອັດຕະໂນມັດ)
 
-## ບັນຊີສໍາລັບທົດລອງໃຊ້
+## ການສ້າງບັນຊີ login
 
-ສ້າງຈາກ `npm run seed`:
+ບໍ່ມີໜ້າ register ສາທາລະນະ — ສ້າງບັນຊີທໍາອິດ (ຫຼືບັນຊີເພີ່ມເຕີມ) ຜ່ານ:
 
-| Role | Email | Password |
-|---|---|---|
-| admin/HR | `admin@hr-demo.local` | `Admin@123` |
-| manager | `manager@hr-demo.local` | `Manager@123` |
-| employee | `employee@hr-demo.local` | `Employee@123` |
+```bash
+cd server
+npm run create-user -- <email> <password> <role>   # role: admin | manager | employee
+```
 
-ຂໍ້ມູນຕົວຢ່າງທີ່ seed ໃຫ້:
-- 4 ພະແນກ, 4 ຕໍາແໜ່ງງານ, ພະນັກງານ 18 ຄົນ (16 active / 2 inactive)
-- Log ການສະແກນເຂົ້າ-ອອກຍ້ອນຫຼັງ ~30 ວັນ (ວັນທໍາມະດາ) ຕໍ່ພະນັກງານ 1 ຄົນ ພ້ອມປະມວນຜົນເປັນບົດລາຍງານລາຍວັນ (ມາຊ້າ/OT/ຂາດງານແບບສຸ່ມ)
-- ຄໍາຂໍລາ 5 ລາຍການ (ທັງສະຖານະ pending / approved / rejected)
+ຄໍາສັ່ງນີ້ສ້າງບັນຊີໃໝ່ ຫຼືອັບເດດລະຫັດຜ່ານ/role ຖ້າອີເມວນັ້ນມີຢູ່ແລ້ວ (upsert, ບໍ່ແຕະຂໍ້ມູນອື່ນ) —
+ປອດໄພໃຊ້ກັບຖານຂໍ້ມູນ production ໄດ້ (ບໍ່ລືບຫຍັງ ຕ່າງຈາກ seed script ແບບເກົ່າທີ່ຖືກລືບອອກໄປແລ້ວ)
 
 ## ຄຸນສົມບັດຫຼັກ
 
