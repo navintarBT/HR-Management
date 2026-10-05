@@ -25,6 +25,19 @@ const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attend
 // physical terminal — run one real device against it before relying on this broadly.
 const router = express.Router();
 
+// This endpoint is unauthenticated by necessity (see above), so `SN`/`table`
+// can't be trusted the way an authenticated route's inputs can be. Express's
+// query parser turns bracketed query strings (`?SN[$ne]=null`) into objects,
+// which — if ever handed straight to a Mongoose filter — stop meaning "this
+// literal value" and start meaning "any document where this field is not
+// null", matching/touching a real device's row instead of a nonexistent one
+// with a guessed/fake serial. A real ZKTeco SN is always a short alphanumeric
+// string, so reject anything else outright rather than cast-and-hope.
+function parseSerial(value) {
+  const sn = typeof value === 'string' ? value : '';
+  return /^[A-Za-z0-9_-]{1,40}$/.test(sn) ? sn : null;
+}
+
 async function findOrTouchDevice(serialNumber) {
   const device = await Device.findOneAndUpdate(
     { serialNumber },
@@ -65,7 +78,8 @@ function parseAttLog(body) {
 
 router.get('/iclock/cdata', async (req, res, next) => {
   try {
-    const { SN, options } = req.query;
+    const SN = parseSerial(req.query.SN);
+    const { options } = req.query;
     if (!SN) return res.type('text/plain').send('ERROR');
     const device = await findOrTouchDevice(SN);
 
@@ -93,7 +107,9 @@ router.get('/iclock/cdata', async (req, res, next) => {
 
 router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, next) => {
   try {
-    const { SN, table, Stamp } = req.query;
+    const SN = parseSerial(req.query.SN);
+    const table = typeof req.query.table === 'string' ? req.query.table : '';
+    const Stamp = typeof req.query.Stamp === 'string' ? req.query.Stamp : '';
     if (!SN || !table) return res.type('text/plain').send('ERROR');
     const device = await findOrTouchDevice(SN);
 
