@@ -50,7 +50,7 @@ export const AttendanceDailyPage: React.FC = () => {
 
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
-    filters: [{ field: 'status', operator: 'eq', value: 'active' }],
+    filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
     pagination: { pageSize: 500 },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });

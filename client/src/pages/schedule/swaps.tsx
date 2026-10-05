@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useGetIdentity, useInvalidate, useNotification, useList, useCustom } from '@refinedev/core';
-import { Button, Space, Typography, Modal, Select, DatePicker, Table, Tag, Popconfirm } from 'antd';
-import { RetweetOutlined, EditOutlined } from '@ant-design/icons';
+import { Button, Space, Typography, Modal, Select, DatePicker, Table, Tag, Popconfirm, Input, Card, Statistic, Row, Col } from 'antd';
+import { RetweetOutlined, EditOutlined, DeleteOutlined, SwapOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import type { Department, Employee, Identity, Position, ScheduledPositionSwap } from '../../types';
@@ -30,7 +30,8 @@ function resolveTime(employee: Employee): string {
 // and on ຕາຕະລາງກະ's own-shift click).
 export const ShiftSwapListPage: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
-  const canWrite = identity?.role === 'admin' || identity?.role === 'manager';
+  const isAdmin = identity?.role === 'admin';
+  const canWrite = isAdmin || identity?.role === 'manager';
 
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
@@ -180,6 +181,11 @@ export const ShiftSwapListPage: React.FC = () => {
       });
       closePositionSwapModal();
       invalidate({ resource: 'employees', invalidates: ['list'] });
+      // The swap also creates/replaces today's swap-day Shift pins (see
+      // positionSwap.js) — without this, any other open page already showing
+      // shift data (ຕາຕະລາງກະ, ປະຫວັດການສະແກນເຂົ້າ-ອອກວຽກ) keeps its stale
+      // cached list and never learns those changed.
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
       refetchSchedule();
     } catch (err: any) {
       notify?.({ type: 'error', message: err?.response?.data?.message || 'ດໍາເນີນການບໍ່ສໍາເລັດ' });
@@ -197,6 +203,35 @@ export const ShiftSwapListPage: React.FC = () => {
       notify?.({ type: 'error', message: 'ຍົກເລີກບໍ່ສໍາເລັດ' });
     }
   };
+
+  // Only offered for a decided row (applied/cancelled) — a still-pending one
+  // already has its own "ຍົກເລີກ" action, and deleting it outright would just
+  // be a confusing second way to do the same thing.
+  const deleteScheduledSwap = async (id: string) => {
+    try {
+      await axiosInstance.delete(`${API_URL}/position-swaps/${id}`);
+      notify?.({ type: 'success', message: 'ລຶບລາຍການແລ້ວ' });
+      refetchSchedule();
+    } catch {
+      notify?.({ type: 'error', message: 'ລຶບບໍ່ສໍາເລັດ' });
+    }
+  };
+
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<string>();
+  const filteredSwaps = useMemo(() => {
+    return scheduledSwaps.filter((s) => {
+      if (historyStatusFilter && s.status !== historyStatusFilter) return false;
+      if (historySearch) {
+        const q = historySearch.trim().toLowerCase();
+        const nameA = typeof s.positionA === 'object' ? s.positionA.name.toLowerCase() : '';
+        const nameB = typeof s.positionB === 'object' ? s.positionB.name.toLowerCase() : '';
+        if (!nameA.includes(q) && !nameB.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [scheduledSwaps, historySearch, historyStatusFilter]);
+  const pendingCount = scheduledSwaps.filter((s) => s.status === 'pending').length;
 
   return (
     <List
@@ -229,52 +264,64 @@ export const ShiftSwapListPage: React.FC = () => {
         <Typography.Paragraph type="secondary">
           ທຸກຄົນທີ່ຢູ່ຕຳແໜ່ງ A ຈະຍ້າຍໄປຕຳແໜ່ງ B ແລະ ໃຊ້ໂມງເຮັດວຽກຂອງຕຳແໜ່ງ B, ສ່ວນທຸກຄົນທີ່ຢູ່ຕຳແໜ່ງ B ຈະຍ້າຍໄປຕຳແໜ່ງ A ແລະ ໃຊ້ໂມງເຮັດວຽກຂອງຕຳແໜ່ງ A — ໂມງຂອງແຕ່ລະຕຳແໜ່ງເອງບໍ່ປ່ຽນ
         </Typography.Paragraph>
+        <Row align="middle" gutter={12} style={{ marginBottom: 16 }}>
+          <Col span={11}>
+            <Card size="small" title="ຕຳແໜ່ງ A" style={{ background: 'var(--app-surface-bg)' }}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Select
+                  {...departmentASelect}
+                  placeholder="ພະແນກ (ກອງ A)"
+                  allowClear
+                  style={{ width: '100%' }}
+                  value={deptFilterA}
+                  onChange={(v: any) => {
+                    setDeptFilterA(v);
+                    setPosA(undefined);
+                  }}
+                />
+                <Select
+                  options={positionOptionsA}
+                  showSearch
+                  filterOption={filterByLabel}
+                  placeholder="ຕຳແໜ່ງ A"
+                  style={{ width: '100%' }}
+                  value={posA}
+                  onChange={(v: any) => setPosA(v)}
+                />
+              </Space>
+            </Card>
+          </Col>
+          <Col span={2} style={{ textAlign: 'center' }}>
+            <SwapOutlined style={{ fontSize: 20, color: 'var(--app-primary, #9F1239)' }} />
+          </Col>
+          <Col span={11}>
+            <Card size="small" title="ຕຳແໜ່ງ B" style={{ background: 'var(--app-surface-bg)' }}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Select
+                  {...departmentBSelect}
+                  placeholder="ພະແນກ (ກອງ B)"
+                  allowClear
+                  style={{ width: '100%' }}
+                  value={deptFilterB}
+                  onChange={(v: any) => {
+                    setDeptFilterB(v);
+                    setPosB(undefined);
+                  }}
+                />
+                <Select
+                  options={positionOptionsB}
+                  showSearch
+                  filterOption={filterByLabel}
+                  placeholder="ຕຳແໜ່ງ B"
+                  style={{ width: '100%' }}
+                  value={posB}
+                  onChange={(v: any) => setPosB(v)}
+                />
+              </Space>
+            </Card>
+          </Col>
+        </Row>
         <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }}>
-          <Space wrap>
-            <Select
-              {...departmentASelect}
-              placeholder="ພະແນກ (ກອງ A)"
-              allowClear
-              style={{ width: 180 }}
-              value={deptFilterA}
-              onChange={(v: any) => {
-                setDeptFilterA(v);
-                setPosA(undefined);
-              }}
-            />
-            <Select
-              options={positionOptionsA}
-              showSearch
-              filterOption={filterByLabel}
-              placeholder="ຕຳແໜ່ງ A"
-              style={{ width: 220 }}
-              value={posA}
-              onChange={(v: any) => setPosA(v)}
-            />
-          </Space>
-          <Typography.Text type="secondary">↔</Typography.Text>
-          <Space wrap>
-            <Select
-              {...departmentBSelect}
-              placeholder="ພະແນກ (ກອງ B)"
-              allowClear
-              style={{ width: 180 }}
-              value={deptFilterB}
-              onChange={(v: any) => {
-                setDeptFilterB(v);
-                setPosB(undefined);
-              }}
-            />
-            <Select
-              options={positionOptionsB}
-              showSearch
-              filterOption={filterByLabel}
-              placeholder="ຕຳແໜ່ງ B"
-              style={{ width: 220 }}
-              value={posB}
-              onChange={(v: any) => setPosB(v)}
-            />
-          </Space>
           <Space wrap align="center">
             <Typography.Text>ວັນທີ່ມີຜົນ:</Typography.Text>
             <DatePicker
@@ -322,32 +369,90 @@ export const ShiftSwapListPage: React.FC = () => {
                 </ul>
               </div>
             </Space>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+              ໝາຍເຫດ: ສະເພາະມື້ທີ່ມີຜົນ ລະບົບຈະຈັດຕາຕະລາງໃຫ້ອັດຕະໂນມັດເພື່ອບໍ່ໃຫ້ວຽກຂາດຄົນ — ຖ້າ 2 ຕຳແໜ່ງນີ້ໂມງຕໍ່ກັນພໍດີ 24 ຊມ (ເຊັ່ນ ກະເຊົ້າ/ກະແລງ) ຝັ່ງທີ່ອອກຈາກກະເລີ່ມກ່ອນຈະເຮັດວຽກຕໍ່ເນື່ອງໃຫ້ຈົນຮອດຮອບໃໝ່ ອີກຝັ່ງຈະບໍ່ມີກະໃນມື້ນັ້ນ
+            </Typography.Paragraph>
           </>
         )}
       </Modal>
 
       {canWrite && (
         <>
-          <Typography.Title level={5} style={{ marginTop: 24 }}>
-            ລາຍການສະຫຼັບຕຳແໜ່ງທີ່ຕັ້ງໄວ້
-          </Typography.Title>
+          <Row gutter={12} style={{ marginTop: 24, marginBottom: 16 }}>
+            <Col span={8}>
+              <Card size="small">
+                <Statistic title="ທັງໝົດ" value={scheduledSwaps.length} />
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card size="small">
+                <Statistic title="ລໍຖ້າ" value={pendingCount} valueStyle={{ color: '#d4a017' }} />
+              </Card>
+            </Col>
+            <Col span={8}>
+              <Card size="small">
+                <Statistic
+                  title="ສະຫຼັບແລ້ວ"
+                  value={scheduledSwaps.filter((s) => s.status === 'applied').length}
+                  valueStyle={{ color: '#389e0d' }}
+                />
+              </Card>
+            </Col>
+          </Row>
+
+          <Typography.Title level={5}>ລາຍການສະຫຼັບຕຳແໜ່ງທີ່ຕັ້ງໄວ້</Typography.Title>
+          <Space wrap style={{ marginBottom: 12 }}>
+            <Input.Search
+              placeholder="ຄົ້ນຫາຊື່ຕຳແໜ່ງ"
+              allowClear
+              style={{ width: 220 }}
+              prefix={<SearchOutlined />}
+              onSearch={(v) => setHistorySearch(v)}
+              onChange={(e) => !e.target.value && setHistorySearch('')}
+            />
+            <Select
+              placeholder="ກອງຕາມສະຖານະ"
+              allowClear
+              style={{ width: 160 }}
+              value={historyStatusFilter}
+              onChange={(v: any) => setHistoryStatusFilter(v)}
+              options={Object.entries(SCHEDULE_STATUS).map(([value, { label }]) => ({ value, label }))}
+            />
+          </Space>
           <Table
-            dataSource={scheduledSwaps}
+            dataSource={filteredSwaps}
             rowKey="_id"
-            pagination={false}
-            locale={{ emptyText: 'ຍັງບໍ່ມີລາຍການ' }}
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            locale={{ emptyText: scheduledSwaps.length ? 'ບໍ່ພົບລາຍການ' : 'ຍັງບໍ່ມີລາຍການ' }}
           >
             <Table.Column
               title="ຕຳແໜ່ງ A"
-              render={(_, r: ScheduledPositionSwap) => (typeof r.positionA === 'object' ? r.positionA.name : '-')}
+              render={(_, r: ScheduledPositionSwap) =>
+                r.positionA && typeof r.positionA === 'object' ? r.positionA.name : 'ຕຳແໜ່ງນີ້ຖືກລຶບໄປແລ້ວ'
+              }
             />
             <Table.Column
               title="ຕຳແໜ່ງ B"
-              render={(_, r: ScheduledPositionSwap) => (typeof r.positionB === 'object' ? r.positionB.name : '-')}
+              render={(_, r: ScheduledPositionSwap) =>
+                r.positionB && typeof r.positionB === 'object' ? r.positionB.name : 'ຕຳແໜ່ງນີ້ຖືກລຶບໄປແລ້ວ'
+              }
             />
             <Table.Column
               title="ວັນທີ່ມີຜົນ"
               render={(_, r: ScheduledPositionSwap) => dayjs(r.effectiveDate).format('DD/MM/YYYY')}
+            />
+            <Table.Column
+              title="ຈຳນວນທີ່ຍ້າຍ"
+              align="center"
+              render={(_, r: ScheduledPositionSwap) =>
+                r.status === 'applied' ? (r.movedFromA ?? 0) + (r.movedFromB ?? 0) : '-'
+              }
+            />
+            <Table.Column
+              title="ຜູ້ສ້າງ"
+              render={(_, r: ScheduledPositionSwap) =>
+                typeof r.createdBy === 'object' && r.createdBy ? `${r.createdBy.firstName} ${r.createdBy.lastName}` : '-'
+              }
             />
             <Table.Column
               title="ສະຖານະ"
@@ -367,7 +472,13 @@ export const ShiftSwapListPage: React.FC = () => {
                       </Button>
                     </Popconfirm>
                   </Space>
-                ) : null
+                ) : (
+                  isAdmin && (
+                    <Popconfirm title="ລຶບລາຍການປະຫວັດນີ້?" onConfirm={() => deleteScheduledSwap(r._id)}>
+                      <Button size="small" danger icon={<DeleteOutlined />} />
+                    </Popconfirm>
+                  )
+                )
               }
             />
           </Table>

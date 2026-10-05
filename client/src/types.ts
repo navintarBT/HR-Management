@@ -13,6 +13,7 @@ export interface Position {
   head?: Employee | string;
   allowsSubstituteStatus?: boolean;
   restrictedRestDays?: number[];
+  restDayFallback?: number | null;
 }
 
 export interface EmploymentType {
@@ -175,19 +176,20 @@ export interface ShiftCategory {
   severeLateMinutes?: number; // late beyond this many minutes shows the most severe "ຊ້າເກີນ..." label
 }
 
-export type ShiftStatus = 'scheduled' | 'cancelled' | 'rest';
+export type ShiftStatus = 'scheduled' | 'cancelled' | 'rest' | 'swapped';
 
 export interface Shift {
   _id: string;
   employee: Employee | string;
-  position?: Position | string; // not set for a 'rest' entry
+  position?: Position | string; // not set for a 'rest'/'swapped' entry
   category?: ShiftCategory | string;
   date: string; // YYYY-MM-DD
-  startTime?: string; // HH:mm — not set for a 'rest' entry
-  endTime?: string; // HH:mm — not set for a 'rest' entry
+  startTime?: string; // HH:mm — not set for a 'rest'/'swapped' entry
+  endTime?: string; // HH:mm — not set for a 'rest'/'swapped' entry
   note?: string;
   status: ShiftStatus;
   holiday?: Holiday | string | null; // set when this 'rest' entry came from a company-wide holiday
+  coveringFor?: Employee | string | null; // set on a scheduled entry that covers someone else's shift
 }
 
 export interface Holiday {

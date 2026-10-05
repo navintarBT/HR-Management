@@ -40,7 +40,7 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
     });
 
     if (isImmediate) {
-      const { movedFromA, movedFromB } = await applyPositionSwap(positionA, positionB);
+      const { movedFromA, movedFromB } = await applyPositionSwap(positionA, positionB, effectiveDate);
       swap.movedFromA = movedFromA;
       swap.movedFromB = movedFromB;
       await swap.save();
@@ -74,7 +74,7 @@ router.patch('/:id', authenticate, requireRole('admin', 'manager'), async (req, 
     swap.effectiveDate = effectiveDate;
 
     if (isImmediate) {
-      const { movedFromA, movedFromB } = await applyPositionSwap(positionA, positionB);
+      const { movedFromA, movedFromB } = await applyPositionSwap(positionA, positionB, effectiveDate);
       swap.status = 'applied';
       swap.appliedAt = new Date();
       swap.movedFromA = movedFromA;

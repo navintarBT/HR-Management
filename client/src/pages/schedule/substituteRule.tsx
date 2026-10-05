@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useUpdate, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Switch, Select, Input, Space, Typography, Popconfirm } from 'antd';
-import { SearchOutlined } from '@ant-design/icons';
+import { Table, Switch, Select, Input, Space, Typography, Popconfirm, Button, Modal, Form } from 'antd';
+import { SearchOutlined, PlusOutlined } from '@ant-design/icons';
 import type { Department, Employee, Position } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
@@ -356,6 +356,10 @@ const RestDayRuleTable: React.FC<{ employeesByPosition: Record<string, number> }
   const allPositions = positionsData?.data ?? [];
 
   const hasFilter = !!(search || departmentFilter);
+  // No filter: review positions already set up (has restrictedRestDays).
+  // Filtering by department/name is just a plain search over every position
+  // — finding an unconfigured one to set up now goes through the "ສ້າງ" button
+  // above instead, which already has its own search built in.
   const positions = useMemo(() => {
     if (!hasFilter) return allPositions.filter((p) => (p.restrictedRestDays ?? []).length > 0);
     return allPositions.filter((p) => {
@@ -382,8 +386,60 @@ const RestDayRuleTable: React.FC<{ employeesByPosition: Record<string, number> }
     );
   };
 
+  const setRestDayFallback = (position: Position, day: number | null) => {
+    updatePosition(
+      { resource: 'positions', id: position._id, values: { restDayFallback: day } },
+      {
+        onSuccess: () => {
+          notify?.({ type: 'success', message: `ບັນທຶກວັນພັກສຳຮອງຂອງ "${position.name}" ແລ້ວ` });
+          invalidate({ resource: 'positions', invalidates: ['list'] });
+          refetch();
+        },
+      }
+    );
+  };
+
+  // The dedicated create flow only ever targets a position that has nothing
+  // set yet — editing an already-configured one still goes through the
+  // inline cells below, where restDayFallback is already there via the
+  // merge in routes/positions.js's beforeUpdate.
+  const uncreatedPositions = useMemo(() => allPositions.filter((p) => (p.restrictedRestDays ?? []).length === 0), [allPositions]);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm] = Form.useForm();
+  const watchedRestrictedDays: number[] = Form.useWatch('restrictedRestDays', createForm) ?? [];
+
+  const submitCreateRestriction = () => {
+    createForm.validateFields().then((values) => {
+      updatePosition(
+        {
+          resource: 'positions',
+          id: values.position,
+          values: { restrictedRestDays: values.restrictedRestDays, restDayFallback: values.restDayFallback },
+        },
+        {
+          onSuccess: () => {
+            notify?.({ type: 'success', message: 'ສ້າງຂໍ້ຈຳກັດວັນພັກແລ້ວ' });
+            invalidate({ resource: 'positions', invalidates: ['list'] });
+            refetch();
+            setCreateOpen(false);
+            createForm.resetFields();
+          },
+        }
+      );
+    });
+  };
+
   return (
     <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          ຖ້າຕັ້ງ "ວັນພັກສຳຮອງ" ໄວ້ — ຄົນທີ່ຈະພັກຕົງກັບວັນທີ່ຫ້າມ ຈະຖືກເລື່ອນໄປພັກວັນສຳຮອງໃຫ້ອັດຕະໂນມັດ (ລວມທັງຕອນສະຫຼັບຕຳແໜ່ງເຂົ້າມາ) ແທນທີ່ຈະຂຶ້ນຄ້ານໃຫ້ໄປເລືອກວັນອື່ນເອງ
+        </Typography.Paragraph>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          ສ້າງຂໍ້ຈຳກັດວັນພັກ
+        </Button>
+      </div>
       <Space wrap style={{ marginBottom: 12 }}>
         <Select
           {...departmentSelect}
@@ -420,18 +476,82 @@ const RestDayRuleTable: React.FC<{ employeesByPosition: Record<string, number> }
         />
         <Table.Column
           title="ວັນທີ່ຫ້າມພັກ"
-          render={(_, position: Position) => (
-            <Select
-              mode="multiple"
-              style={{ width: '100%', minWidth: 280 }}
-              placeholder="ບໍ່ມີຂໍ້ຈຳກັດ — ເລືອກວັນທີ່ຫ້າມພັກ"
-              options={WEEKDAY_OPTIONS}
-              value={position.restrictedRestDays ?? []}
-              onChange={(days: number[]) => setRestrictedDays(position, days)}
-            />
-          )}
+          render={(_, position: Position) =>
+            (position.restrictedRestDays ?? []).length === 0 ? (
+              <Typography.Text type="secondary">ຍັງບໍ່ໄດ້ຕັ້ງ — ໃຊ້ປຸ່ມ "ສ້າງຂໍ້ຈຳກັດວັນພັກ" ຂ້າງເທິງ</Typography.Text>
+            ) : (
+              <Select
+                mode="multiple"
+                style={{ width: '100%', minWidth: 280 }}
+                placeholder="ບໍ່ມີຂໍ້ຈຳກັດ — ເລືອກວັນທີ່ຫ້າມພັກ"
+                options={WEEKDAY_OPTIONS}
+                value={position.restrictedRestDays ?? []}
+                onChange={(days: number[]) => setRestrictedDays(position, days)}
+              />
+            )
+          }
+        />
+        <Table.Column
+          title="ວັນພັກສຳຮອງ"
+          render={(_, position: Position) =>
+            (position.restrictedRestDays ?? []).length === 0 ? (
+              <Typography.Text type="secondary">-</Typography.Text>
+            ) : (
+              <Select
+                allowClear
+                style={{ width: '100%', minWidth: 160 }}
+                placeholder="ບໍ່ມີ — ຈະຂຶ້ນຄ້ານແທນ"
+                options={WEEKDAY_OPTIONS.filter((opt) => !(position.restrictedRestDays ?? []).includes(opt.value))}
+                value={position.restDayFallback ?? undefined}
+                onChange={(day: number | undefined) => setRestDayFallback(position, day ?? null)}
+              />
+            )
+          }
         />
       </Table>
+      <Modal
+        title="ສ້າງຂໍ້ຈຳກັດວັນພັກ"
+        open={createOpen}
+        onCancel={() => {
+          setCreateOpen(false);
+          createForm.resetFields();
+        }}
+        onOk={submitCreateRestriction}
+        okText="ບັນທຶກ"
+        cancelText="ຍົກເລີກ"
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          ຕ້ອງເລືອກທັງວັນທີ່ຫ້າມພັກ ແລະ ວັນພັກສຳຮອງພ້ອມກັນ — ຈະບໍ່ມີຕຳແໜ່ງໃດຕັ້ງໄດ້ພຽງອັນດຽວ
+        </Typography.Paragraph>
+        <Form form={createForm} layout="vertical">
+          <Form.Item name="position" label="ຕຳແໜ່ງ" rules={[{ required: true, message: 'ກະລຸນາເລືອກຕຳແໜ່ງ' }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="ເລືອກຕຳແໜ່ງທີ່ຍັງບໍ່ໄດ້ຕັ້ງຂໍ້ຈຳກັດ"
+              options={uncreatedPositions.map((p) => ({ value: p._id, label: p.name }))}
+            />
+          </Form.Item>
+          <Form.Item
+            name="restrictedRestDays"
+            label="ວັນທີ່ຫ້າມພັກ"
+            rules={[{ required: true, type: 'array', min: 1, message: 'ກະລຸນາເລືອກຢ່າງໜ້ອຍ 1 ວັນ' }]}
+          >
+            <Select mode="multiple" placeholder="ເລືອກວັນທີ່ຫ້າມພັກ" options={WEEKDAY_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            name="restDayFallback"
+            label="ວັນພັກສຳຮອງ"
+            rules={[{ required: true, message: 'ກະລຸນາເລືອກວັນພັກສຳຮອງ' }]}
+          >
+            <Select
+              placeholder="ເລືອກວັນພັກສຳຮອງ"
+              options={WEEKDAY_OPTIONS.filter((opt) => !watchedRestrictedDays.includes(opt.value))}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };

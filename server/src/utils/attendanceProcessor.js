@@ -2,6 +2,7 @@ const AttendanceLog = require('../models/AttendanceLog');
 const AttendanceDaily = require('../models/AttendanceDaily');
 const Shift = require('../models/Shift');
 const Employee = require('../models/Employee');
+const Leave = require('../models/Leave');
 
 const GRACE_MINUTES = 15;
 const SEVERE_LATE_MINUTES = 60;
@@ -60,7 +61,8 @@ function isOvernightShift(expected) {
 // early-leaving against, so recomputeDay just records the scan instead of
 // guessing against the fixed office-hours default.
 async function resolveExpectedShift(employeeId, dateKey) {
-  const shift = await Shift.findOne({ employee: employeeId, date: dateKey, status: 'scheduled' }).populate('category');
+  const shift = await Shift.findOne({ employee: employeeId, date: dateKey, status: { $in: ['scheduled', 'swapped'] } }).populate('category');
+  if (shift?.status === 'swapped') return null; // no shift at all this day — see positionSwap.js
   if (shift) {
     const [startHour, startMinute] = shift.startTime.split(':').map(Number);
     const [endHour, endMinute] = shift.endTime.split(':').map(Number);
@@ -72,6 +74,11 @@ async function resolveExpectedShift(employeeId, dateKey) {
       graceMinutes: shift.category?.graceMinutes ?? GRACE_MINUTES,
       autoAbsentMinutes: shift.category?.autoAbsentMinutes ?? null,
       severeLateMinutes: shift.category?.severeLateMinutes ?? SEVERE_LATE_MINUTES,
+      // Marks that this came from a day-specific override rather than the
+      // employee's live default — resolveShiftWindow uses this to know the
+      // day is self-contained and doesn't need the "was yesterday overnight"
+      // inference (see there for why that inference alone isn't safe here).
+      fromOverride: true,
     };
   }
 
@@ -124,12 +131,21 @@ async function resolveShiftWindow(employeeId, dateKey) {
     windowEnd = new Date(windowEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
   }
 
-  const yesterdayShift = await resolveExpectedShift(employeeId, addDays(dateKey, -1));
-  if (isOvernightShift(yesterdayShift)) {
-    const yesterdayExpectedEnd = new Date(`${dateKey}T00:00:00`);
-    yesterdayExpectedEnd.setHours(yesterdayShift.endHour, yesterdayShift.endMinute, 0, 0);
-    const yesterdayCutoff = new Date(yesterdayExpectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
-    if (yesterdayCutoff > windowStart) windowStart = yesterdayCutoff;
+  // Skipped when today has its own day-specific override: that override
+  // already fully defines today's window on its own terms, and inferring
+  // "yesterday" here would mean re-reading the employee's CURRENT live
+  // default as if it already applied yesterday too — wrong the moment that
+  // default just changed (e.g. a position swap effective today flips it to
+  // an overnight category), which would falsely push today's start hours
+  // later and swallow a legitimate early check-in (see positionSwap.js).
+  if (!expected?.fromOverride) {
+    const yesterdayShift = await resolveExpectedShift(employeeId, addDays(dateKey, -1));
+    if (isOvernightShift(yesterdayShift)) {
+      const yesterdayExpectedEnd = new Date(`${dateKey}T00:00:00`);
+      yesterdayExpectedEnd.setHours(yesterdayShift.endHour, yesterdayShift.endMinute, 0, 0);
+      const yesterdayCutoff = new Date(yesterdayExpectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+      if (yesterdayCutoff > windowStart) windowStart = yesterdayCutoff;
+    }
   }
 
   return { windowStart, windowEnd, expected, overnight };
@@ -237,6 +253,69 @@ async function markAbsent(employeeId, dateKey) {
   );
 }
 
+// Sweeps the last few days for any active employee who never scanned at all
+// that day, and has no other explanation on file, then marks it ຂາດວຽກ.
+// Nothing else does this automatically — recomputeDay only ever runs off an
+// actual incoming scan, so a day with zero scans otherwise sits with no
+// AttendanceDaily row at all (shows as a blank "-", not "ຂາດວຽກ") forever.
+// Called on a timer from index.js (see runDueScheduledSwaps for the same
+// pattern) — checking the last few days rather than just "yesterday" means a
+// stretch of server downtime still gets caught up once it's back.
+// A day is skipped (left alone) when:
+//  - it already has an AttendanceDaily row (a real scan, an existing 'leave'/
+//    'substituted' mark, or an earlier absent-sweep already handled it),
+//  - an approved Leave covers it,
+//  - a Shift override marks it 'rest' or 'swapped', or no override exists but
+//    it's the employee's recurring defaultRestDay,
+//  - there's no resolvable expected shift at all that day (nothing to be
+//    absent FROM — e.g. a ກົດ "ມາແທນ" position with no fixed schedule),
+//  - its scan-capture window (resolveShiftWindow, overnight-aware) hasn't
+//    closed yet — too early to call it a no-show.
+const ABSENT_SWEEP_DAYS_BACK = 4;
+
+async function markAbsentForMissedScans() {
+  const now = new Date();
+  const employees = await Employee.find({ status: 'active' }, '_id defaultRestDay');
+  const marked = [];
+
+  for (let daysAgo = 1; daysAgo <= ABSENT_SWEEP_DAYS_BACK; daysAgo += 1) {
+    const dateKey = addDays(toDateKey(now), -daysAgo);
+    const dow = new Date(`${dateKey}T00:00:00`).getDay();
+
+    // eslint-disable-next-line no-await-in-loop
+    const [existingDaily, overrides, approvedLeaves] = await Promise.all([
+      AttendanceDaily.find({ date: dateKey }, 'employee'),
+      Shift.find({ date: dateKey }, 'employee status'),
+      Leave.find(
+        { status: 'approved', startDate: { $lte: new Date(`${dateKey}T23:59:59.999`) }, endDate: { $gte: new Date(`${dateKey}T00:00:00`) } },
+        'employee'
+      ),
+    ]);
+    const hasDaily = new Set(existingDaily.map((r) => String(r.employee)));
+    const overrideStatusByEmployee = new Map(overrides.map((o) => [String(o.employee), o.status]));
+    const onLeave = new Set(approvedLeaves.map((l) => String(l.employee)));
+
+    for (const employee of employees) {
+      const empId = String(employee._id);
+      if (hasDaily.has(empId) || onLeave.has(empId)) continue;
+
+      const overrideStatus = overrideStatusByEmployee.get(empId);
+      if (overrideStatus === 'rest' || overrideStatus === 'swapped') continue;
+      if (!overrideStatus && employee.defaultRestDay === dow) continue;
+
+      // eslint-disable-next-line no-await-in-loop
+      const { windowEnd, expected } = await resolveShiftWindow(employee._id, dateKey);
+      if (!expected || now < windowEnd) continue;
+
+      // eslint-disable-next-line no-await-in-loop
+      const doc = await markAbsent(employee._id, dateKey);
+      marked.push(doc);
+    }
+  }
+
+  return marked;
+}
+
 async function markLeave(employeeId, dateKey) {
   const expected = await resolveExpectedShift(employeeId, dateKey);
   return AttendanceDaily.findOneAndUpdate(
@@ -318,6 +397,7 @@ module.exports = {
   isOvernightShift,
   recomputeDay,
   markAbsent,
+  markAbsentForMissedScans,
   markLeave,
   markSubstituted,
   reprocessFromLogs,

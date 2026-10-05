@@ -1,8 +1,8 @@
 import { useLogin } from '@refinedev/core';
-import { Button, Card, Form, Input, Typography, Alert, Space } from 'antd';
-import { LockOutlined, MailOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { Button, Card, Form, Input, Typography, Alert } from 'antd';
+import { LockOutlined, MailOutlined } from '@ant-design/icons';
 import { useState } from 'react';
-import { palette, loginGradient } from '../../theme/palette';
+import { loginGradient } from '../../theme/palette';
 
 interface LoginVariables {
   email: string;
@@ -36,27 +36,14 @@ export const LoginPage: React.FC = () => {
             padding: 24,
           }}
         >
-          <Space align="center" size={12} style={{ marginBottom: 16 }}>
-            <div
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                background: palette.primary,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 22,
-              }}
-            >
-              <ClockCircleOutlined />
-            </div>
-            <Typography.Title level={3} style={{ color: '#fff', margin: 0 }}>
-              HR &amp; ລົງເວລາ
+          <div style={{ textAlign: 'center', marginBottom: 0 }}>
+            <img src="/logo.png" alt="ROMEO" style={{ width: 200, maxWidth: '100%', height: 'auto' }} />
+            <Typography.Title level={3} style={{ color: '#fff', margin: '12px 0 0' }}>
+              ລະບົບຈັດການພະນັກງານ ROMEO
             </Typography.Title>
-          </Space>
-          <Typography.Paragraph style={{ color: 'rgba(255,255,255,0.75)', fontSize: 16 }}>
-            ລະບົບບໍລິຫານງານບຸກຄະລາກອນ ລົງເວລາເຂົ້າ-ອອກງານ ແລະ ຈັດການວັນລາ ຄົບໃນບ່ອນດຽວ
+          </div>
+          <Typography.Paragraph style={{ color: 'rgba(255,255,255,0.75)', fontSize: 16, margin: 0 }}>
+            ລະບົບບໍລິຫານບຸກຄະລາກອນROMEO ລົງເວລາເຂົ້າ-ອອກວຽກ ແລະ ຈັດການວັນລາ ຄົບຈົບໃນລະບົບດຽວ
           </Typography.Paragraph>
         </div>
 

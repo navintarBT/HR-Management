@@ -4,7 +4,7 @@ import { useGetIdentity, useDelete, useInvalidate, useNotification, useList } fr
 import { Table, Button, Modal, Form, DatePicker, Input, Select, Space, Typography, Tag, Tooltip, Popconfirm } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { Employee, Identity, Leave } from '../../types';
+import type { Employee, Identity, Leave, Department, Position } from '../../types';
 import { LeaveStatusTag } from '../../components/StatusTags';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { withLocalTextFilter } from '../../utils/selectFilters';
@@ -229,6 +229,32 @@ export const LeaveDetailList: React.FC = () => {
 
   const { monthStart, monthKey, toolbar, matchesEmployee } = useLeaveFilters();
 
+  const [departmentFilter, setDepartmentFilter] = useState<string>();
+  const [positionFilter, setPositionFilter] = useState<string>();
+  // null = follow the month stepper from useLeaveFilters above; once set, a
+  // custom range takes over from the month view until cleared.
+  const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null);
+
+  const { selectProps: departmentSelect } = useSelect<Department>({
+    resource: 'departments',
+    optionLabel: 'name',
+    optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
+  });
+  const { selectProps: positionSelect, query: positionQuery } = useSelect<Position>({
+    resource: 'positions',
+    optionLabel: 'name',
+    optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
+  });
+  const allPositions = positionQuery?.data?.data ?? [];
+  const positionOptionsForDepartment = useMemo(() => {
+    if (!departmentFilter) return undefined;
+    return allPositions
+      .filter((p) => (p.departments ?? []).some((d) => idOf(d) === departmentFilter))
+      .map((p) => ({ label: p.name, value: p._id }));
+  }, [allPositions, departmentFilter]);
+
   // Fetched unpaginated (a leave list is never huge) so the month view and the
   // code/name search below can both filter client-side — matching the pattern
   // used on the attendance report pages.
@@ -242,11 +268,20 @@ export const LeaveDetailList: React.FC = () => {
   const leaves = useMemo(
     () =>
       allLeaves.filter((l) => {
-        if (dayjs(l.startDate).format('YYYY-MM') !== monthKey) return false;
-        return matchesEmployee(typeof l.employee === 'object' ? l.employee : undefined);
+        if (customRange) {
+          const overlaps = !dayjs(l.startDate).isAfter(customRange[1], 'day') && !dayjs(l.endDate).isBefore(customRange[0], 'day');
+          if (!overlaps) return false;
+        } else if (dayjs(l.startDate).format('YYYY-MM') !== monthKey) {
+          return false;
+        }
+        const emp = typeof l.employee === 'object' ? l.employee : undefined;
+        if (!matchesEmployee(emp)) return false;
+        if (departmentFilter && idOf(emp?.department) !== departmentFilter) return false;
+        if (positionFilter && idOf(emp?.position) !== positionFilter) return false;
+        return true;
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allLeaves, monthKey]
+    [allLeaves, monthKey, customRange, departmentFilter, positionFilter]
   );
 
   // ລາໄປແລ້ວຈັກມື້ / ລວມທັງໝົດ — both read from every APPROVED leave an employee
@@ -406,6 +441,37 @@ export const LeaveDetailList: React.FC = () => {
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           {toolbar}
+          <Space wrap>
+            <Typography.Text type="secondary">ຫຼືເລືອກຊ່ວງເອງ:</Typography.Text>
+            <RangePicker
+              value={customRange ?? undefined}
+              onChange={(v) => setCustomRange(v && v[0] && v[1] ? [v[0], v[1]] : null)}
+              format="DD/MM/YYYY"
+              allowClear
+              placeholder={['ບໍ່ໄດ້ຕັ້ງ — ໃຊ້ເດືອນຂ້າງເທິງ', '']}
+            />
+            <Select
+              {...departmentSelect}
+              placeholder="ກອງຕາມພະແນກ"
+              allowClear
+              style={{ width: 180 }}
+              value={departmentFilter}
+              onChange={(v: any) => {
+                setDepartmentFilter(v);
+                const stillValid = !v || !positionFilter || allPositions.find((p) => p._id === positionFilter)?.departments?.some((d) => idOf(d) === v);
+                if (!stillValid) setPositionFilter(undefined);
+              }}
+            />
+            <Select
+              {...positionSelect}
+              options={positionOptionsForDepartment}
+              placeholder="ກອງຕາມຕຳແໜ່ງ"
+              allowClear
+              style={{ width: 180 }}
+              value={positionFilter}
+              onChange={(v: any) => setPositionFilter(v)}
+            />
+          </Space>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => show()}>
             ຂໍລາ
           </Button>

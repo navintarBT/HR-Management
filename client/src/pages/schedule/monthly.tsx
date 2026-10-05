@@ -9,12 +9,28 @@ import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
 
+// One action in the cell menu — a full-width button with a title and a one-line hint.
+const ChoiceButton: React.FC<{ title: string; description: string; onClick: () => void; disabled?: boolean }> = ({
+  title,
+  description,
+  onClick,
+  disabled,
+}) => (
+  <Button block disabled={disabled} onClick={onClick} style={{ height: 'auto', padding: '10px 12px', textAlign: 'left' }}>
+    <div>
+      <div style={{ fontWeight: 600 }}>{title}</div>
+      <div style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'normal' }}>{description}</div>
+    </div>
+  </Button>
+);
+
 type Cell =
   | { kind: 'unset' }
   | { kind: 'rest'; isOverride: boolean; overrideId?: string; isHoliday?: boolean; holidayName?: string }
   | { kind: 'work'; start: string; end: string; isOverride: boolean; overrideId?: string }
   | { kind: 'substituted' }
-  | { kind: 'leave' };
+  | { kind: 'leave' }
+  | { kind: 'swapped' };
 
 function idOf(value: { _id: string } | string | null | undefined) {
   return value && typeof value === 'object' ? value._id : value;
@@ -51,6 +67,10 @@ function computeCell(employee: Employee, dateKey: string, override?: Shift, isSu
       const isHoliday = !!(holiday && typeof holiday === 'object');
       return { kind: 'rest', isOverride: true, overrideId: override._id, isHoliday, holidayName: isHoliday ? holiday.name : undefined };
     }
+    // Auto-created when a position swap leaves this employee with no shift at
+    // all on the transition day itself (see positionSwap.js) — distinct from
+    // 'rest' so it doesn't count as a personal day off for leave purposes.
+    if (override.status === 'swapped') return { kind: 'swapped' };
     return { kind: 'work', start: override.startTime!, end: override.endTime!, isOverride: true, overrideId: override._id };
   }
   const dow = dayjs(dateKey).day();
@@ -66,6 +86,7 @@ const CELL_STYLE: Record<Cell['kind'], React.CSSProperties> = {
   work: { background: 'transparent' },
   substituted: { background: '#e6fffb' },
   leave: { background: '#fffbe6' },
+  swapped: { background: '#fff0f6' },
 };
 
 export const MonthlySchedulePage: React.FC = () => {
@@ -80,7 +101,7 @@ export const MonthlySchedulePage: React.FC = () => {
 
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
-    filters: [{ field: 'status', operator: 'eq', value: 'active' }],
+    filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
     pagination: { pageSize: 500 },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
@@ -311,24 +332,50 @@ export const MonthlySchedulePage: React.FC = () => {
     );
   };
 
-  const closeModal = () => setEditing(null);
-  const onSaved = () => {
-    notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ' });
+  const [choice, setChoice] = useState<'rest' | 'time' | 'cover' | 'editCover' | 'substitute' | null>(null);
+  useEffect(() => {
+    setChoice(null);
+  }, [editing?.employee._id, editing?.dateKey]);
+
+  const closeModal = () => {
+    setEditing(null);
+    setChoice(null);
+  };
+  const onSaved = (message = 'ບັນທຶກສຳເລັດ') => {
+    notify?.({ type: 'success', message });
     closeModal();
   };
 
-  const upsertOverride = (values: Record<string, unknown>) => {
+  const personLabel = (emp?: Employee) => `${emp?.employeeCode ?? ''} ${emp?.firstName ?? ''} ${emp?.lastName ?? ''}`.trim();
+  const shortDate = (dateKey: string) => dayjs(dateKey).format('DD/MM/YYYY');
+
+  // A rest day can be silently moved to a fallback weekday by the server when
+  // the position forbids the picked one — say so, instead of reporting the
+  // original date as if it were saved as-is.
+  const upsertOverride = (values: Record<string, unknown>, successMessage: string) => {
+    const onDone = (res: { data?: unknown }) => {
+      const savedDate = (res?.data as { date?: string } | undefined)?.date;
+      const requestedDate = values.date as string | undefined;
+      const moved = !!savedDate && !!requestedDate && savedDate !== requestedDate;
+      onSaved(moved ? `${successMessage} — ລະບົບເລື່ອນໄປວັນ ${shortDate(savedDate!)} ເນື່ອງຈາກຂໍ້ຈຳກັດວັນພັກຂອງຕຳແໜ່ງ` : successMessage);
+    };
     if (editingOverride) {
-      updateShift({ resource: 'shifts', id: editingOverride._id, values }, { onSuccess: onSaved });
+      updateShift({ resource: 'shifts', id: editingOverride._id, values }, { onSuccess: onDone });
     } else {
-      createShift({ resource: 'shifts', values }, { onSuccess: onSaved });
+      createShift({ resource: 'shifts', values }, { onSuccess: onDone });
     }
   };
 
   const handleSetRest = () => {
     if (!editing) return;
-    upsertOverride({ employee: editing.employee._id, date: editing.dateKey, status: 'rest' });
+    upsertOverride(
+      { employee: editing.employee._id, date: editing.dateKey, status: 'rest' },
+      `ຕັ້ງ ${personLabel(editing.employee)} ເປັນວັນພັກ ວັນທີ ${shortDate(editing.dateKey)}`
+    );
   };
+
+  const editingCovered =
+    editingOverride && typeof editingOverride.coveringFor === 'object' && editingOverride.coveringFor ? editingOverride.coveringFor : undefined;
 
   const restrictedDaysForEditing =
     (editing && typeof editing.employee.position === 'object' ? editing.employee.position?.restrictedRestDays : undefined) ?? [];
@@ -341,19 +388,139 @@ export const MonthlySchedulePage: React.FC = () => {
     if (!editing) return;
     const time = timeForm.getFieldValue('time') as [Dayjs, Dayjs] | undefined;
     if (!time) return;
-    upsertOverride({
-      employee: editing.employee._id,
-      position: idOf(editing.employee.position),
-      date: editing.dateKey,
-      status: 'scheduled',
-      startTime: time[0].format('HH:mm'),
-      endTime: time[1].format('HH:mm'),
-    });
+    const startTime = time[0].format('HH:mm');
+    const endTime = time[1].format('HH:mm');
+    upsertOverride(
+      {
+        employee: editing.employee._id,
+        position: idOf(editing.employee.position),
+        date: editing.dateKey,
+        status: 'scheduled',
+        startTime,
+        endTime,
+      },
+      `ກຳນົດເວລາພິເສດ ${startTime}-${endTime} ໃຫ້ ${personLabel(editing.employee)} ວັນທີ ${shortDate(editing.dateKey)}`
+    );
+  };
+
+  // ທຳແທນຄົນອື່ນ — the editing employee is the one actually working; the picked
+  // person is the one being covered. Position comes from the covered person,
+  // since that's the job being done.
+  const [coverForm] = Form.useForm();
+  const [coverDept, setCoverDept] = useState<string>();
+  const [coverPos, setCoverPos] = useState<string>();
+  const coverDeptOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEmployees) {
+      if (e.department && typeof e.department === 'object') map.set(e.department._id, e.department.name);
+    }
+    return Array.from(map, ([value, label]) => ({ value, label }));
+  }, [allEmployees]);
+  const coverPosOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEmployees) {
+      if (coverDept && idOf(e.department) !== coverDept) continue;
+      if (e.position && typeof e.position === 'object') map.set(e.position._id, e.position.name);
+    }
+    return Array.from(map, ([value, label]) => ({ value, label }));
+  }, [allEmployees, coverDept]);
+  const coverTargetOptions = useMemo(
+    () =>
+      allEmployees
+        .filter((e) => e._id !== editing?.employee._id)
+        .filter((e) => (!coverDept || idOf(e.department) === coverDept) && (!coverPos || idOf(e.position) === coverPos))
+        .map((e) => ({ value: e._id, label: `${e.employeeCode ?? ''} ${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() })),
+    [allEmployees, coverDept, coverPos, editing]
+  );
+
+  const handleCover = (values: { coveredEmployee: string; time: [Dayjs, Dayjs] }) => {
+    if (!editing) return;
+    const covered = allEmployees.find((e) => e._id === values.coveredEmployee);
+    const coveredPositionId = idOf(covered?.position);
+    if (!coveredPositionId) {
+      notify?.({ type: 'error', message: 'ຜູ້ຖືກແທນຍັງບໍ່ມີຕຳແໜ່ງ ກະລຸນາຕັ້ງຕຳແໜ່ງໃຫ້ກ່ອນ' });
+      return;
+    }
+    createShift(
+      {
+        resource: 'shifts',
+        values: {
+          employee: editing.employee._id,
+          coveringFor: values.coveredEmployee,
+          position: coveredPositionId,
+          date: editing.dateKey,
+          startTime: values.time[0].format('HH:mm'),
+          endTime: values.time[1].format('HH:mm'),
+          status: 'scheduled',
+        },
+      },
+      {
+        onSuccess: () => {
+          coverForm.resetFields();
+          setCoverDept(undefined);
+          setCoverPos(undefined);
+          onSaved(
+            `ບັນທຶກແລ້ວ: ${personLabel(editing.employee)} ໄປທຳແທນ ${personLabel(covered)} ວັນ${shortDate(editing.dateKey)} ເວລາ ${values.time[0].format('HH:mm')}-${values.time[1].format('HH:mm')}`
+          );
+        },
+      }
+    );
+  };
+
+  // The covered person's own time for that day — their queued time if they have
+  // one, otherwise their default shift — so the cover form starts from a real
+  // schedule instead of an empty picker.
+  const defaultTimeFor = (emp: Employee, dateKey: string): [Dayjs, Dayjs] | undefined => {
+    const queued = overrideByEmpDate[`${emp._id}_${dateKey}`];
+    if (queued?.status === 'scheduled' && queued.startTime && queued.endTime) {
+      return [dayjs(`${dateKey}T${queued.startTime}`), dayjs(`${dateKey}T${queued.endTime}`)];
+    }
+    const category = emp.defaultShiftCategory;
+    if (category && typeof category === 'object') {
+      return [dayjs(`${dateKey}T${category.startTime}`), dayjs(`${dateKey}T${category.endTime}`)];
+    }
+    if (emp.defaultShiftStart && emp.defaultShiftEnd) {
+      return [dayjs(`${dateKey}T${emp.defaultShiftStart}`), dayjs(`${dateKey}T${emp.defaultShiftEnd}`)];
+    }
+    return undefined;
+  };
+
+  const fillCoverTime = (coveredId: string) => {
+    if (!editing) return;
+    const covered = allEmployees.find((e) => e._id === coveredId);
+    const time = covered ? defaultTimeFor(covered, editing.dateKey) : undefined;
+    if (time) coverForm.setFieldValue('time', time);
+  };
+
+  const [editCoverForm] = Form.useForm();
+  useEffect(() => {
+    if (choice === 'editCover' && editingOverride?.startTime && editingOverride?.endTime && editing) {
+      editCoverForm.setFieldsValue({
+        time: [dayjs(`${editing.dateKey}T${editingOverride.startTime}`), dayjs(`${editing.dateKey}T${editingOverride.endTime}`)],
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [choice]);
+
+  const handleEditCover = (values: { time: [Dayjs, Dayjs] }) => {
+    if (!editingOverride || !editing) return;
+    const startTime = values.time[0].format('HH:mm');
+    const endTime = values.time[1].format('HH:mm');
+    updateShift(
+      { resource: 'shifts', id: editingOverride._id, values: { startTime, endTime } },
+      {
+        onSuccess: () =>
+          onSaved(`ແກ້ໄຂເວລາໄປເຮັດແທນ ${startTime}-${endTime} ໃຫ້ ${personLabel(editing.employee)} ວັນທີ ${shortDate(editing.dateKey)} ແລ້ວ`),
+      }
+    );
   };
 
   const handleRevert = () => {
-    if (!editingOverride) return;
-    deleteShift({ resource: 'shifts', id: editingOverride._id }, { onSuccess: onSaved });
+    if (!editingOverride || !editing) return;
+    deleteShift(
+      { resource: 'shifts', id: editingOverride._id },
+      { onSuccess: () => onSaved(`ຄືນຄ່າປົກກະຕິແລ້ວ ${personLabel(editing.employee)} ວັນທີ ${shortDate(editing.dateKey)}`) }
+    );
   };
 
   // Only offered on employees/positions flagged for it (see ຕັ້ງຄ່າກົດ "ມາແທນ")
@@ -376,7 +543,7 @@ export const MonthlySchedulePage: React.FC = () => {
       });
       invalidate({ resource: 'shifts', invalidates: ['list'] });
       invalidate({ resource: 'attendance-daily', invalidates: ['list'] });
-      onSaved();
+      onSaved(`ໝາຍວ່າມີຄົນມາແທນ ${personLabel(editing.employee)} ວັນທີ ${shortDate(editing.dateKey)} ແລ້ວ`);
     } catch (err: any) {
       notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
     } finally {
@@ -563,13 +730,21 @@ export const MonthlySchedulePage: React.FC = () => {
                 const isOnLeave = hasApprovedLeaveOn(emp._id, dateKey);
                 const cell = computeCell(emp, dateKey, override, isSubstituted, isOnLeave);
                 const isOverride = (cell.kind === 'rest' || cell.kind === 'work') && cell.isOverride;
+                // Auto-created by a position swap (see positionSwap.js) — an
+                // admin editing this by hand could put the employee back on a
+                // shift the swap-day logic deliberately left them without,
+                // undermining the whole reason it exists. Locked, same as a
+                // read-only cell for a non-manager.
+                const isLocked = cell.kind === 'swapped';
+                const clickable = isManager && !isLocked;
                 return (
                   <div
-                    onClick={() => isManager && setEditing({ employee: emp, dateKey })}
+                    onClick={() => clickable && setEditing({ employee: emp, dateKey })}
+                    title={isLocked ? 'ສ້າງໂດຍລະບົບຕອນສະຫຼັບຕຳແໜ່ງ — ແກ້ໄຂຢູ່ນີ້ບໍ່ໄດ້' : undefined}
                     style={{
                       ...CELL_STYLE[cell.kind],
                       borderLeft: isOverride ? '3px solid #d46b08' : CELL_STYLE[cell.kind].borderLeft,
-                      cursor: isManager ? 'pointer' : 'default',
+                      cursor: clickable ? 'pointer' : 'default',
                       minHeight: 40,
                       padding: '4px 6px',
                       textAlign: 'center',
@@ -593,6 +768,7 @@ export const MonthlySchedulePage: React.FC = () => {
                     )}
                     {cell.kind === 'substituted' && <span style={{ color: '#08979c' }}>ມາແທນ</span>}
                     {cell.kind === 'leave' && <span style={{ color: '#d48806' }}>ລາ</span>}
+                    {cell.kind === 'swapped' && <span style={{ color: '#c41d7f' }}>ສະຫຼັບກະ</span>}
                   </div>
                 );
               }}
@@ -615,58 +791,182 @@ export const MonthlySchedulePage: React.FC = () => {
             {editingCell?.kind === 'work' &&
               `ປັດຈຸບັນ: ${editingCell.start}-${editingCell.end}${editingCell.isOverride ? ' (ແກ້ໄຂພິເສດ)' : ' (ຄ່າປົກກະຕິ)'}`}
             {editingCell?.kind === 'unset' && 'ປັດຈຸບັນ: ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ'}
-            {editingCell?.kind === 'substituted' && 'ປັດຈຸບັນ: ມາແທນ (ມີຄົນອື່ນມາແທນ)'}
+            {editingCell?.kind === 'substituted' && 'ປັດຈຸບັນ: ມີຄົນອື່ນມາແທນ'}
             {editingCell?.kind === 'leave' && 'ປັດຈຸບັນ: ລາ (ມີໃບລາອະນຸມັດແລ້ວຄຸມວັນນີ້)'}
+            {editingCovered && `ປັດຈຸບັນ: ໄປທຳແທນ ${personLabel(editingCovered)} (${editingOverride?.startTime}-${editingOverride?.endTime})`}
           </Typography.Text>
 
-          <Space wrap>
-            <Button
-              onClick={handleSetRest}
-              loading={saving}
-              disabled={isEditingDateRestDayBlocked}
-              title={isEditingDateRestDayBlocked ? 'ຕຳແໜ່ງນີ້ຫ້າມພັກວັນນີ້' : undefined}
-            >
-              ຕັ້ງເປັນວັນພັກ
-            </Button>
-            {editingOverride && (
-              <Button onClick={handleRevert} loading={saving}>
-                ຄືນຄ່າປົກກະຕິ
-              </Button>
-            )}
-            {canSubstitute && editingCell?.kind === 'substituted' && (
-              <Popconfirm
-                title="ຍົກເລີກ ມາແທນ?"
-                description="ຈະກັບໄປວ່າງເປົ່າຄືເດີມ — ຕ້ອງໄປຈັດຄິວ ຫຼື ຕັ້ງວັນພັກໃຫ້ໃໝ່ຖ້າຕ້ອງການ"
-                okText="ຍົກເລີກມາແທນ"
-                cancelText="ບໍ່"
-                onConfirm={handleCancelSubstitute}
-              >
-                <Button danger loading={submittingSubstitute}>
-                  ຍົກເລີກ "ມາແທນ"
+          {choice === null ? (
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              <ChoiceButton
+                title="ຕັ້ງເປັນວັນພັກ"
+                description={
+                  editingCovered
+                    ? 'ວັນນີ້ມີການໄປທຳແທນຢູ່ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ'
+                    : isEditingDateRestDayBlocked
+                      ? 'ຕຳແໜ່ງນີ້ຫ້າມພັກວັນນີ້'
+                      : 'ຕັ້ງວັນນີ້ເປັນວັນພັກຂອງຄົນນີ້'
+                }
+                disabled={!!editingCovered || isEditingDateRestDayBlocked}
+                onClick={() => setChoice('rest')}
+              />
+              <ChoiceButton
+                title="ກຳນົດເວລາພິເສດໃຫ້ຕົວເອງ"
+                description={
+                  editingCovered
+                    ? 'ວັນນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ ຕ້ອງລຶບການເຮັດແທນກ່ອນ ຈຶ່ງຈະກຳນົດເວລາເອງໄດ້'
+                    : 'ຕັ້ງເວລາເຂົ້າ-ອອກສະເພາະວັນນີ້ ແທນເວລາປົກກະຕິ'
+                }
+                disabled={!!editingCovered}
+                onClick={() => setChoice('time')}
+              />
+              {editingCovered ? (
+                <ChoiceButton
+                  title="ແກ້ໄຂເວລາໄປເຮັດແທນ"
+                  description={`ປັດຈຸບັນ ${editingOverride?.startTime}-${editingOverride?.endTime} ແທນ ${personLabel(editingCovered)}`}
+                  onClick={() => setChoice('editCover')}
+                />
+              ) : canSubstitute ? (
+                <ChoiceButton
+                  title={editingCell?.kind === 'substituted' ? 'ຍົກເລີກການມີຄົນມາແທນ' : 'ມີຄົນມາທຳແທນໃຫ້'}
+                  description="ຄົນນີ້ບໍ່ໄດ້ມາເອງ ວັນນີ້ຈະບໍ່ຖືກນັບເປັນຂາດວຽກ"
+                  onClick={() => setChoice('substitute')}
+                />
+              ) : (
+                <ChoiceButton
+                  title="ໄປເຮັດແທນຄົນອື່ນ"
+                  description={
+                    editingOverride && !editingCovered
+                      ? 'ວັນນີ້ມີການຕັ້ງຄ່າພິເສດຢູ່ແລ້ວ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ ຈຶ່ງຈະໄປເຮັດແທນໄດ້'
+                      : editingCovered
+                        ? 'ວັນນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ແລ້ວ'
+                        : 'ຄົນນີ້ຈະໄປເຮັດວຽກແທນຄົນທີ່ເລືອກໃນວັນນີ້'
+                  }
+                  disabled={!!editingCovered || (!!editingOverride && !editingCovered)}
+                  onClick={() => setChoice('cover')}
+                />
+              )}
+              {editingOverride && (
+                <Button type="link" onClick={handleRevert} loading={saving} style={{ paddingLeft: 0 }}>
+                  ຄືນຄ່າປົກກະຕິ
                 </Button>
-              </Popconfirm>
-            )}
-            {canSubstitute && editingCell?.kind !== 'substituted' && (
-              <Popconfirm
-                title="ຕັ້ງເປັນ ມາແທນ?"
-                description="ໝາຍຄວາມວ່າມື້ນີ້ມີຄົນອື່ນມາແທນ — ຈະບໍ່ຖືກຄິດເປັນວັນຂາດວຽກ, ແລະຄິວທີ່ຈັດໄວ້ໃນມື້ນີ້ (ຖ້າມີ) ຈະຖືກລຶບອອກໃຫ້ອັດຕະໂນມັດ"
-                okText="ຕັ້ງເປັນມາແທນ"
-                cancelText="ບໍ່"
-                onConfirm={handleSubstitute}
-              >
-                <Button loading={submittingSubstitute}>ຕັ້ງເປັນ "ມາແທນ" (ມີຄົນອື່ນມາແທນ)</Button>
-              </Popconfirm>
-            )}
-          </Space>
+              )}
+            </Space>
+          ) : (
+            <div>
+              <Button type="link" icon={<LeftOutlined />} onClick={() => setChoice(null)} style={{ paddingLeft: 0, marginBottom: 8 }}>
+                ກັບໄປເມນູ
+              </Button>
 
-          <Form form={timeForm} layout="inline">
-            <Form.Item name="time" label="ຫຼືກຳນົດເວລາເອງ">
-              <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
-            </Form.Item>
-            <Button type="primary" onClick={handleSaveTime} loading={saving}>
-              ບັນທຶກເວລາ
-            </Button>
-          </Form>
+              {choice === 'rest' && editing && (
+                <Space direction="vertical">
+                  <Typography.Text>
+                    ຕັ້ງ {personLabel(editing.employee)} ເປັນວັນພັກ ວັນທີ {shortDate(editing.dateKey)}
+                  </Typography.Text>
+                  <Button type="primary" onClick={handleSetRest} loading={saving} disabled={isEditingDateRestDayBlocked}>
+                    ຢືນຢັນວັນພັກ
+                  </Button>
+                </Space>
+              )}
+
+              {choice === 'time' && (
+                <Form form={timeForm} layout="inline">
+                  <Form.Item name="time">
+                    <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
+                  </Form.Item>
+                  <Button type="primary" onClick={handleSaveTime} loading={saving}>
+                    ບັນທຶກເວລາພິເສດ
+                  </Button>
+                </Form>
+              )}
+
+              {choice === 'cover' && (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space wrap>
+                    <Select
+                      allowClear
+                      placeholder="ພະແນກ (ຜູ້ຖືກແທນ)"
+                      style={{ width: 170 }}
+                      value={coverDept}
+                      options={coverDeptOptions}
+                      onChange={(v) => {
+                        setCoverDept(v);
+                        setCoverPos(undefined);
+                        coverForm.setFieldValue('coveredEmployee', undefined);
+                      }}
+                    />
+                    <Select
+                      allowClear
+                      placeholder="ຕຳແໜ່ງ (ຜູ້ຖືກແທນ)"
+                      style={{ width: 190 }}
+                      value={coverPos}
+                      options={coverPosOptions}
+                      onChange={(v) => {
+                        setCoverPos(v);
+                        coverForm.setFieldValue('coveredEmployee', undefined);
+                      }}
+                    />
+                  </Space>
+                  <Form form={coverForm} layout="inline" onFinish={handleCover}>
+                    <Form.Item name="coveredEmployee" rules={[{ required: true, message: 'ເລືອກຜູ້ຖືກແທນ' }]}>
+                      <Select
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="ຜູ້ຖືກແທນ"
+                        style={{ width: 260 }}
+                        options={coverTargetOptions}
+                        onChange={fillCoverTime}
+                      />
+                    </Form.Item>
+                    <Form.Item name="time" rules={[{ required: true, message: 'ເລືອກເວລາ' }]}>
+                      <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
+                    </Form.Item>
+                    <Button type="primary" htmlType="submit" loading={creating}>
+                      ບັນທຶກການໄປທຳແທນ
+                    </Button>
+                  </Form>
+                </Space>
+              )}
+
+              {choice === 'editCover' && editingOverride && (
+                <Form form={editCoverForm} layout="inline" onFinish={handleEditCover}>
+                  <Form.Item name="time" rules={[{ required: true, message: 'ເລືອກເວລາ' }]}>
+                    <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
+                  </Form.Item>
+                  <Button type="primary" htmlType="submit" loading={updating}>
+                    ບັນທຶກເວລາໃໝ່
+                  </Button>
+                </Form>
+              )}
+
+              {choice === 'substitute' &&
+                (editingCell?.kind === 'substituted' ? (
+                  <Popconfirm
+                    title="ຍົກເລີກການມີຄົນມາແທນ?"
+                    description="ຈະກັບໄປວ່າງເປົ່າຄືເດີມ — ຕ້ອງໄປຈັດຄິວ ຫຼື ຕັ້ງວັນພັກໃຫ້ໃໝ່ຖ້າຕ້ອງການ"
+                    okText="ຍົກເລີກ"
+                    cancelText="ບໍ່"
+                    onConfirm={handleCancelSubstitute}
+                  >
+                    <Button danger loading={submittingSubstitute}>
+                      ຍົກເລີກການມີຄົນມາແທນ
+                    </Button>
+                  </Popconfirm>
+                ) : (
+                  <Popconfirm
+                    title="ໝາຍວ່າມີຄົນມາແທນ?"
+                    description="ຈະບໍ່ຖືກຄິດເປັນວັນຂາດວຽກ, ແລະຄິວທີ່ຈັດໄວ້ໃນມື້ນີ້ (ຖ້າມີ) ຈະຖືກລຶບອອກໃຫ້ອັດຕະໂນມັດ"
+                    okText="ຢືນຢັນ"
+                    cancelText="ບໍ່"
+                    onConfirm={handleSubstitute}
+                  >
+                    <Button type="primary" loading={submittingSubstitute}>
+                      ຢືນຢັນວ່າມີຄົນມາແທນ
+                    </Button>
+                  </Popconfirm>
+                ))}
+            </div>
+          )}
         </Space>
       </Modal>
 

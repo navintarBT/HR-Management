@@ -25,6 +25,8 @@ const dashboardRoutes = require('./routes/dashboard');
 const restDayHistoryRoutes = require('./routes/restDayHistory');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
+const { markAbsentForMissedScans } = require('./utils/attendanceProcessor');
+const { deactivateEndedResignations } = require('./utils/employeeStatus');
 
 const app = express();
 
@@ -82,6 +84,17 @@ connectDB()
     runDueScheduledSwaps().catch((err) => console.error('[position-swaps] startup check failed', err));
     setInterval(() => {
       runDueScheduledSwaps().catch((err) => console.error('[position-swaps] scheduled check failed', err));
+    }, 15 * 60 * 1000);
+    // Same catch-up-on-restart + periodic-recheck pattern as the swap check
+    // above — sweeps the last few days for anyone who never scanned at all
+    // and has no rest/leave on file, marking them ຂາດວຽກ.
+    markAbsentForMissedScans().catch((err) => console.error('[attendance] absent sweep startup check failed', err));
+    setInterval(() => {
+      markAbsentForMissedScans().catch((err) => console.error('[attendance] absent sweep scheduled check failed', err));
+    }, 15 * 60 * 1000);
+    deactivateEndedResignations().catch((err) => console.error('[employees] resignation sweep startup check failed', err));
+    setInterval(() => {
+      deactivateEndedResignations().catch((err) => console.error('[employees] resignation sweep scheduled check failed', err));
     }, 15 * 60 * 1000);
   })
   .catch((err) => {

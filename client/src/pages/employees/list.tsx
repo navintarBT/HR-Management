@@ -90,9 +90,7 @@ export const EmployeeList: React.FC = () => {
     setFilters(filters, 'replace');
   };
 
-  // Quick "terminate" action — captures why, then hands off to the server,
-  // which auto-stamps terminationDate the moment status flips to "resigned"
-  // (see server/src/routes/employees.js) so only the reason needs entering here.
+  // Quick "terminate" action — captures the last working day and why.
   const [terminating, setTerminating] = useState<Employee | null>(null);
   const [terminateForm] = Form.useForm();
   const { mutate: updateEmployee, isLoading: savingTermination } = useUpdate();
@@ -100,13 +98,22 @@ export const EmployeeList: React.FC = () => {
   const openTerminate = (emp: Employee) => {
     setTerminating(emp);
     terminateForm.resetFields();
+    terminateForm.setFieldsValue({ terminationDate: dayjs() });
   };
 
   const submitTerminate = async () => {
     if (!terminating) return;
     const values = await terminateForm.validateFields();
     updateEmployee(
-      { resource: 'employees', id: terminating._id, values: { status: 'resigned', terminationReason: values.terminationReason } },
+      {
+        resource: 'employees',
+        id: terminating._id,
+        values: {
+          status: 'resigned',
+          terminationDate: (values.terminationDate as Dayjs).format('YYYY-MM-DD'),
+          terminationReason: values.terminationReason,
+        },
+      },
       {
         onSuccess: () => {
           notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ' });
@@ -310,6 +317,13 @@ export const EmployeeList: React.FC = () => {
         cancelText="ຍົກເລີກ"
       >
         <Form form={terminateForm} layout="vertical">
+          <Form.Item
+            label="ວັນທີ່ອອກ (ວັນເຮັດວຽກສຸດທ້າຍ)"
+            name="terminationDate"
+            rules={[{ required: true, message: 'ກະລຸນາເລືອກວັນທີ່ອອກ' }]}
+          >
+            <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
+          </Form.Item>
           <Form.Item
             label="ເຫດຜົນທີ່ອອກ"
             name="terminationReason"
