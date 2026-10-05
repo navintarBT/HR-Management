@@ -33,9 +33,18 @@ async function inferType(employeeId, timestamp) {
 
 // Real-world ingestion endpoint for biometric/RFID terminals (or the simulator button).
 // Real ZKTeco devices speak the ADMS protocol instead (see routes/adms.js) — this
-// endpoint is a convenience bridge for the in-app simulator and any terminal
-// middleware that can be configured to POST plain JSON instead.
-router.post('/push', async (req, res, next) => {
+// endpoint is a convenience bridge for any terminal middleware that can be
+// configured to POST plain JSON instead. It can't carry a user JWT (it's not a
+// person logging in), so it's gated by a separate shared secret instead —
+// fails closed (401 on every request) if DEVICE_PUSH_SECRET is never set,
+// since nothing in this app currently calls this route itself.
+router.post('/push', (req, res, next) => {
+  const expected = process.env.DEVICE_PUSH_SECRET;
+  if (!expected || req.get('X-Device-Secret') !== expected) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  next();
+}, async (req, res, next) => {
   try {
     const { deviceId, userId, timestamp } = req.body;
     if (!userId || !timestamp) {

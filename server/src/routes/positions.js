@@ -24,7 +24,10 @@ function validateRestDayFallback(restrictedRestDays, restDayFallback) {
 }
 
 module.exports = crudRouter(Position, {
-  populate: 'departments head',
+  // `head` references a full Employee document — scoped to display-only
+  // fields so every employee/manager who reads a position's head never gets
+  // that person's salary/phone/email back.
+  populate: ['departments', { path: 'head', select: 'firstName lastName employeeCode photoUrl' }],
   writeRoles: ['admin'],
   readRoles: ['admin', 'manager', 'employee'],
   searchFields: ['name'],

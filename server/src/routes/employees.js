@@ -12,21 +12,50 @@ const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule')
 const { resolveRestDay } = require('../utils/restDayRules');
 
 const router = express.Router();
-const POPULATE = 'department position supervisor positionHead employmentType defaultShiftCategory';
+// supervisor/positionHead reference a full Employee document (including
+// salary, phone, etc.) — scoped to display-only fields so looking up a
+// colleague's manager never leaks their pay or contact details.
+const SAFE_PERSON_FIELDS = 'firstName lastName employeeCode photoUrl';
+const POPULATE = [
+  'department',
+  'position',
+  { path: 'supervisor', select: SAFE_PERSON_FIELDS },
+  { path: 'positionHead', select: SAFE_PERSON_FIELDS },
+  'employmentType',
+  'defaultShiftCategory',
+];
 
 const PHOTOS_DIR = path.join(__dirname, '../../uploads/employees');
 fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 
-const ALLOWED_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+// Client-supplied mimetype/originalname are just request metadata an attacker
+// fully controls — `fileFilter` below is a cheap first reject, but the actual
+// type/extension used for storage comes from sniffing the real file bytes
+// (magic numbers), so a renamed/relabeled .svg or .html can't slip through
+// and later get served (and executed) as one by routes/index.js's static
+// mount for /uploads.
+const PHOTO_SIGNATURES = [
+  { ext: '.jpg', mimetype: 'image/jpeg', magic: [0xff, 0xd8, 0xff] },
+  { ext: '.png', mimetype: 'image/png', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  // WEBP: "RIFF"....{"WEBP" — bytes 8-11 checked separately below.
+  { ext: '.webp', mimetype: 'image/webp', magic: [0x52, 0x49, 0x46, 0x46] },
+];
+
+function sniffPhotoType(buffer) {
+  for (const sig of PHOTO_SIGNATURES) {
+    if (buffer.length < sig.magic.length) continue;
+    const matches = sig.magic.every((byte, i) => buffer[i] === byte);
+    if (!matches) continue;
+    if (sig.ext === '.webp' && buffer.toString('ascii', 8, 12) !== 'WEBP') continue;
+    return sig;
+  }
+  return null;
+}
+
+const ALLOWED_PHOTO_TYPES = PHOTO_SIGNATURES.map((s) => s.mimetype);
 
 const photoUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, PHOTOS_DIR),
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_PHOTO_TYPES.includes(file.mimetype)) {
@@ -42,8 +71,23 @@ function uploadPhoto(req, res, next) {
       err.status = 400;
       return next(err);
     }
+    if (req.file) {
+      const sig = sniffPhotoType(req.file.buffer);
+      if (!sig) {
+        const typeErr = new Error('File content is not a valid JPEG, PNG, or WEBP image');
+        typeErr.status = 400;
+        return next(typeErr);
+      }
+      req.file.detectedExt = sig.ext;
+    }
     next();
   });
+}
+
+function savePhotoBuffer(file) {
+  const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}${file.detectedExt}`;
+  fs.writeFileSync(path.join(PHOTOS_DIR, filename), file.buffer);
+  return filename;
 }
 
 function buildListQuery(req) {
@@ -177,7 +221,8 @@ function validateEmployee(payload, partial = false) {
 
 router.post('/upload-photo', authenticate, requireRole('admin'), uploadPhoto, (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
-  res.status(201).json({ url: `/uploads/employees/${req.file.filename}` });
+  const filename = savePhotoBuffer(req.file);
+  res.status(201).json({ url: `/uploads/employees/${filename}` });
 });
 
 router.get('/', authenticate, requireRole('admin', 'manager', 'employee'), async (req, res, next) => {

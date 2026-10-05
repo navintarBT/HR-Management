@@ -11,7 +11,32 @@ const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attend
 //   GET  /iclock/cdata?SN=<serial>&options=all   device handshake / config pull
 //   POST /iclock/cdata?SN=<serial>&table=ATTLOG  attendance punches (body: one per line)
 //   GET  /iclock/getrequest?SN=<serial>           device polls for pending commands
+//
+// Why this matters for "scans go missing when the network drops": the terminal keeps
+// every punch in local flash until this endpoint acknowledges it with a plain-text
+// "OK". If the network is down, or this endpoint errors, or it replies with anything
+// other than "OK", the device keeps the record queued and retries on its next poll —
+// so a device that catches up after an outage re-sends its whole unacknowledged
+// backlog in one batch. Ingestion below is upsert-based (keyed on device + PIN +
+// timestamp) so a resend — or a firmware retry that never saw our "OK" — never
+// creates a duplicate punch.
+//
+// NOTE: implemented against the documented ADMS wire format but not yet against a
+// physical terminal — run one real device against it before relying on this broadly.
 const router = express.Router();
+
+// This endpoint is unauthenticated by necessity (see above), so `SN`/`table`
+// can't be trusted the way an authenticated route's inputs can be. Express's
+// query parser turns bracketed query strings (`?SN[$ne]=null`) into objects,
+// which — if ever handed straight to a Mongoose filter — stop meaning "this
+// literal value" and start meaning "any document where this field is not
+// null", matching/touching a real device's row instead of a nonexistent one
+// with a guessed/fake serial. A real ZKTeco SN is always a short alphanumeric
+// string, so reject anything else outright rather than cast-and-hope.
+function parseSerial(value) {
+  const sn = typeof value === 'string' ? value : '';
+  return /^[A-Za-z0-9_-]{1,40}$/.test(sn) ? sn : null;
+}
 
 async function findOrTouchDevice(serialNumber) {
   const device = await Device.findOneAndUpdate(
@@ -53,7 +78,8 @@ function parseAttLog(body) {
 
 router.get('/iclock/cdata', async (req, res, next) => {
   try {
-    const { SN, options } = req.query;
+    const SN = parseSerial(req.query.SN);
+    const { options } = req.query;
     if (!SN) return res.type('text/plain').send('ERROR');
     const device = await findOrTouchDevice(SN);
 
@@ -81,24 +107,33 @@ router.get('/iclock/cdata', async (req, res, next) => {
 
 router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, next) => {
   try {
-    const { SN, table, Stamp } = req.query;
+    const SN = parseSerial(req.query.SN);
+    const table = typeof req.query.table === 'string' ? req.query.table : '';
+    const Stamp = typeof req.query.Stamp === 'string' ? req.query.Stamp : '';
     if (!SN || !table) return res.type('text/plain').send('ERROR');
     const device = await findOrTouchDevice(SN);
 
     if (table.toUpperCase() === 'ATTLOG') {
       const rows = parseAttLog(req.body);
       const affected = new Map();
+      let stored = 0;
+      let unmatched = 0;
 
       for (const row of rows) {
         const timestamp = new Date(row.dateTime.replace(' ', 'T'));
         if (Number.isNaN(timestamp.getTime())) continue;
 
         const employee = await Employee.findOne({ deviceUserId: row.pin });
+        if (!employee) unmatched += 1;
         const type = employee ? await inferType(employee._id, timestamp) : 'auto';
 
         // Upsert on (device, pin, timestamp) so a re-sent/duplicate punch (the
         // terminal retries if it never saw our "OK") doesn't create a second
-        // log row or double-count worked hours.
+        // log row or double-count worked hours. Checked for existence first
+        // (rather than inspecting the upsert's result metadata, whose shape
+        // isn't stable across mongoose/driver versions) purely so the log
+        // line below can distinguish a genuinely new punch from a resend.
+        const existed = await AttendanceLog.exists({ deviceId: SN, deviceUserId: row.pin, timestamp });
         await AttendanceLog.findOneAndUpdate(
           { deviceId: SN, deviceUserId: row.pin, timestamp },
           {
@@ -111,6 +146,7 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
           },
           { upsert: true, setDefaultsOnInsert: true }
         );
+        if (!existed) stored += 1;
 
         if (employee) affected.set(`${employee._id}|${await resolveShiftDateKey(employee._id, timestamp)}`, true);
       }
@@ -123,10 +159,17 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
       if (Stamp) {
         await Device.updateOne({ serialNumber: SN }, { attStamp: Math.max(device.attStamp, Number(Stamp) || 0) });
       }
+
+      console.log(`[adms] SN=${SN} ATTLOG batch: ${rows.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
+    } else {
+      console.log(`[adms] ignoring table=${table} from SN=${SN} (${(req.body || '').length} bytes)`);
     }
 
     res.type('text/plain').send('OK');
   } catch (err) {
+    // Not responding "OK" here is deliberate — that's what makes the device keep this
+    // batch queued and retry it later, which is exactly what we want if something went
+    // wrong on our end (e.g. a transient DB hiccup) rather than the data being bad.
     next(err);
   }
 });
@@ -134,6 +177,16 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
 router.get('/iclock/getrequest', (req, res) => {
   // No pending device commands (e.g. "enroll new user") to push right now.
   res.type('text/plain').send('OK');
+});
+
+// Must be registered after every route above — Express only routes an error to
+// handlers declared later in the same chain. A JSON error body (the app-level
+// default) isn't something the device's plaintext parser expects; replying in
+// its own protocol keeps its retry behavior sane.
+// eslint-disable-next-line no-unused-vars
+router.use((err, req, res, next) => {
+  console.error('[adms] ingestion error, device will retry this batch:', err);
+  res.status(500).type('text/plain').send('ERROR');
 });
 
 module.exports = router;
