@@ -13,6 +13,16 @@ function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
 
+// An unexcused absence (no leave covering the day) is worse when it lands on
+// a day the employee's position isn't even allowed to schedule as a rest day
+// (Position.restrictedRestDays, ตั้งค่ากฎตำแหน่ง) — the business specifically
+// can't afford anyone missing that day, so it's flagged X3 instead of the
+// ordinary X2.
+function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' {
+  const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
+  return position?.restrictedRestDays?.includes(day.day()) ? 'X3' : 'X2';
+}
+
 const { RangePicker } = DatePicker;
 
 // Background/text pair per AttendanceDaily.status, plus a "rest day" look-alike
@@ -26,6 +36,7 @@ const CELL_STYLE: Record<string, { bg: string; text: string; label: string }> = 
   leave: { bg: '#e6f4ff', text: '#1677ff', label: 'ລາ' },
   rest: { bg: '#f6ffed', text: '#389e0d', label: 'ພັກ' },
   substituted: { bg: '#e6fffb', text: '#08979c', label: 'ມາແທນ' },
+  swapped: { bg: '#fff0f6', text: '#c41d7f', label: 'ສະຫຼັບກະ' },
 };
 
 // Same fallback order as the server's resolveExpectedStart: a day-specific
@@ -66,7 +77,7 @@ const AttendanceSummaryGrid: React.FC = () => {
 
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
-    filters: [{ field: 'status', operator: 'eq', value: 'active' }],
+    filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
     pagination: { pageSize: 500 },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
@@ -177,6 +188,29 @@ const AttendanceSummaryGrid: React.FC = () => {
     return map;
   }, [scheduledShiftsData?.data]);
 
+  // Auto-created when a position swap leaves this employee with no shift at
+  // all that one day (see positionSwap.js) — also produces no AttendanceDaily
+  // row, so without this it would show as a bare "-" indistinguishable from
+  // a genuinely blank/unprocessed day.
+  const { data: swappedShiftsData } = useList<Shift>({
+    resource: 'shifts',
+    filters: [
+      { field: 'date', operator: 'gte', value: rangeStartKey },
+      { field: 'date', operator: 'lte', value: rangeEndKey },
+      { field: 'status', operator: 'eq', value: 'swapped' },
+    ],
+    pagination: { pageSize: 5000 },
+  });
+  const swappedByEmpDate = useMemo(() => {
+    const map: Record<string, Shift> = {};
+    for (const s of swappedShiftsData?.data ?? []) {
+      if (!s.employee) continue;
+      const empId = typeof s.employee === 'object' ? s.employee._id : s.employee;
+      map[`${empId}_${s.date}`] = s;
+    }
+    return map;
+  }, [swappedShiftsData?.data]);
+
   // A day scheduled off has nothing to correct — "manual fix" is for a scan
   // that should have happened but didn't (or logged the wrong time). A real
   // queued shift always wins over the employee's recurring day off — that's
@@ -279,13 +313,14 @@ const AttendanceSummaryGrid: React.FC = () => {
           </Space>
           <Space wrap size={[14, 6]}>
             {[
-              { color: '#8c8c8c', outline: true, label: 'ມາເຮັດວຽກ (ບໍ່ມີສີ — ໂຊວ໌ແຕ່ເວລາສະແກນ)' },
+              { color: '#8c8c8c', outline: true, label: 'ມາເຮັດວຽກ (ບໍ່ມີສີ)' },
               { color: CELL_STYLE.late.text, label: 'ຊ້າ / ຊ້າເກີນ X ນາທີ / ຊ້າເກີນ Y (3 ລະດັບ, ສີດຽວກັນ)' },
               { color: CELL_STYLE.incomplete.text, label: 'ສະແກນຄັ້ງດຽວ' },
-              { color: CELL_STYLE.absent.text, label: 'ຂາດວຽກ' },
+              { color: CELL_STYLE.absent.text, label: 'ຂາດວຽກ (X2) = ວັນທຳມະດາ, (X3) = ວັນຫ້າມພັກຂອງຕຳແໜ່ງ' },
               { color: CELL_STYLE.leave.text, label: 'ລາ' },
               { color: CELL_STYLE.rest.text, label: 'ພັກ / ຮ້ານປິດ' },
               { color: CELL_STYLE.substituted.text, label: 'ມາແທນ' },
+              { color: CELL_STYLE.swapped.text, label: 'ສະຫຼັບກະ (ບໍ່ມີກະຍ້ອນມື້ສະຫຼັບຕຳແໜ່ງ)' },
             ].map((item) => (
               <Space key={item.label} size={6}>
                 <span
@@ -351,7 +386,10 @@ const AttendanceSummaryGrid: React.FC = () => {
               }
               width={100}
               onCell={(emp: Employee) => {
-                const clickable = isManager && !isRestDay(emp, dateKey, day);
+                // A swapped-blank day has no expected shift either (see
+                // positionSwap.js) — nothing for manual-fix to correct, same
+                // reasoning as a rest day.
+                const clickable = isManager && !isRestDay(emp, dateKey, day) && !swappedByEmpDate[`${emp._id}_${dateKey}`];
                 return clickable ? { onClick: () => openEdit(emp, dateKey), style: { cursor: 'pointer' } } : {};
               }}
               render={(_, emp: Employee) => {
@@ -362,7 +400,12 @@ const AttendanceSummaryGrid: React.FC = () => {
                 const style = row ? CELL_STYLE[row.status] : undefined;
                 if (style) {
                   const time = timeText(row!);
-                  const label = row!.status === 'late' ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes) : style.label;
+                  const label =
+                    row!.status === 'late'
+                      ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
+                      : row!.status === 'absent'
+                        ? `${style.label} (${absentSeverity(emp, day)})`
+                        : style.label;
                   return (
                     <div style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}>
                       <div style={{ fontSize: 11, fontWeight: 500 }}>{label}</div>
@@ -386,6 +429,15 @@ const AttendanceSummaryGrid: React.FC = () => {
                     <span style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>
                       {queuedShift.startTime}-{queuedShift.endTime}
                     </span>
+                  );
+                }
+                const swappedShift = swappedByEmpDate[`${emp._id}_${dateKey}`];
+                if (swappedShift) {
+                  const swapped = CELL_STYLE.swapped;
+                  return (
+                    <div style={{ background: swapped.bg, color: swapped.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
+                      {swapped.label}
+                    </div>
                   );
                 }
                 const restShift = restByEmpDate[`${emp._id}_${dateKey}`];

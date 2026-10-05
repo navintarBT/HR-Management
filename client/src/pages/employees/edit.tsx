@@ -10,6 +10,15 @@ import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
 export const EmployeeEdit: React.FC = () => {
   const { formProps, saveButtonProps, query, form } = useForm({ resource: 'employees' });
   const record = query?.data?.data;
+  // refine auto-derives formProps.initialValues straight from the fetched
+  // record — hireDate/workTime land there as raw strings, not dayjs objects.
+  // Spreading that onto the Form would mount DatePicker/RangePicker with a
+  // plain string for one render before the effect below fixes it with real
+  // dayjs values, and antd's own date-validity check has no fallback for a
+  // non-dayjs value — it crashes calling .isValid() on it. Dropping
+  // initialValues here and always populating through the effect (already
+  // dayjs-wrapped) sidesteps that race entirely.
+  const { initialValues: _unusedInitialValues, ...formPropsWithoutInitialValues } = formProps;
 
   const { selectProps: departmentSelect, query: departmentQuery } = useSelect<Department>({
     resource: 'departments',
@@ -121,6 +130,7 @@ export const EmployeeEdit: React.FC = () => {
 
   return (
     <Edit
+      isLoading={query?.isLoading}
       saveButtonProps={saveButtonProps}
       title="ແກ້ໄຂຂໍ້ມູນພະນັກງານ"
       footerButtons={({ defaultButtons }) => (
@@ -130,7 +140,12 @@ export const EmployeeEdit: React.FC = () => {
         </>
       )}
     >
-      <Form {...formProps} form={form} layout="vertical" onFinish={submitValues}>
+      {/* Rendered only once the record has actually arrived, and without
+          formProps.initialValues (see above) — belt-and-suspenders against
+          antd's DatePicker/RangePicker ever seeing a raw, non-dayjs value on
+          first mount. */}
+      {record && (
+      <Form {...formPropsWithoutInitialValues} form={form} layout="vertical" onFinish={submitValues}>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 8 }}>
           <Form.Item name="photoUrl" style={{ marginBottom: 0 }}>
             <EmployeePhotoUpload />
@@ -274,6 +289,7 @@ export const EmployeeEdit: React.FC = () => {
           </Col>
         </Row>
       </Form>
+      )}
     </Edit>
   );
 };

@@ -9,7 +9,7 @@ const Position = require('../models/Position');
 const RestDayHistory = require('../models/RestDayHistory');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
-const { ensureRestDayAllowed } = require('../utils/restDayRules');
+const { resolveRestDay } = require('../utils/restDayRules');
 
 const router = express.Router();
 // supervisor/positionHead reference a full Employee document (including
@@ -100,6 +100,8 @@ function buildListQuery(req) {
       const field = key.replace(/_(gte|lte)$/, '');
       const op = key.endsWith('_gte') ? '$gte' : '$lte';
       query[field] = { ...query[field], [op]: value };
+    } else if (key.endsWith('_in')) {
+      query[key.replace(/_in$/, '')] = { $in: String(value).split(',') };
     } else {
       query[key] = value;
     }
@@ -147,7 +149,7 @@ function cleanEmployeePayload(body) {
   };
 }
 
-// Plain numeric, zero-padded to 4 digits (e.g. "0212") — no "EMP" prefix, so
+// Plain numeric, zero-padded to 5 digits (e.g. "00212") — no "EMP" prefix, so
 // the same value can double as the scan-device user id (deviceUserId), which
 // on most ADMS hardware only accepts a numeric id anyway.
 async function generateEmployeeCode() {
@@ -156,7 +158,7 @@ async function generateEmployeeCode() {
     const n = parseInt(e.employeeCode, 10);
     return Number.isFinite(n) && n > acc ? n : acc;
   }, 0);
-  return String(max + 1).padStart(4, '0');
+  return String(max + 1).padStart(5, '0');
 }
 
 // Resolves "ມາແທນ" eligibility: an explicit true/false wins outright, otherwise
@@ -267,7 +269,7 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
     await ensureUniqueEmployeeFields(employeePayload);
     await syncSubstituteShiftTime(null, employeePayload);
     if (employeePayload.defaultRestDay != null) {
-      await ensureRestDayAllowed(employeePayload.position, employeePayload.defaultRestDay);
+      employeePayload.defaultRestDay = await resolveRestDay(employeePayload.position, employeePayload.defaultRestDay);
     }
 
     if (userPayload.createUser) {
@@ -304,11 +306,11 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     const current = await Employee.findById(req.params.id);
     if (!current) return res.status(404).json({ message: 'Not found' });
 
-    // Termination date isn't hand-entered — it's stamped automatically the
-    // moment status actually transitions into/out of "resigned".
+    // Termination date is set when status transitions into "resigned" — the
+    // caller's last working day if given, otherwise today.
     if (employeePayload.status !== undefined && employeePayload.status !== current.status) {
       if (employeePayload.status === 'resigned') {
-        employeePayload.terminationDate = new Date();
+        employeePayload.terminationDate = employeePayload.terminationDate ? new Date(employeePayload.terminationDate) : new Date();
       } else if (current.status === 'resigned') {
         employeePayload.terminationDate = null;
         employeePayload.terminationReason = null;
@@ -324,7 +326,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     await syncSubstituteShiftTime(current, employeePayload);
     if (employeePayload.defaultRestDay != null) {
       const effectivePosition = employeePayload.position !== undefined ? employeePayload.position : current.position;
-      await ensureRestDayAllowed(effectivePosition, employeePayload.defaultRestDay);
+      employeePayload.defaultRestDay = await resolveRestDay(effectivePosition, employeePayload.defaultRestDay);
     }
 
     // 'defaultRestDay' in employeePayload (rather than a truthy check) also

@@ -15,6 +15,13 @@ const positionSchema = new mongoose.Schema(
     // recurring default and one-off planned picks); sick leave is a separate
     // workflow and is never affected by this.
     restrictedRestDays: [{ type: Number, min: 0, max: 6 }],
+    // Where a rest day that lands on a restricted day gets redirected to
+    // instead of being rejected outright — e.g. a morning-shift position that
+    // can't spare people on Sat/Sun sends them to Fri instead. null means
+    // "no fallback", so a restricted day is still just rejected (the original
+    // behavior) until an admin sets one. Must not itself be inside
+    // restrictedRestDays — enforced in routes/positions.js.
+    restDayFallback: { type: Number, min: 0, max: 6, default: null },
   },
   { timestamps: true }
 );

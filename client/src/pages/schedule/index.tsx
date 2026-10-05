@@ -268,23 +268,29 @@ export const SchedulePage: React.FC = () => {
                     {cellShifts.map((s) => {
                       const positionId = typeof s.position === 'object' ? s.position?._id : s.position;
                       const isRest = s.status === 'rest';
+                      // Auto-created when a position swap leaves this employee
+                      // with no shift at all that one day (see positionSwap.js)
+                      // — has no position/time to show or edit here either.
+                      const isSwapped = s.status === 'swapped';
                       // A rest entry has no position/time to edit here — it's
                       // managed on the monthly rest-day table instead. Swaps are
                       // admin-driven now (see ສະຫຼັບກະ), so only a manager can
                       // click a cell at all.
-                      const clickable = !isRest && isManager;
+                      const clickable = !isRest && !isSwapped && isManager;
                       return (
                         <Tag
                           key={s._id}
-                          color={isRest ? 'default' : positionId ? colorForId(positionId) : 'default'}
+                          color={isRest || isSwapped ? 'default' : positionId ? colorForId(positionId) : 'default'}
                           style={{ cursor: clickable ? 'pointer' : 'default', whiteSpace: 'normal', margin: 0 }}
                           onClick={() => {
-                            if (isRest || !isManager) return;
+                            if (!clickable) return;
                             openEdit(s._id);
                           }}
                         >
                           {isRest ? (
                             'ພັກ'
+                          ) : isSwapped ? (
+                            'ສະຫຼັບກະ'
                           ) : (
                             <>
                               {typeof s.position === 'object' ? s.position?.name : ''}

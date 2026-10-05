@@ -342,7 +342,13 @@ export const BulkShiftEditPage: React.FC = () => {
             <Select {...categorySelect} placeholder="ໝວດໝູ່ກະ" allowClear value={moveCategory} onChange={(v: any) => setMoveCategory(v)} />
           </Form.Item>
           <Form.Item label="ຫຼື ກຳນົດເວລາເອງ" tooltip="ຖ້າຕື່ມທັງສອງຢ່າງ ຈະໃຊ້ຄ່າທີ່ກຳນົດເອງແທນ">
-            <TimeRangePicker style={{ width: '100%' }} format="HH:mm" value={moveTime} onChange={(v) => setMoveTime(v as [Dayjs, Dayjs] | null)} allowClear />
+            <TimeRangePicker
+              style={{ width: '100%' }}
+              format="HH:mm"
+              value={moveTime}
+              onChange={(v) => setMoveTime(v as [Dayjs, Dayjs] | null)}
+              allowClear
+            />
           </Form.Item>
         </Form>
       </Modal>
