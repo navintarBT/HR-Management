@@ -36,7 +36,16 @@ app.use(
 );
 app.use(morgan('dev'));
 app.use(express.json());
-app.use('/api/uploads', express.static(path.join(__dirname, '../uploads')));
+// nosniff stops a browser from executing a served file as something other than
+// its declared Content-Type — defense in depth alongside the magic-byte check
+// in routes/employees.js's photo upload (which is what actually prevents a
+// non-image from landing in this directory in the first place).
+app.use(
+  '/api/uploads',
+  express.static(path.join(__dirname, '../uploads'), {
+    setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
+  })
+);
 
 // ZKTeco ADMS (push protocol) lives at the device's fixed expected root path,
 // not under /api — real terminals are hardcoded to hit /iclock/... directly.

@@ -5,7 +5,10 @@ const Employee = require('../models/Employee');
 const { checkHeadConflict } = require('../utils/headConflicts');
 
 module.exports = crudRouter(Department, {
-  populate: 'head',
+  // `head` references a full Employee document — scoped to display-only
+  // fields so every employee/manager who reads a department's head (e.g. for
+  // the org-chart dropdown) never gets that person's salary/phone/email back.
+  populate: { path: 'head', select: 'firstName lastName employeeCode photoUrl' },
   writeRoles: ['admin'],
   readRoles: ['admin', 'manager', 'employee'],
   searchFields: ['name'],
