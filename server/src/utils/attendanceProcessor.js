@@ -21,6 +21,19 @@ function dayRange(dateKey) {
   return { start, end };
 }
 
+// Decide in/out by alternating against the last log recorded today for this employee.
+// Shared by every ingestion path (simulator, JSON bridge, real ADMS device push) so a
+// punch is classified the same way no matter which door it came in through.
+async function inferType(employeeId, timestamp) {
+  const dateKey = toDateKey(timestamp);
+  const start = new Date(`${dateKey}T00:00:00`);
+  const last = await AttendanceLog.findOne({
+    employee: employeeId,
+    timestamp: { $gte: start, $lt: timestamp },
+  }).sort('-timestamp');
+  return last && last.type === 'in' ? 'out' : 'in';
+}
+
 // Recomputes the daily aggregate for one employee on one day from raw logs.
 async function recomputeDay(employeeId, dateKey) {
   const { start, end } = dayRange(dateKey);
@@ -148,6 +161,7 @@ async function reprocessFromLogs({ employeeId, dateKey } = {}) {
 module.exports = {
   toDateKey,
   dayRange,
+  inferType,
   recomputeDay,
   markAbsent,
   markLeave,

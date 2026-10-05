@@ -76,15 +76,20 @@ npm run dev    # http://localhost:5173
 5. **ການລາ**: ຂໍລາ, ອະນຸມັດ/ປະຕິເສດ (manager/admin), ສະແດງສະຖານະດ້ວຍ Tag ສີ
 6. **ແດຊບອດ**: ສະຫຼຸບຍອດມື້ນີ້ + ກຣາບແນວໂນ້ມຍ້ອນຫຼັງ 14 ວັນ (ສະແດງທັນທີຫຼັງ login)
 
-## ໝາຍເຫດການເຊື່ອມຕໍ່ເຄື່ອງສະແກນແທ້
+## ການເຊື່ອມຕໍ່ເຄື່ອງສະແກນແທ້ (ADMS)
 
 ເຄື່ອງສະແກນລາຍນິ້ວມື/ບັດ ຍີ່ຫໍ້ ZKTeco ສ່ວນຫຼາຍລົມກັນດ້ວຍໂປຣໂຕຄອນ **ADMS**
 (HTTP ແບບຂໍ້ຄວາມ tab-separated ທີ່ path `/iclock/cdata`, ບໍ່ແມ່ນ JSON) ເຊິ່ງແຕກຕ່າງຈາກ
-endpoint `POST /api/attendance/push` ທີ່ສ້າງໄວ້ສໍາລັບ MVP ນີ້
+endpoint `POST /api/attendance/push` (JSON) ທີ່ໃຊ້ໂດຍປຸ່ມຈໍາລອງການສະແກນ
 
-ໄຟລ໌ [`server/src/routes/admsStub.js`](server/src/routes/admsStub.js) ມີ stub handler
-ພ້ອມຄອມເມັນ `TODO` ອະທິບາຍຈຸດທີ່ຕ້ອງເພີ່ມ (parse ATTLOG, map deviceUserId → employee,
-ຕອບກັບເປັນ plain text `OK`) ສໍາລັບການເຊື່ອມຕໍ່ເຄື່ອງແທ້ໃນເຟສຕໍ່ໄປ
+ໄຟລ໌ [`server/src/routes/adms.js`](server/src/routes/adms.js) ຮັບ-ບັນທຶກຂໍ້ມູນຈິງແລ້ວ
+(parse ATTLOG, ຈັບຄູ່ deviceUserId → employee, upsert ກັນຂໍ້ມູນຊ້ໍາ, ຕອບ `OK`/`ERROR`
+ຕາມແຕ່ລະກໍລະນີ). ຕັ້ງ server URL ຂອງເຄື່ອງໃຫ້ຊີ້ມາ backend ນີ້ (path `/iclock/cdata`)
+ໄດ້ເລີຍ — ແຕ່ຍັງບໍ່ທັນໄດ້ທົດສອບກັບເຄື່ອງແທ້ຈິງ ຄວນລອງກັບເຄື່ອງດຽວກ່ອນຂະຫຍາຍໄປໃຊ້ທັງໝົດ
+
+ເຄື່ອງທີ່ຮອງຮັບ ADMS ໂດຍທົ່ວໄປຈະເກັບຂໍ້ມູນໄວ້ໃນໜ່ວຍຄວາມຈໍາຂອງມັນເອງ ແລະ ຈະສົ່ງຄືນອັດຕະໂນມັດ
+ເມື່ອເນັດກັບມາ (ຈົນກວ່າຈະໄດ້ຮັບ `OK` ຈາກ server) — endpoint ນີ້ຈຶ່ງອອກແບບໃຫ້ upsert ຕາມ
+(deviceId, deviceUserId, timestamp) ເພື່ອບໍ່ໃຫ້ຂໍ້ມູນທີ່ສົ່ງຄືນມາຊໍ້າກັນສ້າງ log ຊໍ້າ
 
 ## .env ທີ່ຕ້ອງຕັ້ງຄ່າ
 

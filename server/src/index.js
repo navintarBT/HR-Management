@@ -16,7 +16,7 @@ const shiftRoutes = require('./routes/shifts');
 const shiftSwapRoutes = require('./routes/shiftSwaps');
 const shiftCategoryRoutes = require('./routes/shiftCategories');
 const dashboardRoutes = require('./routes/dashboard');
-const admsStub = require('./routes/admsStub');
+const admsRoutes = require('./routes/adms');
 
 const app = express();
 
@@ -29,8 +29,9 @@ app.use(
 app.use(morgan('dev'));
 app.use(express.json());
 
-// ZKTeco ADMS stub lives at the device's expected root path, not under /api.
-app.use('/', admsStub);
+// Real biometric terminals push here at a fixed path (not under /api) that the device
+// firmware itself expects — see routes/adms.js for the protocol.
+app.use('/', admsRoutes);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/employees', employeeRoutes);

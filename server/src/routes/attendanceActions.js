@@ -2,25 +2,14 @@ const express = require('express');
 const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { recomputeDay, reprocessFromLogs, toDateKey } = require('../utils/attendanceProcessor');
+const { recomputeDay, reprocessFromLogs, toDateKey, inferType } = require('../utils/attendanceProcessor');
 
 const router = express.Router();
 
-// Decide in/out by alternating against the last log recorded today for this employee.
-async function inferType(employeeId, timestamp) {
-  const dateKey = toDateKey(timestamp);
-  const start = new Date(`${dateKey}T00:00:00`);
-  const last = await AttendanceLog.findOne({
-    employee: employeeId,
-    timestamp: { $gte: start, $lt: timestamp },
-  }).sort('-timestamp');
-  return last && last.type === 'in' ? 'out' : 'in';
-}
-
 // Real-world ingestion endpoint for biometric/RFID terminals (or the simulator button).
-// TODO: real ZKTeco devices speak the ADMS protocol (see routes/admsStub.js), not this
-// JSON shape. This endpoint is a convenience bridge for the in-app simulator and any
-// terminal middleware that can be configured to POST plain JSON instead.
+// Real ZKTeco devices speak the ADMS protocol instead (see routes/adms.js) — this
+// endpoint is a convenience bridge for the in-app simulator and any terminal middleware
+// that can be configured to POST plain JSON instead.
 router.post('/push', async (req, res, next) => {
   try {
     const { deviceId, userId, timestamp } = req.body;
