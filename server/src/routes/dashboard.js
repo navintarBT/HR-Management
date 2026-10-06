@@ -4,7 +4,7 @@ const AttendanceDaily = require('../models/AttendanceDaily');
 const Leave = require('../models/Leave');
 const Shift = require('../models/Shift');
 const ShiftSwapRequest = require('../models/ShiftSwapRequest');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requireRole } = require('../middleware/auth');
 const { toDateKey } = require('../utils/attendanceProcessor');
 
 const router = express.Router();
@@ -136,6 +136,82 @@ router.get('/summary', authenticate, async (req, res, next) => {
       trend: Array.from(byDate.values()),
       todayShifts,
       pendingApprovals,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Department headcount + overall status breakdown, for the org-composition
+// chart. Admin/manager only — an "employee" role has no use for headcount
+// numbers and this skips building the self-scoped variant that /summary needs.
+router.get('/org-composition', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    const [byDepartment, byStatus] = await Promise.all([
+      Employee.aggregate([
+        { $match: { status: 'active' } },
+        { $group: { _id: '$department', count: { $sum: 1 } } },
+        { $lookup: { from: 'departments', localField: '_id', foreignField: '_id', as: 'dept' } },
+        { $project: { _id: 0, name: { $ifNull: [{ $arrayElemAt: ['$dept.name', 0] }, 'ບໍ່ມີພະແນກ'] }, count: 1 } },
+        { $sort: { count: -1 } },
+      ]),
+      Employee.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $project: { _id: 0, status: '$_id', count: 1 } },
+      ]),
+    ]);
+    res.json({ byDepartment, byStatus });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Counts-only data-completeness gaps — deliberately never returns names or
+// any other identifying detail (salary/leave-balance in particular ride on
+// the same Employee document as pay info, so this stays a single combined
+// count, same precedent as every other salary-adjacent surface in this app).
+// Mongo's `{field: null}` matches both a missing field and one explicitly
+// set to null, so no schema change was needed to compute any of this.
+router.get('/data-quality', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    const active = { status: 'active' };
+    const [
+      missingPosition,
+      missingDepartment,
+      missingHireDate,
+      missingEmploymentType,
+      missingEmail,
+      missingReportingLine,
+      missingRestDay,
+      missingDeviceCode,
+      stuckDrafts,
+      resignedNoTerminationDate,
+      missingPayInfo,
+    ] = await Promise.all([
+      Employee.countDocuments({ ...active, position: null }),
+      Employee.countDocuments({ ...active, department: null }),
+      Employee.countDocuments({ ...active, hireDate: null }),
+      Employee.countDocuments({ ...active, employmentType: null }),
+      Employee.countDocuments({ ...active, $or: [{ email: null }, { email: '' }] }),
+      Employee.countDocuments({ ...active, supervisor: null, positionHead: null }),
+      Employee.countDocuments({ ...active, defaultRestDay: null }),
+      Employee.countDocuments({ ...active, deviceUserId: null }),
+      Employee.countDocuments({ status: 'draft' }),
+      Employee.countDocuments({ status: 'resigned', terminationDate: null }),
+      Employee.countDocuments({ ...active, $or: [{ salary: null }, { annualLeaveDays: null }] }),
+    ]);
+    res.json({
+      missingPosition,
+      missingDepartment,
+      missingHireDate,
+      missingEmploymentType,
+      missingEmail,
+      missingReportingLine,
+      missingRestDay,
+      missingDeviceCode,
+      stuckDrafts,
+      resignedNoTerminationDate,
+      missingPayInfo,
     });
   } catch (err) {
     next(err);

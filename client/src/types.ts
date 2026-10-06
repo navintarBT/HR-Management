@@ -249,3 +249,22 @@ export interface DashboardSummary {
   todayShifts: DashboardTodayShift[];
   pendingApprovals: DashboardPendingApproval[];
 }
+
+export interface DashboardOrgComposition {
+  byDepartment: Array<{ name: string; count: number }>;
+  byStatus: Array<{ status: Employee['status']; count: number }>;
+}
+
+export interface DashboardDataQuality {
+  missingPosition: number;
+  missingDepartment: number;
+  missingHireDate: number;
+  missingEmploymentType: number;
+  missingEmail: number;
+  missingReportingLine: number;
+  missingRestDay: number;
+  missingDeviceCode: number;
+  stuckDrafts: number;
+  resignedNoTerminationDate: number;
+  missingPayInfo: number;
+}

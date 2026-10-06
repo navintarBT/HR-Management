@@ -25,3 +25,12 @@ export const surface = {
 // Softer/less-saturated take on the primary wine tone, used for large washes
 // (the login background) where the full-strength `primary` reads as too intense.
 export const loginGradient = 'linear-gradient(135deg, #3D2B28 0%, #6B3B42 55%, #A8525B 100%)';
+
+// Appends an alpha channel to a 6-digit hex color, e.g. tint('#9F1239', 0.1)
+// -> '#9F123919'. Used for icon-swatch washes instead of ad-hoc string concat.
+export function tint(hex: string, opacity: number): string {
+  const alpha = Math.round(Math.min(Math.max(opacity, 0), 1) * 255)
+    .toString(16)
+    .padStart(2, '0');
+  return `${hex}${alpha}`;
+}
