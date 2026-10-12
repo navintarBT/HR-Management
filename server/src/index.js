@@ -1,3 +1,11 @@
+// Everything here reads and writes wall-clock times as Lao local time: the
+// scanner sends "YYYY-MM-DD HH:mm:ss" with no zone (routes/adms.js), and day
+// keys, shift start/end and lateness are built with new Date('…T08:00:00') /
+// setHours (utils/attendanceProcessor.js). On a host running UTC every one of
+// those lands 7 hours off — a 21:05 scan showed as 04:05 the next day. Pin
+// the process to Lao time before anything touches a Date.
+process.env.TZ = process.env.APP_TZ || 'Asia/Vientiane';
+
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
@@ -87,6 +95,7 @@ const PORT = process.env.PORT || 4000;
 connectDB()
   .then(() => {
     app.listen(PORT, () => console.log(`[server] listening on http://localhost:${PORT}`));
+    console.log(`[server] timezone ${Intl.DateTimeFormat().resolvedOptions().timeZone}, now ${new Date().toString()}`);
     // Catches any position swap scheduled for a date that's already arrived
     // (including while the server was down), then re-checks periodically so
     // one left running overnight still fires without anyone's browser open.
