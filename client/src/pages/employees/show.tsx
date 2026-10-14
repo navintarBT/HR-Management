@@ -76,8 +76,8 @@ export const EmployeeShow: React.FC = () => {
             <div style={{ marginTop: 4 }}>
               <Tag color="magenta">
                 {todayOverride?.status === 'swapped'
-                  ? 'ວັນນີ້ບໍ່ມີກະ (ມື້ສະຫຼັບຕຳແໜ່ງ)'
-                  : `ວັນນີ້ຍັງເຮັດວຽກ ${overridePosition?.name} (ມື້ສະຫຼັບຕຳແໜ່ງ)`}
+                  ? 'ມື້ນີ້ບໍ່ມີກະ (ມື້ສະຫຼັບຕຳແໜ່ງ)'
+                  : `ມື້ນີ້ຍັງເຮັດວຽກ ${overridePosition?.name} (ມື້ສະຫຼັບຕຳແໜ່ງ)`}
               </Tag>
             </div>
           )}
@@ -95,7 +95,7 @@ export const EmployeeShow: React.FC = () => {
         <Descriptions.Item label="ປະເພດການຈ້າງ">
           {typeof record?.employmentType === 'object' ? record?.employmentType?.name : '-'}
         </Descriptions.Item>
-        <Descriptions.Item label="ວັນທີເລີ່ມງານ">
+        <Descriptions.Item label="ວັນທີເລີ່ມວຽກ">
           {record?.hireDate ? dayjs(record.hireDate).format('DD MMMM YYYY') : '-'}
         </Descriptions.Item>
         <Descriptions.Item label="ໂມງເຂົ້າວຽກ">

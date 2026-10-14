@@ -276,7 +276,9 @@ export const BulkShiftEditPage: React.FC = () => {
           title="ວັນພັກປະຈຳ"
           width={110}
           render={(_, record: Employee) =>
-            record.defaultRestDay != null ? WEEKDAY_OPTIONS.find((w) => w.value === record.defaultRestDay)?.label : '-'
+            record.defaultRestDay?.length
+              ? record.defaultRestDay.map((d) => WEEKDAY_OPTIONS.find((w) => w.value === d)?.label ?? '-').join(', ')
+              : '-'
           }
         />
       </Table>

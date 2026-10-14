@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useGetIdentity, useNotification } from '@refinedev/core';
-import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select } from 'antd';
+import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Department, Employee, Identity, Position, Shift } from '../../types';
@@ -63,6 +63,7 @@ function resolveDefaultTime(employee: Employee): { start: string; end: string } 
 const AttendanceSummaryGrid: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isManager = identity?.role === 'admin' || identity?.role === 'manager';
+  const isAdmin = identity?.role === 'admin';
 
   const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().startOf('month'), dayjs().endOf('month')]);
 
@@ -220,7 +221,7 @@ const AttendanceSummaryGrid: React.FC = () => {
     if (scheduledByEmpDate[`${emp._id}_${dateKey}`]) return false;
     if (restByEmpDate[`${emp._id}_${dateKey}`]) return true;
     const row = byEmpDate[`${emp._id}_${dateKey}`];
-    return !row && emp.defaultRestDay === day.day();
+    return !row && (emp.defaultRestDay ?? []).includes(day.day());
   };
 
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
@@ -238,7 +239,54 @@ const AttendanceSummaryGrid: React.FC = () => {
       checkOut: row?.lastOut ? dayjs(row.lastOut) : expected ? dayjs(`${dateKey}T${expected.end}`) : undefined,
       note: undefined,
     });
+    setDisciplineReason('');
     setEditing({ employee: emp, dateKey });
+  };
+
+  // Deliberately forcing status='absent' as discipline — separate from the
+  // manual-fix form above (that one corrects what a scan actually recorded;
+  // this one overrides it on purpose, with a required reason so it's clear
+  // later why an otherwise-normal day reads "ຂາດວຽກ").
+  const [disciplineReason, setDisciplineReason] = useState('');
+  const [markingAbsent, setMarkingAbsent] = useState(false);
+  const editingRow = editing ? byEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
+  const isDisciplinaryAbsent = !!editingRow?.disciplinaryNote;
+
+  const submitMarkAbsent = async () => {
+    if (!editing || !disciplineReason.trim()) return;
+    setMarkingAbsent(true);
+    try {
+      await axiosInstance.post(`${API_URL}/attendance/mark-absent`, {
+        employeeId: editing.employee._id,
+        date: editing.dateKey,
+        note: disciplineReason.trim(),
+      });
+      notify?.({ type: 'success', message: 'ບັນທຶກເປັນຂາດວຽກແລ້ວ' });
+      setEditing(null);
+      refetchDaily();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
+    } finally {
+      setMarkingAbsent(false);
+    }
+  };
+
+  const cancelMarkAbsent = async () => {
+    if (!editing) return;
+    setMarkingAbsent(true);
+    try {
+      await axiosInstance.post(`${API_URL}/attendance/cancel-absent-override`, {
+        employeeId: editing.employee._id,
+        date: editing.dateKey,
+      });
+      notify?.({ type: 'success', message: 'ຍົກເລີກການລົງໂທດແລ້ວ' });
+      setEditing(null);
+      refetchDaily();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
+    } finally {
+      setMarkingAbsent(false);
+    }
   };
 
   const submitFix = async (values: any) => {
@@ -262,6 +310,40 @@ const AttendanceSummaryGrid: React.FC = () => {
     }
   };
 
+  // Bulk backfill for when the scanning system itself was down (power outage,
+  // server down for days) — fills everyone in as if they worked their normal
+  // shift across the whole range, so the absence sweep doesn't later read an
+  // infrastructure failure as a wave of no-shows. Admin-only, separate from
+  // the per-person/per-day "mark as absent" override above.
+  const [outageOpen, setOutageOpen] = useState(false);
+  const [outageRange, setOutageRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [outageReason, setOutageReason] = useState('');
+  const [outageSubmitting, setOutageSubmitting] = useState(false);
+
+  const submitOutageFill = async () => {
+    if (!outageRange || !outageReason.trim()) return;
+    setOutageSubmitting(true);
+    try {
+      const res = await axiosInstance.post(`${API_URL}/attendance/bulk-mark-present`, {
+        startDate: outageRange[0].format('YYYY-MM-DD'),
+        endDate: outageRange[1].format('YYYY-MM-DD'),
+        note: outageReason.trim(),
+      });
+      notify?.({
+        type: 'success',
+        message: `ລົງເວລາແລ້ວ ${res.data.filledCount} ລາຍການ (ຂ້າມ ${res.data.skippedCount} ລາຍການ)`,
+      });
+      setOutageOpen(false);
+      setOutageRange(null);
+      setOutageReason('');
+      refetchDaily();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ລົງເວລາບໍ່ສຳເລັດ' });
+    } finally {
+      setOutageSubmitting(false);
+    }
+  };
+
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -279,6 +361,11 @@ const AttendanceSummaryGrid: React.FC = () => {
               format="DD/MM/YYYY"
               allowClear={false}
             />
+            {isAdmin && (
+              <Button danger onClick={() => setOutageOpen(true)}>
+                ລົງເວລາຍ້ອນຫຼັງ (ລະບົບສະແກນເສຍ)
+              </Button>
+            )}
           </Space>
           <Space wrap>
             <Input.Search
@@ -356,7 +443,17 @@ const AttendanceSummaryGrid: React.FC = () => {
           title="ຊື່ພະນັກງານ"
           fixed="left"
           width={160}
-          render={(_, emp: Employee) => `${emp.firstName ?? ''} ${emp.lastName ?? ''}`}
+          render={(_, emp: Employee) => {
+            const time = resolveDefaultTime(emp);
+            return (
+              <div>
+                <div>{`${emp.firstName ?? ''} ${emp.lastName ?? ''}`}</div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {time ? `${time.start}-${time.end}` : '-'}
+                </Typography.Text>
+              </div>
+            );
+          }}
         />
         <Table.Column
           title="ພະແນກ"
@@ -404,10 +501,18 @@ const AttendanceSummaryGrid: React.FC = () => {
                     row!.status === 'late'
                       ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
                       : row!.status === 'absent'
-                        ? `${style.label} (${absentSeverity(emp, day)})`
-                        : style.label;
+                        ? `${style.label} (${absentSeverity(emp, day)})${row!.disciplinaryNote ? ' ⚠' : ''}`
+                        : `${style.label}${row!.autoFilledReason ? ' ↺' : ''}`;
+                  const cellTitle = row!.disciplinaryNote
+                    ? `ລົງໂທດ: ${row!.disciplinaryNote}`
+                    : row!.autoFilledReason
+                      ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
+                      : undefined;
                   return (
-                    <div style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}>
+                    <div
+                      title={cellTitle}
+                      style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}
+                    >
                       <div style={{ fontSize: 11, fontWeight: 500 }}>{label}</div>
                       {time && <div style={{ fontSize: 11 }}>{time}</div>}
                     </div>
@@ -454,7 +559,7 @@ const AttendanceSummaryGrid: React.FC = () => {
                     </div>
                   );
                 }
-                if (emp.defaultRestDay === day.day()) {
+                if ((emp.defaultRestDay ?? []).includes(day.day())) {
                   const rest = CELL_STYLE.rest;
                   return (
                     <div style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
@@ -490,6 +595,102 @@ const AttendanceSummaryGrid: React.FC = () => {
           </Form.Item>
           <Form.Item label="ໝາຍເຫດ / ຫຼັກຖານ" name="note">
             <Input.TextArea rows={2} placeholder="ເຫດຜົນ ຫຼື ຫຼັກຖານທີ່ພະນັກງານມີ" />
+          </Form.Item>
+        </Form>
+
+        <Divider />
+
+        {isDisciplinaryAbsent ? (
+          <div>
+            <Typography.Paragraph type="danger" strong style={{ marginBottom: 4 }}>
+              ມື້ນີ້ຖືກບັນທຶກເປັນຂາດວຽກແບບລົງໂທດ
+            </Typography.Paragraph>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              ເຫດຜົນ: {editingRow?.disciplinaryNote}
+            </Typography.Paragraph>
+            <Popconfirm
+              title="ຍົກເລີກການລົງໂທດນີ້?"
+              description="ມື້ນີ້ຈະກັບໄປວ່າງເປົ່າ — ບໍ່ແມ່ນການສະແກນເດີມ ເພາະຖືກລຶບໄປຕອນລົງໂທດແລ້ວ"
+              okText="ຍົກເລີກການລົງໂທດ"
+              cancelText="ບໍ່"
+              onConfirm={cancelMarkAbsent}
+            >
+              <Button danger loading={markingAbsent}>
+                ຍົກເລີກການລົງໂທດ
+              </Button>
+            </Popconfirm>
+          </div>
+        ) : (
+          <div>
+            <Typography.Paragraph strong style={{ marginBottom: 4 }}>
+              ລົງໂທດໃຫ້ເປັນຂາດວຽກ
+            </Typography.Paragraph>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 8, fontSize: 12 }}>
+              ໃຊ້ເມື່ອພະນັກງານມາເຮັດວຽກຕາມປົກກະຕິ ແຕ່ຖືກລົງໂທດໃຫ້ນັບເປັນຂາດວຽກ — ຈະລຶບການສະແກນເດີມຂອງມື້ນີ້ອອກ
+            </Typography.Paragraph>
+            <Input.TextArea
+              rows={2}
+              placeholder="ເຫດຜົນທີ່ລົງໂທດ (ບັງຄັບ)"
+              value={disciplineReason}
+              onChange={(e) => setDisciplineReason(e.target.value)}
+              style={{ marginBottom: 8 }}
+            />
+            <Popconfirm
+              title="ບັນທຶກເປັນຂາດວຽກ?"
+              description="ການສະແກນເດີມຂອງມື້ນີ້ຈະຖືກລຶບ ແລະ ນັບເປັນຂາດວຽກແທນ"
+              okText="ຢືນຢັນ"
+              cancelText="ບໍ່"
+              onConfirm={submitMarkAbsent}
+              disabled={!disciplineReason.trim()}
+            >
+              <Button danger loading={markingAbsent} disabled={!disciplineReason.trim()}>
+                ບັນທຶກເປັນຂາດວຽກ (ລົງໂທດ)
+              </Button>
+            </Popconfirm>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title="ລົງເວລາຍ້ອນຫຼັງ (ລະບົບສະແກນເສຍ)"
+        open={outageOpen}
+        onCancel={() => setOutageOpen(false)}
+        footer={
+          <Popconfirm
+            title="ລົງເວລາໃຫ້ທຸກຄົນໃນຊ່ວງນີ້?"
+            description="ຈະລົງເວລາຕາມກະປົກກະຕິໃຫ້ທຸກຄົນທີ່ຍັງບໍ່ມີຂໍ້ມູນມື້ນັ້ນ — ຂ້າມຄົນທີ່ລາອະນຸມັດແລ້ວ ຫຼື ເປັນວັນພັກຂອງເຂົາຢູ່ແລ້ວ"
+            okText="ຢືນຢັນ"
+            cancelText="ບໍ່"
+            onConfirm={submitOutageFill}
+            disabled={!outageRange || !outageReason.trim()}
+          >
+            <Button type="primary" danger loading={outageSubmitting} disabled={!outageRange || !outageReason.trim()}>
+              ລົງເວລາໃຫ້ທຸກຄົນ
+            </Button>
+          </Popconfirm>
+        }
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          ໃຊ້ເມື່ອເຄື່ອງສະແກນ ຫຼື ລະບົບໃຊ້ບໍ່ໄດ້ຊົ່ວໄລຍະໜຶ່ງ (ໄຟດັບ, server ພັງ ...) — ຈະດຶງກະປະຈຳຂອງແຕ່ລະຄົນມາລົງເປັນເວລາເຂົ້າ-ອອກໃຫ້ອັດຕະໂນມັດ
+          ນັບເປັນມາເຮັດວຽກປົກກະຕິ ບໍ່ແມ່ນຂາດວຽກ. ຄົນທີ່ມີຂໍ້ມູນມື້ນັ້ນຢູ່ແລ້ວ, ລາອະນຸມັດແລ້ວ, ຫຼື ເປັນວັນພັກຂອງເຂົາ ຈະຖືກຂ້າມໄປ ບໍ່ແຕະຕ້ອງ.
+        </Typography.Paragraph>
+        <Form layout="vertical">
+          <Form.Item label="ຊ່ວງວັນທີ່" required>
+            <RangePicker
+              style={{ width: '100%' }}
+              value={outageRange}
+              onChange={(v) => v && v[0] && v[1] && setOutageRange([v[0], v[1]])}
+              format="DD/MM/YYYY"
+            />
+          </Form.Item>
+          <Form.Item label="ເຫດຜົນ" required>
+            <Input.TextArea
+              rows={2}
+              placeholder="ຕົວຢ່າງ: Server ພັງ 12-14 ຕຸລາ 2026, ເຄື່ອງສະແກນໃຊ້ບໍ່ໄດ້"
+              value={outageReason}
+              onChange={(e) => setOutageReason(e.target.value)}
+            />
           </Form.Item>
         </Form>
       </Modal>

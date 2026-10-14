@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useModalForm, useSelect } from '@refinedev/antd';
-import { useGetIdentity, useDelete, useInvalidate, useList, useNotification } from '@refinedev/core';
-import { Table, Button, Modal, Form, Select, DatePicker, TimePicker, Input, Space, Typography } from 'antd';
+import { useGetIdentity, useCreate, useDelete, useInvalidate, useList, useNotification } from '@refinedev/core';
+import { Table, Button, Modal, Form, Select, DatePicker, TimePicker, Input, Space, Typography, Segmented } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Department, Employee, Identity, Overtime, Position } from '../../types';
@@ -23,8 +23,19 @@ function computeHours(startTime: string, endTime: string): number {
   const [sh, sm] = startTime.split(':').map(Number);
   const [eh, em] = endTime.split(':').map(Number);
   let minutes = eh * 60 + em - (sh * 60 + sm);
-  if (minutes < 0) minutes += 24 * 60;
+  // <= 0, not < 0 — an equal start/end (00:00–00:00, the synthetic span a
+  // "ແບບມື້" full-day OT entry is saved with) is a full day, not zero.
+  if (minutes <= 0) minutes += 24 * 60;
   return Math.round((minutes / 60) * 100) / 100;
+}
+
+// "55.12 ຊມ." reads as an odd number to glance at — "55 ຊົ່ວໂມງ 12 ນາທີ" is
+// what that duration actually means to someone scanning the table.
+function formatHoursMinutes(hours: number): string {
+  const totalMinutes = Math.round(hours * 60);
+  const wholeHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${wholeHours} ຊົ່ວໂມງ ${minutes} ນາທີ` : `${wholeHours} ຊົ່ວໂມງ`;
 }
 
 // Shared by both pages: month nav + a free date-range, plus search/department/
@@ -204,7 +215,7 @@ export const OvertimeSummaryGrid: React.FC = () => {
           width={130}
           render={(_, emp: Employee) => {
             const hours = summaryByEmployee[emp._id]?.approvedHours ?? 0;
-            return hours > 0 ? <Typography.Text strong>{hours} ຊມ.</Typography.Text> : '-';
+            return hours > 0 ? <Typography.Text strong>{formatHoursMinutes(hours)}</Typography.Text> : '-';
           }}
         />
         <Table.Column
@@ -216,11 +227,11 @@ export const OvertimeSummaryGrid: React.FC = () => {
             // doesn't reach even 1 ມື້ yet, so nothing is counted.
             const hours = summaryByEmployee[emp._id]?.approvedHours ?? 0;
             const days = Math.floor(hours / 24);
-            const remainder = Math.round((hours - days * 24) * 100) / 100;
+            const remainder = hours - days * 24;
             if (days <= 0) return '-';
             return (
               <Typography.Text strong>
-                {days} ມື້{remainder > 0 ? ` ${remainder} ຊມ.` : ''}
+                {days} ມື້{remainder > 0 ? ` ${formatHoursMinutes(remainder)}` : ''}
               </Typography.Text>
             );
           }}
@@ -256,13 +267,13 @@ export const OvertimeDetailList: React.FC = () => {
 
   const { selectProps: employeeSelect } = useSelect<Employee>({
     resource: 'employees',
-    optionLabel: (item) => `${item.employeeCode} - ${item.firstName} ${item.lastName}`,
+    optionLabel: (item) => (item.employeeCode ? `${item.employeeCode} - ${item.firstName} ${item.lastName}` : `${item.firstName} ${item.lastName}`),
     optionValue: '_id',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
     pagination: { pageSize: 500, mode: 'server' },
   });
 
-  const { modalProps, formProps, show } = useModalForm<Overtime>({
+  const { modalProps, formProps, show, close } = useModalForm<Overtime>({
     resource: 'overtime',
     action: 'create',
     // Without this, Refine's default post-submit redirect bounces to
@@ -270,9 +281,56 @@ export const OvertimeDetailList: React.FC = () => {
     // /overtime/summary via its index route — same fix as the leaves pages.
     redirect: false,
   });
-  const submitCreate = (values: any) =>
-    formProps.onFinish?.({ ...values, date: values.date ? dayjs(values.date).toISOString() : undefined });
   const createEmployeeId = Form.useWatch('employee', formProps.form);
+
+  // Two distinct ways to log OT, picked explicitly rather than inferred from
+  // what's filled in — mixing "one day with an exact time range" and "several
+  // days at once" in a single field left it ambiguous whether multiple days
+  // shared one time or each needed its own.
+  // 'time': the original flow — exactly one day, plus the exact hours worked.
+  // 'day': several whole OT days at once with no hour-by-hour entry (the
+  // common case for "did OT 3 days this month") — each gets a synthetic
+  // 00:00–00:00 span, which the existing overnight-wrap hour math already
+  // turns into exactly 24.00h, i.e. exactly 1 ມື້ under the same "ນັບເປັນມື້
+  // (24 ຊົ່ວໂມງ/ມື້)" rule the summary page already uses — no schema or
+  // reporting change needed, just the UI never asks for a time in this mode.
+  const [otMode, setOtMode] = useState<'time' | 'day'>('time');
+  const { mutate: createOtForDate } = useCreate();
+  const [submittingMany, setSubmittingMany] = useState(false);
+  const submitCreate = async (values: any) => {
+    if (otMode === 'time') {
+      formProps.onFinish?.({ ...values, date: values.date ? dayjs(values.date).toISOString() : undefined });
+      return;
+    }
+    const dates: Dayjs[] = Array.isArray(values.date) ? values.date : values.date ? [values.date] : [];
+    setSubmittingMany(true);
+    const { date: _date, ...rest } = values;
+    let succeeded = 0;
+    for (const d of dates) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((resolve) => {
+        createOtForDate(
+          { resource: 'overtime', values: { ...rest, startTime: '00:00', endTime: '00:00', date: d.toISOString() } },
+          {
+            onSuccess: () => {
+              succeeded += 1;
+              resolve();
+            },
+            onError: () => resolve(),
+          }
+        );
+      });
+    }
+    setSubmittingMany(false);
+    notify?.({
+      type: succeeded === dates.length ? 'success' : 'error',
+      message: `ບັນທຶກ OT ສຳເລັດ ${succeeded}/${dates.length} ມື້`,
+    });
+    formProps.form?.resetFields();
+    close();
+    invalidate({ resource: 'overtime', invalidates: ['list'] });
+    refetch();
+  };
 
   const {
     modalProps: editModalProps,
@@ -375,7 +433,17 @@ export const OvertimeDetailList: React.FC = () => {
             return (position && typeof position === 'object' ? position.name : undefined) || '-';
           }}
         />
-        <Table.Column title="ຈັກໂມງຫາຈັກໂມງ" width={140} render={(_, record: Overtime) => `${record.startTime} - ${record.endTime}`} />
+        <Table.Column
+          title="ຈັກໂມງຫາຈັກໂມງ"
+          width={140}
+          render={(_, record: Overtime) =>
+            record.startTime === '00:00' && record.endTime === '00:00' ? (
+              <Typography.Text type="secondary">ເຕັມມື້</Typography.Text>
+            ) : (
+              `${record.startTime} - ${record.endTime}`
+            )
+          }
+        />
         <Table.Column
           title="ລວມຊົ່ວໂມງ"
           width={110}
@@ -400,7 +468,15 @@ export const OvertimeDetailList: React.FC = () => {
         )}
       </Table>
 
-      <Modal {...modalProps} title="ສະເໜີ OT" afterClose={refreshAll}>
+      <Modal
+        {...modalProps}
+        confirmLoading={modalProps.confirmLoading || submittingMany}
+        title="ສະເໜີ OT"
+        afterClose={() => {
+          refreshAll();
+          setOtMode('time');
+        }}
+      >
         <Form {...formProps} onFinish={submitCreate} layout="vertical">
           <Form.Item label="ພະນັກງານ" name="employee" rules={[{ required: true, message: 'ກະລຸນາເລືອກພະນັກງານ' }]}>
             <Select {...withTextFilter(employeeSelect)} placeholder="ຄົ້ນຫາດ້ວຍລະຫັດ ຫຼື ຊື່" />
@@ -408,27 +484,54 @@ export const OvertimeDetailList: React.FC = () => {
           <Form.Item label="ຜູ້ອະນຸມັດ" name="approver" rules={notSelfApprover(createEmployeeId)}>
             <Select {...withTextFilter(employeeSelect)} allowClear placeholder="ຄົ້ນຫາດ້ວຍລະຫັດ ຫຼື ຊື່" />
           </Form.Item>
-          <Form.Item label="ວັນທີ່" name="date" rules={[{ required: true, message: 'ກະລຸນາເລືອກວັນທີ່' }]}>
-            <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
-          </Form.Item>
-          <Form.Item label="ຈັກໂມງຫາຈັກໂມງ" name="time" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
-            <TimeRangePicker
-              style={{ width: '100%' }}
-              format="HH:mm"
-              onChange={(dates) => {
-                formProps.form?.setFieldsValue({
-                  startTime: dates?.[0]?.format('HH:mm'),
-                  endTime: dates?.[1]?.format('HH:mm'),
-                });
+          <Form.Item label="ຮູບແບບ">
+            <Segmented
+              block
+              value={otMode}
+              onChange={(v) => {
+                setOtMode(v as 'time' | 'day');
+                formProps.form?.resetFields(['date']);
               }}
+              options={[
+                { label: 'ແບບເວລາ (ວັນດຽວ, ລະບຸໂມງ)', value: 'time' },
+                { label: 'ແບບມື້ (ຫຼາຍວັນ, ເຕັມມື້)', value: 'day' },
+              ]}
             />
           </Form.Item>
-          <Form.Item name="startTime" hidden>
-            <Input />
-          </Form.Item>
-          <Form.Item name="endTime" hidden>
-            <Input />
-          </Form.Item>
+          {otMode === 'time' ? (
+            <>
+              <Form.Item label="ວັນທີ່" name="date" rules={[{ required: true, message: 'ກະລຸນາເລືອກວັນທີ່' }]}>
+                <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
+              </Form.Item>
+              <Form.Item label="ຈັກໂມງຫາຈັກໂມງ" name="time" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
+                <TimeRangePicker
+                  style={{ width: '100%' }}
+                  format="HH:mm"
+                  onChange={(dates) => {
+                    formProps.form?.setFieldsValue({
+                      startTime: dates?.[0]?.format('HH:mm'),
+                      endTime: dates?.[1]?.format('HH:mm'),
+                    });
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="startTime" hidden>
+                <Input />
+              </Form.Item>
+              <Form.Item name="endTime" hidden>
+                <Input />
+              </Form.Item>
+            </>
+          ) : (
+            <Form.Item
+              label="ວັນທີ່ (ເລືອກໄດ້ຫຼາຍວັນ)"
+              name="date"
+              rules={[{ required: true, message: 'ກະລຸນາເລືອກຢ່າງໜ້ອຍໜຶ່ງວັນ' }]}
+              tooltip="ແຕ່ລະວັນທີ່ເລືອກຈະນັບເປັນ OT ເຕັມມື້ (24 ຊົ່ວໂມງ) — ບໍ່ຕ້ອງລະບຸໂມງ"
+            >
+              <DatePicker multiple maxTagCount="responsive" style={{ width: '100%' }} format="DD/MM/YYYY" />
+            </Form.Item>
+          )}
           <Form.Item label="ເຫດຜົນ" name="reason">
             <Input.TextArea rows={2} placeholder="ລະບຸເຫດຜົນທີ່ຕ້ອງເຮັດ OT" />
           </Form.Item>

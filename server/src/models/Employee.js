@@ -28,7 +28,10 @@ const employeeSchema = new mongoose.Schema(
     defaultShiftCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'ShiftCategory' },
     defaultShiftStart: { type: String, trim: true }, // HH:mm
     defaultShiftEnd: { type: String, trim: true }, // HH:mm
-    defaultRestDay: { type: Number, min: 0, max: 6 }, // 0 = Sunday .. 6 = Saturday
+    // 0 = Sunday .. 6 = Saturday. Usually one day; a role that genuinely rests
+    // on more than one fixed day a week (e.g. a whole team off together) can
+    // hold several.
+    defaultRestDay: { type: [{ type: Number, min: 0, max: 6 }], default: [] },
     salary: { type: Number, min: 0 },
     annualLeaveDays: { type: Number, min: 0 },
     // Individual override of Position.allowsSubstituteStatus — unset inherits

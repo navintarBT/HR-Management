@@ -80,7 +80,7 @@ const MedicineExpenseListPage: React.FC = () => {
 
   const { selectProps: employeeSelect } = useSelect<Employee>({
     resource: 'employees',
-    optionLabel: (item) => `${item.employeeCode} - ${item.firstName} ${item.lastName}`,
+    optionLabel: (item) => (item.employeeCode ? `${item.employeeCode} - ${item.firstName} ${item.lastName}` : `${item.firstName} ${item.lastName}`),
     optionValue: '_id',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
     pagination: { pageSize: 500, mode: 'server' },
@@ -150,6 +150,11 @@ const MedicineExpenseListPage: React.FC = () => {
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space direction="vertical" style={{ width: '100%' }}>
           <Space wrap>
+            {canWrite && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => show()}>
+                ເພີ່ມລາຍການຄ່າຢາ
+              </Button>
+            )}
             <Button icon={<LeftOutlined />} onClick={() => goToMonth(range[0].subtract(1, 'month'))} />
             <Button onClick={() => goToMonth(dayjs())}>ເດືອນນີ້</Button>
             <Button icon={<RightOutlined />} onClick={() => goToMonth(range[0].add(1, 'month'))} />
@@ -188,11 +193,6 @@ const MedicineExpenseListPage: React.FC = () => {
               onChange={(v: any) => setPositionFilter(v)}
             />
           </Space>
-          {canWrite && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => show()}>
-              ເພີ່ມລາຍການຄ່າຢາ
-            </Button>
-          )}
         </Space>
       </div>
 

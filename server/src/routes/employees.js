@@ -12,6 +12,16 @@ const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule')
 const { resolveRestDay } = require('../utils/restDayRules');
 
 const router = express.Router();
+
+// defaultRestDay is an array now (a role can rest on more than one fixed
+// day) — order doesn't carry meaning, so two lists count as "the same" when
+// they hold the same set of weekdays regardless of order.
+function sameRestDays(a, b) {
+  const x = [...(a ?? [])].sort();
+  const y = [...(b ?? [])].sort();
+  return x.length === y.length && x.every((d, i) => d === y[i]);
+}
+
 // supervisor/positionHead reference a full Employee document (including
 // salary, phone, etc.) — scoped to display-only fields so looking up a
 // colleague's manager never leaks their pay or contact details.
@@ -208,12 +218,12 @@ async function ensureUniqueEmployeeFields(payload, currentId) {
 function validateEmployee(payload, partial = false) {
   const isDraft = payload.status === 'draft';
   if (!isDraft && !partial && (!payload.employeeCode || !payload.firstName || !payload.lastName || !payload.hireDate)) {
-    const err = new Error('ກະລຸນາປ້ອນ ລະຫັດພະນັກງານ, ຊື່, ນາມສະກຸນ, ແລະ ວັນທີເລີ່ມງານ ໃຫ້ຄົບ');
+    const err = new Error('ກະລຸນາປ້ອນ ລະຫັດພະນັກງານ, ຊື່, ນາມສະກຸນ, ແລະ ວັນທີເລີ່ມວຽກ ໃຫ້ຄົບ');
     err.status = 400;
     throw err;
   }
   if (payload.terminationDate && payload.hireDate && new Date(payload.terminationDate) < new Date(payload.hireDate)) {
-    const err = new Error('ວັນທີອອກງານ ຈະຢູ່ກ່ອນ ວັນທີເລີ່ມງານ ບໍ່ໄດ້');
+    const err = new Error('ວັນທີອອກງານ ຈະຢູ່ກ່ອນ ວັນທີເລີ່ມວຽກ ບໍ່ໄດ້');
     err.status = 400;
     throw err;
   }
@@ -333,7 +343,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     // catches deliberately clearing it back to none — cleanEmployeePayload
     // already strips the key entirely when the field wasn't touched at all,
     // so its presence here always means an intentional value/no-value.
-    const restDayChanged = 'defaultRestDay' in employeePayload && employeePayload.defaultRestDay !== (current.defaultRestDay ?? null);
+    const restDayChanged = 'defaultRestDay' in employeePayload && !sameRestDays(employeePayload.defaultRestDay, current.defaultRestDay);
 
     const item = await Employee.findByIdAndUpdate(req.params.id, employeePayload, {
       new: true,
@@ -343,7 +353,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     if (restDayChanged) {
       await RestDayHistory.create({
         employee: current._id,
-        previousRestDay: current.defaultRestDay ?? null,
+        previousRestDay: current.defaultRestDay ?? [],
         newRestDay: employeePayload.defaultRestDay,
         changedBy: req.user.employeeId ? req.user.employeeId._id : undefined,
         changedByEmail: req.user.email,

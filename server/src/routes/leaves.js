@@ -72,7 +72,7 @@ async function computeDeductionFields(employee, startDate, endDate, forceComplet
       continue;
     }
     const dow = new Date(`${k}T00:00:00`).getDay();
-    if (employee.defaultRestDay === dow) restDayOverlaps.push({ date: k, type: 'personal' });
+    if ((employee.defaultRestDay ?? []).includes(dow)) restDayOverlaps.push({ date: k, type: 'personal' });
   }
   const billableDays = dateKeys.length - restDayOverlaps.length;
 

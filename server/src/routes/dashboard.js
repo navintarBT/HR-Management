@@ -194,7 +194,7 @@ router.get('/data-quality', authenticate, requireRole('admin', 'manager'), async
       Employee.countDocuments({ ...active, employmentType: null }),
       Employee.countDocuments({ ...active, $or: [{ email: null }, { email: '' }] }),
       Employee.countDocuments({ ...active, supervisor: null, positionHead: null }),
-      Employee.countDocuments({ ...active, defaultRestDay: null }),
+      Employee.countDocuments({ ...active, $or: [{ defaultRestDay: null }, { defaultRestDay: [] }] }),
       Employee.countDocuments({ ...active, deviceUserId: null }),
       Employee.countDocuments({ status: 'draft' }),
       Employee.countDocuments({ status: 'resigned', terminationDate: null }),

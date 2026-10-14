@@ -380,7 +380,7 @@ const PayrollSummaryGrid: React.FC = () => {
     const key = `${emp._id}_${dateKey}`;
     if (scheduledSet.has(key)) return 'work';
     if (restSet.has(key) || swappedSet.has(key)) return 'rest';
-    if (emp.defaultRestDay === dow) return 'rest';
+    if ((emp.defaultRestDay ?? []).includes(dow)) return 'rest';
     // Nothing is actually known/decided for this date yet — a queued shift,
     // a rest override, a leave, or the recurring default would all have
     // already matched above (and are shown as such even when the date is in

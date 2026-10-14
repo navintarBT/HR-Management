@@ -136,7 +136,7 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
   try {
     const { employee, date, startTime, endTime, status, holiday, coveringFor } = req.body;
     if (coveringFor && String(coveringFor) === String(employee)) {
-      return res.status(400).json({ message: 'ພະນັກງານທີ່ທຳແທນ ແລະ ຜູ້ຖືກແທນຕ້ອງເປັນຄົນລະຄົນກັນ' });
+      return res.status(400).json({ message: 'ພະນັກງານທີ່ເຮັດແທນ ແລະ ຜູ້ຖືກແທນຕ້ອງເປັນຄົນລະຄົນກັນ' });
     }
     let effectiveDate = date;
     if (status !== 'rest') {

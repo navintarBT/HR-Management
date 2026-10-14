@@ -277,7 +277,7 @@ export const EmployeeList: React.FC = () => {
         />
         <Table.Column title="ເບີໂທ" dataIndex="phone" width={120} />
         <Table.Column
-          title="ວັນທີເລີ່ມງານ"
+          title="ວັນທີເລີ່ມວຽກ"
           dataIndex="hireDate"
           width={120}
           render={(value) => (value ? dayjs(value).format('DD/MM/YYYY') : '-')}

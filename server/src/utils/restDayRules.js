@@ -1,30 +1,37 @@
 const Position = require('../models/Position');
 const { toDateKey } = require('./attendanceProcessor');
 
-// Given an already-loaded position doc and a requested rest-day weekday
-// (0=Sun..6=Sat), returns the weekday that should actually be used:
-// unchanged if the position has no objection, its configured fallback if it
-// does and one is set, or throws if it does and none is set. Sick leave and
-// company-wide holiday closures go through entirely separate code paths and
-// never call this at all — only a deliberately *chosen* rest day is ever
-// redirected or rejected.
-function resolveRestDayForPosition(position, dayOfWeek) {
-  if (!position || dayOfWeek == null || !position.restrictedRestDays?.length) return dayOfWeek;
-  if (!position.restrictedRestDays.includes(dayOfWeek)) return dayOfWeek;
-  if (position.restDayFallback != null) return position.restDayFallback;
-  const err = new Error('ຕຳແໜ່ງນີ້ບໍ່ອະນຸຍາດໃຫ້ຕັ້ງວັນພັກໃນວັນນີ້');
-  err.status = 400;
-  throw err;
+// Given an already-loaded position doc and the requested rest-day weekdays
+// (0=Sun..6=Sat, one or more), returns the weekdays that should actually be
+// used: each one unchanged if the position has no objection to it, redirected
+// to the position's configured fallback if it does and one is set, or throws
+// if it does and none is set — same per-day rule whether there's one day or
+// several, deduplicated in case two different days both fall back to the same
+// one. Sick leave and company-wide holiday closures go through entirely
+// separate code paths and never call this at all — only deliberately *chosen*
+// rest days are ever redirected or rejected.
+function resolveRestDayForPosition(position, daysOfWeek) {
+  const days = Array.isArray(daysOfWeek) ? daysOfWeek : daysOfWeek == null ? [] : [daysOfWeek];
+  if (!position || !position.restrictedRestDays?.length) return days;
+  const resolved = days.map((dow) => {
+    if (!position.restrictedRestDays.includes(dow)) return dow;
+    if (position.restDayFallback != null) return position.restDayFallback;
+    const err = new Error('ຕຳແໜ່ງນີ້ບໍ່ອະນຸຍາດໃຫ້ຕັ້ງວັນພັກໃນມື້ນີ້');
+    err.status = 400;
+    throw err;
+  });
+  return Array.from(new Set(resolved));
 }
 
 // Same, but takes a position id and loads it — for callers that don't
 // already have the position doc in hand. positionSwap.js already loads both
 // position docs for its own reasons, so it calls resolveRestDayForPosition
 // directly instead of re-fetching per employee.
-async function resolveRestDay(positionId, dayOfWeek) {
-  if (!positionId || dayOfWeek == null) return dayOfWeek;
+async function resolveRestDay(positionId, daysOfWeek) {
+  const days = Array.isArray(daysOfWeek) ? daysOfWeek : daysOfWeek == null ? [] : [daysOfWeek];
+  if (!positionId || !days.length) return days;
   const position = await Position.findById(positionId);
-  return resolveRestDayForPosition(position, dayOfWeek);
+  return resolveRestDayForPosition(position, days);
 }
 
 // Shifts a YYYY-MM-DD date to the nearest calendar date (forward or

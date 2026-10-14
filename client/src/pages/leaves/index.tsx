@@ -350,7 +350,7 @@ export const LeaveDetailList: React.FC = () => {
   const renderTakenCell = (current: unknown, info: { type: string; originNode: React.ReactElement }, employeeId: string | undefined, excludeIds: string[]) => {
     if (info.type !== 'date' || !isDateTakenBy(employeeId, excludeIds, current as Dayjs)) return info.originNode;
     return (
-      <Tooltip title="ພະນັກງານຄົນນີ້ລາ ຫຼື ລໍຖ້າອະນຸມັດຢູ່ແລ້ວໃນວັນນີ້">
+      <Tooltip title="ພະນັກງານຄົນນີ້ລາ ຫຼື ລໍຖ້າອະນຸມັດຢູ່ແລ້ວໃນມື້ນີ້">
         <div style={{ background: 'rgba(255,77,79,0.18)', borderRadius: 4 }}>{info.originNode}</div>
       </Tooltip>
     );
@@ -411,7 +411,7 @@ export const LeaveDetailList: React.FC = () => {
   // automatically server-side, so they never see this field.
   const { selectProps: employeeSelect } = useSelect<Employee>({
     resource: 'employees',
-    optionLabel: (item) => `${item.employeeCode} - ${item.firstName} ${item.lastName}`,
+    optionLabel: (item) => (item.employeeCode ? `${item.employeeCode} - ${item.firstName} ${item.lastName}` : `${item.firstName} ${item.lastName}`),
     optionValue: '_id',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
     pagination: { pageSize: 500, mode: 'server' },

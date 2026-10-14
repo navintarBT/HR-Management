@@ -13,6 +13,8 @@ const {
   resolveShiftWindow,
   isOvernightShift,
   markSubstituted,
+  markAbsent,
+  bulkMarkPresentForOutage,
 } = require('../utils/attendanceProcessor');
 
 const router = express.Router();
@@ -227,6 +229,80 @@ router.post('/cancel-substituted', authenticate, requireRole('admin', 'manager')
     }
     await AttendanceDaily.deleteOne({ employee: employeeId, date, status: 'substituted' });
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Deliberately forces status='absent' on a day as a disciplinary action — e.g.
+// the employee did come in and scan, but broke a rule serious enough that
+// management wants it to count (and cost) the same as a no-show. A reason is
+// required so it reads back as "why" later, and this clears that day's raw
+// scan logs the same way mark-substituted does: otherwise a later /reprocess
+// would re-derive from the real logs and silently undo the override.
+router.post('/mark-absent', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    const { employeeId, date, note } = req.body;
+    if (!employeeId || !date || !note) {
+      return res.status(400).json({ message: 'ກະລຸນາລະບຸ ພະນັກງານ, ວັນທີ່ ແລະ ເຫດຜົນ' });
+    }
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee) return res.status(404).json({ message: 'Employee not found' });
+
+    const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
+    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } });
+
+    const daily = await markAbsent(employeeId, date);
+    daily.disciplinaryNote = note;
+    await daily.save();
+    res.json({ ok: true, daily });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Reverts a disciplinary absence back to blank — guarded to only ever touch a
+// day this same action created (disciplinaryNote set), never a genuine
+// no-show the automatic sweep found on its own. Like cancel-substituted,
+// there's no raw scan left to recompute from (mark-absent deleted it), so
+// this removes the record rather than deriving a new one; the day goes back
+// to blank, not to whatever the original scan actually was.
+router.post('/cancel-absent-override', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    const { employeeId, date } = req.body;
+    if (!employeeId || !date) {
+      return res.status(400).json({ message: 'ກະລຸນາລະບຸ ພະນັກງານ ແລະ ວັນທີ່' });
+    }
+    await AttendanceDaily.deleteOne({ employee: employeeId, date, disciplinaryNote: { $ne: null } });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Bulk backfill for a date range when the scanning system itself was down
+// (power outage, server down for days, ...) — fills everyone in as if they
+// worked their normal shift, so the automatic absence sweep doesn't later
+// penalize the whole company for an infrastructure failure. Admin-only (not
+// manager) given the blast radius, and capped at a month per call so a
+// mis-picked range can't silently rewrite a year of records.
+const BULK_PRESENT_MAX_DAYS = 31;
+router.post('/bulk-mark-present', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const { startDate, endDate, note } = req.body;
+    if (!startDate || !endDate || !note) {
+      return res.status(400).json({ message: 'ກະລຸນາລະບຸ ຊ່ວງວັນທີ່ ແລະ ເຫດຜົນ' });
+    }
+    if (endDate < startDate) {
+      return res.status(400).json({ message: 'ວັນທີ່ສິ້ນສຸດຕ້ອງບໍ່ກ່ອນວັນທີ່ເລີ່ມ' });
+    }
+    const dayCount = Math.round((new Date(`${endDate}T00:00:00`) - new Date(`${startDate}T00:00:00`)) / 86400000) + 1;
+    if (dayCount > BULK_PRESENT_MAX_DAYS) {
+      return res.status(400).json({ message: `ເລືອກໄດ້ສູງສຸດ ${BULK_PRESENT_MAX_DAYS} ວັນຕໍ່ຄັ້ງ` });
+    }
+    const { filled, skipped } = await bulkMarkPresentForOutage(startDate, endDate, note);
+    res.json({ ok: true, filledCount: filled.length, skippedCount: skipped.length });
   } catch (err) {
     next(err);
   }

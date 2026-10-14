@@ -39,6 +39,19 @@ const attendanceDailySchema = new mongoose.Schema(
       enum: ['present', 'late', 'absent', 'leave', 'incomplete', 'substituted'],
       default: 'absent',
     },
+    // Set only when an admin/manager deliberately forced status='absent' as a
+    // disciplinary action (see routes/attendanceActions.js mark-absent) even
+    // though the employee may have actually scanned in — the reason given is
+    // kept here so it reads back as "why", distinguishing this from a plain
+    // no-show the absence sweep found on its own. null/unset for every other
+    // status, including a real absence.
+    disciplinaryNote: { type: String, trim: true, default: null },
+    // Set only when an admin bulk-filled this day because the scanning system
+    // itself was unavailable (power outage, server down, ...) — see
+    // routes/attendanceActions.js bulk-mark-present. Distinct from
+    // disciplinaryNote: this is standing in for a scan that should have
+    // happened, not overriding one that did.
+    autoFilledReason: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );

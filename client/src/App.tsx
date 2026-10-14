@@ -171,7 +171,7 @@ function RootLayout() {
           {
             name: 'schedule-covers',
             list: '/schedule/covers',
-            meta: { label: 'ການທຳແທນ', icon: <UserSwitchOutlined />, parent: 'schedule' },
+            meta: { label: 'ການເຮັດແທນ', icon: <UserSwitchOutlined />, parent: 'schedule' },
           },
           {
             name: 'shift-settings',

@@ -24,8 +24,8 @@ export interface EmploymentType {
 export interface RestDayHistory {
   _id: string;
   employee: Employee | string;
-  previousRestDay: number | null; // 0 = Sunday .. 6 = Saturday, null = had none set before
-  newRestDay: number | null; // null = cleared to none
+  previousRestDay: number[]; // 0 = Sunday .. 6 = Saturday, [] = had none set before
+  newRestDay: number[]; // [] = cleared to none
   changedBy?: Employee | string;
   changedByEmail?: string; // fallback identity when changedBy has no linked Employee (e.g. a pure admin account)
   createdAt: string;
@@ -52,7 +52,7 @@ export interface Employee {
   defaultShiftCategory?: ShiftCategory | string | null;
   defaultShiftStart?: string; // HH:mm — fallback for a manual time with no matching category
   defaultShiftEnd?: string; // HH:mm
-  defaultRestDay?: number | null; // 0 = Sunday .. 6 = Saturday
+  defaultRestDay?: number[] | null; // 0 = Sunday .. 6 = Saturday, usually one day but a role can rest several
   salary?: number | null;
   annualLeaveDays?: number | null;
   allowsSubstituteStatus?: boolean | null; // overrides Position.allowsSubstituteStatus when set
@@ -93,6 +93,8 @@ export interface AttendanceDaily {
   earlyLeaveMinutes: number;
   otHours: number;
   status: AttendanceStatus;
+  disciplinaryNote?: string | null; // set only when an admin/manager forced status='absent' as discipline — the reason given
+  autoFilledReason?: string | null; // set only when an admin bulk-filled this day as 'present' because the scanning system itself was down
 }
 
 export type LeaveType = 'vacation' | 'sick' | 'personal';

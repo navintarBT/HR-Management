@@ -8,8 +8,8 @@ const mongoose = require('mongoose');
 const restDayHistorySchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
-    previousRestDay: { type: Number, min: 0, max: 6, default: null }, // null = had none set before
-    newRestDay: { type: Number, min: 0, max: 6, default: null }, // null = cleared to none
+    previousRestDay: { type: [{ type: Number, min: 0, max: 6 }], default: [] }, // [] = had none set before
+    newRestDay: { type: [{ type: Number, min: 0, max: 6 }], default: [] }, // [] = cleared to none
     // Whoever was logged in when it changed. changedBy only resolves to a
     // name when that account is linked to an Employee profile (managers
     // usually are; a pure admin account often isn't) — changedByEmail is

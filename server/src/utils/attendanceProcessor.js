@@ -253,6 +253,148 @@ async function markAbsent(employeeId, dateKey) {
   );
 }
 
+// The inverse of markAbsent — fills in a day as if the employee worked an
+// already-resolved expected shift exactly on time (firstIn/lastOut pinned to
+// its own start/end, no lateness, no early-leave, no OT). Takes the resolved
+// {startHour, startMinute, endHour, endMinute} directly rather than looking
+// it up itself — see bulkMarkPresentForOutage, its only caller, for why.
+async function markPresentFromShift(employeeId, dateKey, expected, note) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const firstIn = new Date(`${dateKey}T${pad(expected.startHour)}:${pad(expected.startMinute)}:00`);
+  let lastOut = new Date(`${dateKey}T${pad(expected.endHour)}:${pad(expected.endMinute)}:00`);
+  if (isOvernightShift(expected)) lastOut = new Date(lastOut.getTime() + 24 * 3600000);
+  const hours = computeExpectedHours(expected);
+  return AttendanceDaily.findOneAndUpdate(
+    { employee: employeeId, date: dateKey },
+    {
+      employee: employeeId,
+      date: dateKey,
+      firstIn,
+      lastOut,
+      workedHours: hours,
+      expectedHours: hours,
+      lateMinutes: 0,
+      earlyLeaveMinutes: 0,
+      otHours: 0,
+      status: 'present',
+      autoFilledReason: note,
+    },
+    { upsert: true, new: true }
+  );
+}
+
+function timeStringToHM(hhmm) {
+  const [hour, minute] = hhmm.split(':').map(Number);
+  return { hour, minute };
+}
+
+// Admin-triggered bulk backfill across a date range for exactly the scenario
+// markAbsentForMissedScans would otherwise misread as a wave of no-shows: the
+// scanning system itself was unavailable (outage, server down), not that
+// anyone failed to come in. Walks the same skip logic as that sweep —
+// already has a record, on approved leave, or the day is a rest day either
+// way (a queued Shift override or the recurring weekly default) — but fills
+// everyone else toward 'present' instead of 'absent'.
+//
+// Deliberately does NOT call resolveExpectedShift per employee the way every
+// other caller does — at 250+ active employees that's 250+ sequential round
+// trips to Atlas (measured: 70-80s for a single day, before this fix).
+// Everything resolveExpectedShift would have queried per employee (that
+// day's Shift rows, each employee's own defaultShiftCategory) is instead
+// fetched once per day / once overall up front, and the same start/end
+// precedence — a 'scheduled' Shift wins, else the employee's own recurring
+// default — is reapplied in memory against those batched results.
+async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
+  const employees = await Employee.find({ status: 'active' }).populate('defaultShiftCategory');
+  const filled = [];
+  const skipped = [];
+
+  let dateKey = startDateKey;
+  while (dateKey <= endDateKey) {
+    const dow = new Date(`${dateKey}T00:00:00`).getDay();
+    // eslint-disable-next-line no-await-in-loop
+    const [existingDaily, dayShifts, approvedLeaves] = await Promise.all([
+      AttendanceDaily.find({ date: dateKey }, 'employee status disciplinaryNote'),
+      Shift.find({ date: dateKey, status: { $in: ['scheduled', 'swapped', 'rest'] } }, 'employee status startTime endTime'),
+      Leave.find(
+        { status: 'approved', startDate: { $lte: new Date(`${dateKey}T23:59:59.999`) }, endDate: { $gte: new Date(`${dateKey}T00:00:00`) } },
+        'employee'
+      ),
+    ]);
+    // A plain 'absent' with no disciplinaryNote is never anything but the
+    // automatic sweep's own guess (recomputeDay's real-scan path never
+    // produces 'absent' — see markAbsentForMissedScans) — and that sweep runs
+    // on server startup too, so it will have already "found" a multi-day
+    // outage as a wave of no-shows before an admin even gets to this button.
+    // That specific case is exactly what this tool exists to correct, so it's
+    // the one status this bulk fill is allowed to overwrite; a disciplinary
+    // absence (deliberately set) and every other status (a real scan, leave,
+    // substituted, ...) still block it completely, same as before.
+    const hasDaily = new Set(
+      existingDaily.filter((r) => !(r.status === 'absent' && !r.disciplinaryNote)).map((r) => String(r.employee))
+    );
+    const onLeave = new Set(approvedLeaves.map((l) => String(l.employee)));
+    const shiftByEmployee = new Map();
+    for (const s of dayShifts) {
+      const key = String(s.employee);
+      // Same ambiguity resolveExpectedShift itself has if more than one
+      // 'scheduled' row exists for one employee/day (e.g. a cover shift
+      // alongside their own) — whichever is found first wins either way.
+      if (!shiftByEmployee.has(key)) shiftByEmployee.set(key, s);
+    }
+
+    const toFill = [];
+    for (const employee of employees) {
+      const empId = String(employee._id);
+      if (hasDaily.has(empId) || onLeave.has(empId)) {
+        skipped.push({ employee: empId, date: dateKey });
+        continue;
+      }
+      const shift = shiftByEmployee.get(empId);
+      if (shift && (shift.status === 'rest' || shift.status === 'swapped')) {
+        skipped.push({ employee: empId, date: dateKey });
+        continue;
+      }
+      if (!shift && (employee.defaultRestDay ?? []).includes(dow)) {
+        skipped.push({ employee: empId, date: dateKey });
+        continue;
+      }
+
+      let start;
+      let end;
+      if (shift && shift.status === 'scheduled' && shift.startTime && shift.endTime) {
+        start = timeStringToHM(shift.startTime);
+        end = timeStringToHM(shift.endTime);
+      } else {
+        const category = employee.defaultShiftCategory;
+        if (category && typeof category === 'object' && category.startTime && category.endTime) {
+          start = timeStringToHM(category.startTime);
+          end = timeStringToHM(category.endTime);
+        } else if (employee.defaultShiftStart && employee.defaultShiftEnd) {
+          start = timeStringToHM(employee.defaultShiftStart);
+          end = timeStringToHM(employee.defaultShiftEnd);
+        }
+      }
+      if (!start || !end) {
+        skipped.push({ employee: empId, date: dateKey });
+        continue;
+      }
+
+      toFill.push({
+        empId,
+        expected: { startHour: start.hour, startMinute: start.minute, endHour: end.hour, endMinute: end.minute },
+      });
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    const docs = await Promise.all(toFill.map(({ empId, expected }) => markPresentFromShift(empId, dateKey, expected, note)));
+    filled.push(...docs);
+
+    dateKey = addDays(dateKey, 1);
+  }
+  return { filled, skipped };
+}
+
 // Sweeps the last few days for any active employee who never scanned at all
 // that day, and has no other explanation on file, then marks it ຂາດວຽກ.
 // Nothing else does this automatically — recomputeDay only ever runs off an
@@ -301,7 +443,7 @@ async function markAbsentForMissedScans() {
 
       const overrideStatus = overrideStatusByEmployee.get(empId);
       if (overrideStatus === 'rest' || overrideStatus === 'swapped') continue;
-      if (!overrideStatus && employee.defaultRestDay === dow) continue;
+      if (!overrideStatus && (employee.defaultRestDay ?? []).includes(dow)) continue;
 
       // eslint-disable-next-line no-await-in-loop
       const { windowEnd, expected } = await resolveShiftWindow(employee._id, dateKey);
@@ -397,6 +539,8 @@ module.exports = {
   isOvernightShift,
   recomputeDay,
   markAbsent,
+  markPresentFromShift,
+  bulkMarkPresentForOutage,
   markAbsentForMissedScans,
   markLeave,
   markSubstituted,

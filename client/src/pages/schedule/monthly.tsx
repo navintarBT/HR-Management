@@ -74,7 +74,7 @@ function computeCell(employee: Employee, dateKey: string, override?: Shift, isSu
     return { kind: 'work', start: override.startTime!, end: override.endTime!, isOverride: true, overrideId: override._id };
   }
   const dow = dayjs(dateKey).day();
-  if (employee.defaultRestDay === dow) return { kind: 'rest', isOverride: false };
+  if ((employee.defaultRestDay ?? []).includes(dow)) return { kind: 'rest', isOverride: false };
   const defaultTime = resolveDefaultTime(employee);
   if (defaultTime) return { kind: 'work', start: defaultTime.start, end: defaultTime.end, isOverride: false };
   return { kind: 'unset' };
@@ -250,17 +250,17 @@ export const MonthlySchedulePage: React.FC = () => {
   // it applies to every matching weekday automatically, this month and every
   // month after, with no per-day clicking and no Shift rows created at all.
   const [recurringRestFor, setRecurringRestFor] = useState<Employee | null>(null);
-  const [recurringRestDay, setRecurringRestDay] = useState<number>();
+  const [recurringRestDay, setRecurringRestDay] = useState<number[]>([]);
 
   const openRecurringRest = (emp: Employee) => {
     setRecurringRestFor(emp);
-    setRecurringRestDay(emp.defaultRestDay ?? undefined);
+    setRecurringRestDay(emp.defaultRestDay ?? []);
   };
 
   const doSaveRecurringRest = () => {
     if (!recurringRestFor) return;
     updateEmployee(
-      { resource: 'employees', id: recurringRestFor._id, values: { defaultRestDay: recurringRestDay ?? null } },
+      { resource: 'employees', id: recurringRestFor._id, values: { defaultRestDay: recurringRestDay } },
       {
         onSuccess: () => {
           notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ' });
@@ -277,9 +277,9 @@ export const MonthlySchedulePage: React.FC = () => {
   // the days already loaded for the visible month, rather than let HR discover
   // it later by noticing a "resting" employee still shows up worked that day.
   const restDayConflicts = useMemo(() => {
-    if (!recurringRestFor || recurringRestDay == null) return [];
+    if (!recurringRestFor || !recurringRestDay.length) return [];
     return days
-      .filter((d) => d.day() === recurringRestDay)
+      .filter((d) => recurringRestDay.includes(d.day()))
       .map((d) => d.format('YYYY-MM-DD'))
       .filter((dateKey) => overrideByEmpDate[`${recurringRestFor._id}_${dateKey}`]?.status === 'scheduled');
   }, [recurringRestFor, recurringRestDay, days, overrideByEmpDate]);
@@ -321,7 +321,7 @@ export const MonthlySchedulePage: React.FC = () => {
   const cancelRecurringRest = () => {
     if (!recurringRestFor) return;
     updateEmployee(
-      { resource: 'employees', id: recurringRestFor._id, values: { defaultRestDay: null } },
+      { resource: 'employees', id: recurringRestFor._id, values: { defaultRestDay: [] } },
       {
         onSuccess: () => {
           notify?.({ type: 'success', message: 'ຍົກເລີກວັນພັກປະຈຳສຳເລັດ' });
@@ -403,7 +403,7 @@ export const MonthlySchedulePage: React.FC = () => {
     );
   };
 
-  // ທຳແທນຄົນອື່ນ — the editing employee is the one actually working; the picked
+  // ເຮັດແທນຄົນອື່ນ — the editing employee is the one actually working; the picked
   // person is the one being covered. Position comes from the covered person,
   // since that's the job being done.
   const [coverForm] = Form.useForm();
@@ -460,7 +460,7 @@ export const MonthlySchedulePage: React.FC = () => {
           setCoverDept(undefined);
           setCoverPos(undefined);
           onSaved(
-            `ບັນທຶກແລ້ວ: ${personLabel(editing.employee)} ໄປທຳແທນ ${personLabel(covered)} ວັນ${shortDate(editing.dateKey)} ເວລາ ${values.time[0].format('HH:mm')}-${values.time[1].format('HH:mm')}`
+            `ບັນທຶກແລ້ວ: ${personLabel(editing.employee)} ໄປເຮັດແທນ ${personLabel(covered)} ວັນ${shortDate(editing.dateKey)} ເວລາ ${values.time[0].format('HH:mm')}-${values.time[1].format('HH:mm')}`
           );
         },
       }
@@ -792,8 +792,8 @@ export const MonthlySchedulePage: React.FC = () => {
               `ປັດຈຸບັນ: ${editingCell.start}-${editingCell.end}${editingCell.isOverride ? ' (ແກ້ໄຂພິເສດ)' : ' (ຄ່າປົກກະຕິ)'}`}
             {editingCell?.kind === 'unset' && 'ປັດຈຸບັນ: ຍັງບໍ່ໄດ້ຕັ້ງຄ່າ'}
             {editingCell?.kind === 'substituted' && 'ປັດຈຸບັນ: ມີຄົນອື່ນມາແທນ'}
-            {editingCell?.kind === 'leave' && 'ປັດຈຸບັນ: ລາ (ມີໃບລາອະນຸມັດແລ້ວຄຸມວັນນີ້)'}
-            {editingCovered && `ປັດຈຸບັນ: ໄປທຳແທນ ${personLabel(editingCovered)} (${editingOverride?.startTime}-${editingOverride?.endTime})`}
+            {editingCell?.kind === 'leave' && 'ປັດຈຸບັນ: ລາ (ມີໃບລາອະນຸມັດແລ້ວຄຸມມື້ນີ້)'}
+            {editingCovered && `ປັດຈຸບັນ: ໄປເຮັດແທນ ${personLabel(editingCovered)} (${editingOverride?.startTime}-${editingOverride?.endTime})`}
           </Typography.Text>
 
           {choice === null ? (
@@ -802,10 +802,10 @@ export const MonthlySchedulePage: React.FC = () => {
                 title="ຕັ້ງເປັນວັນພັກ"
                 description={
                   editingCovered
-                    ? 'ວັນນີ້ມີການໄປທຳແທນຢູ່ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ'
+                    ? 'ມື້ນີ້ມີການໄປເຮັດແທນຢູ່ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ'
                     : isEditingDateRestDayBlocked
-                      ? 'ຕຳແໜ່ງນີ້ຫ້າມພັກວັນນີ້'
-                      : 'ຕັ້ງວັນນີ້ເປັນວັນພັກຂອງຄົນນີ້'
+                      ? 'ຕຳແໜ່ງນີ້ຫ້າມພັກມື້ນີ້'
+                      : 'ຕັ້ງມື້ນີ້ເປັນວັນພັກຂອງຄົນນີ້'
                 }
                 disabled={!!editingCovered || isEditingDateRestDayBlocked}
                 onClick={() => setChoice('rest')}
@@ -814,8 +814,8 @@ export const MonthlySchedulePage: React.FC = () => {
                 title="ກຳນົດເວລາພິເສດໃຫ້ຕົວເອງ"
                 description={
                   editingCovered
-                    ? 'ວັນນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ ຕ້ອງລຶບການເຮັດແທນກ່ອນ ຈຶ່ງຈະກຳນົດເວລາເອງໄດ້'
-                    : 'ຕັ້ງເວລາເຂົ້າ-ອອກສະເພາະວັນນີ້ ແທນເວລາປົກກະຕິ'
+                    ? 'ມື້ນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ ຕ້ອງລຶບການເຮັດແທນກ່ອນ ຈຶ່ງຈະກຳນົດເວລາເອງໄດ້'
+                    : 'ຕັ້ງເວລາເຂົ້າ-ອອກສະເພາະມື້ນີ້ ແທນເວລາປົກກະຕິ'
                 }
                 disabled={!!editingCovered}
                 onClick={() => setChoice('time')}
@@ -828,8 +828,8 @@ export const MonthlySchedulePage: React.FC = () => {
                 />
               ) : canSubstitute ? (
                 <ChoiceButton
-                  title={editingCell?.kind === 'substituted' ? 'ຍົກເລີກການມີຄົນມາແທນ' : 'ມີຄົນມາທຳແທນໃຫ້'}
-                  description="ຄົນນີ້ບໍ່ໄດ້ມາເອງ ວັນນີ້ຈະບໍ່ຖືກນັບເປັນຂາດວຽກ"
+                  title={editingCell?.kind === 'substituted' ? 'ຍົກເລີກການມີຄົນມາແທນ' : 'ມີຄົນມາເຮັດແທນໃຫ້'}
+                  description="ຄົນນີ້ບໍ່ໄດ້ມາເອງ ມື້ນີ້ຈະບໍ່ຖືກນັບເປັນຂາດວຽກ"
                   onClick={() => setChoice('substitute')}
                 />
               ) : (
@@ -837,10 +837,10 @@ export const MonthlySchedulePage: React.FC = () => {
                   title="ໄປເຮັດແທນຄົນອື່ນ"
                   description={
                     editingOverride && !editingCovered
-                      ? 'ວັນນີ້ມີການຕັ້ງຄ່າພິເສດຢູ່ແລ້ວ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ ຈຶ່ງຈະໄປເຮັດແທນໄດ້'
+                      ? 'ມື້ນີ້ມີການຕັ້ງຄ່າພິເສດຢູ່ແລ້ວ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ ຈຶ່ງຈະໄປເຮັດແທນໄດ້'
                       : editingCovered
-                        ? 'ວັນນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ແລ້ວ'
-                        : 'ຄົນນີ້ຈະໄປເຮັດວຽກແທນຄົນທີ່ເລືອກໃນວັນນີ້'
+                        ? 'ມື້ນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ແລ້ວ'
+                        : 'ຄົນນີ້ຈະໄປເຮັດວຽກແທນຄົນທີ່ເລືອກໃນມື້ນີ້'
                   }
                   disabled={!!editingCovered || (!!editingOverride && !editingCovered)}
                   onClick={() => setChoice('cover')}
@@ -922,7 +922,7 @@ export const MonthlySchedulePage: React.FC = () => {
                       <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
                     </Form.Item>
                     <Button type="primary" htmlType="submit" loading={creating}>
-                      ບັນທຶກການໄປທຳແທນ
+                      ບັນທຶກການໄປເຮັດແທນ
                     </Button>
                   </Form>
                 </Space>
@@ -981,9 +981,10 @@ export const MonthlySchedulePage: React.FC = () => {
         destroyOnClose
       >
         <Typography.Paragraph type="secondary">
-          ເລືອກວັນໃນອາທິດທີ່ຄົນນີ້ພັກປະຈຳ — ລະບົບຈະຕັ້ງເປັນວັນພັກໃຫ້ທຸກວັນນັ້ນອັດຕະໂນມັດ ທັງເດືອນນີ້ ແລະ ທຸກເດືອນຕໍ່ໄປ ໂດຍບໍ່ຕ້ອງກົດເລືອກທີລະວັນ
+          ເລືອກວັນໃນອາທິດທີ່ຄົນນີ້ພັກປະຈຳ (ເລືອກໄດ້ຫຼາຍວັນ) — ລະບົບຈະຕັ້ງເປັນວັນພັກໃຫ້ທຸກວັນນັ້ນອັດຕະໂນມັດ ທັງເດືອນນີ້ ແລະ ທຸກເດືອນຕໍ່ໄປ ໂດຍບໍ່ຕ້ອງກົດເລືອກທີລະວັນ
         </Typography.Paragraph>
         <Select
+          mode="multiple"
           style={{ width: '100%' }}
           options={weekdayOptionsForRecurringRest}
           placeholder="ບໍ່ມີວັນພັກປະຈຳ"
@@ -995,9 +996,9 @@ export const MonthlySchedulePage: React.FC = () => {
             ຕຳແໜ່ງນີ້ຫ້າມພັກ: {restrictedDaysForRecurring.map((d: number) => WEEKDAY_OPTIONS[d].label).join(', ')}
           </Typography.Paragraph>
         )}
-        {recurringRestFor?.defaultRestDay != null && (
+        {(recurringRestFor?.defaultRestDay?.length ?? 0) > 0 && (
           <Popconfirm
-            title={`ຍົກເລີກວັນພັກປະຈຳຂອງ ${recurringRestFor.firstName}?`}
+            title={`ຍົກເລີກວັນພັກປະຈຳຂອງ ${recurringRestFor?.firstName}?`}
             description="ຫຼັງຈາກນີ້ຈະບໍ່ມີວັນພັກປະຈຳອາທິດອີກ — ຕ້ອງໄປຕັ້ງວັນພັກເອງທີລະວັນຖ້າຕ້ອງການ"
             okText="ຍົກເລີກວັນພັກປະຈຳ"
             cancelText="ບໍ່"

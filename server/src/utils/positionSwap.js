@@ -149,17 +149,19 @@ async function pinBlankScheduleForSwapDay(employee, effectiveDate) {
 // position has no fallback configured — that's left as-is, same gap as
 // before this existed, since there's no admin to ask mid-swap.
 async function resolveMoverRestDay(employee, newPosition) {
-  if (employee.defaultRestDay == null) return null;
+  const current = employee.defaultRestDay ?? [];
+  if (!current.length) return null;
   let resolved;
   try {
-    resolved = resolveRestDayForPosition(newPosition, employee.defaultRestDay);
+    resolved = resolveRestDayForPosition(newPosition, current);
   } catch {
     return null;
   }
-  if (resolved === employee.defaultRestDay) return null;
+  const unchanged = resolved.length === current.length && resolved.every((d) => current.includes(d));
+  if (unchanged) return null;
   await RestDayHistory.create({
     employee: employee._id,
-    previousRestDay: employee.defaultRestDay,
+    previousRestDay: current,
     newRestDay: resolved,
     changedByEmail: 'ລະບົບ (ສະຫຼັບຕຳແໜ່ງອັດຕະໂນມັດ)',
   });

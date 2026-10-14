@@ -12,9 +12,9 @@ function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
 
-function weekdayLabel(day: number | null | undefined) {
-  if (day == null) return 'ບໍ່ມີ';
-  return WEEKDAY_OPTIONS.find((o) => o.value === day)?.label ?? '-';
+function weekdayLabels(days: number[] | null | undefined) {
+  if (!days || !days.length) return 'ບໍ່ມີ';
+  return days.map((day) => WEEKDAY_OPTIONS.find((o) => o.value === day)?.label ?? '-').join(', ');
 }
 
 // Read-only audit trail — rows are written server-side only, whenever
@@ -149,11 +149,11 @@ export const RestDayHistoryPage: React.FC = () => {
             return pos?.name || '-';
           }}
         />
-        <Table.Column title="ວັນພັກເກົ່າ" width={130} render={(_, r: RestDayHistory) => weekdayLabel(r.previousRestDay)} />
+        <Table.Column title="ວັນພັກເກົ່າ" width={150} render={(_, r: RestDayHistory) => weekdayLabels(r.previousRestDay)} />
         <Table.Column
           title="ວັນພັກໃໝ່"
-          width={130}
-          render={(_, r: RestDayHistory) => <Typography.Text strong>{weekdayLabel(r.newRestDay)}</Typography.Text>}
+          width={150}
+          render={(_, r: RestDayHistory) => <Typography.Text strong>{weekdayLabels(r.newRestDay)}</Typography.Text>}
         />
         <Table.Column
           title="ຜູ້ແກ້ໄຂ"
