@@ -22,6 +22,21 @@ const positionSchema = new mongoose.Schema(
     // behavior) until an admin sets one. Must not itself be inside
     // restrictedRestDays — enforced in routes/positions.js.
     restDayFallback: { type: Number, min: 0, max: 6, default: null },
+    // Days of week (0=Sun..6=Sat) this position can never be absent on — for
+    // roles the business can't afford to be short-staffed on (e.g. the
+    // busiest night of the week). Unlike restrictedRestDays, this never
+    // blocks anyone from having the day off: if it's already their recurring
+    // rest day or a planned rest override, this rule simply doesn't apply
+    // that day. It only matters for a day they were actually expected to
+    // work and weren't there — see noAbsenceSeverity.
+    noAbsenceDays: [{ type: Number, min: 0, max: 6 }],
+    // Deduction tier (same X1/X2/X3 scale ການລາ already uses) charged when
+    // someone in this position is absent on one of noAbsenceDays — folds
+    // straight into the same x1/x2/x3 payroll totals a leave deduction
+    // would, rather than being a separate kind of penalty. null = not set,
+    // so noAbsenceDays has no effect yet even with days already picked
+    // (same "configured but incomplete" safety as restDayFallback).
+    noAbsenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
   },
   { timestamps: true }
 );

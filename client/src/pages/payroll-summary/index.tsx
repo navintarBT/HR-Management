@@ -5,7 +5,7 @@ import { useList } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, message } from 'antd';
 import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { Employee, Shift, Leave, Overtime, Department, Position } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 
 const { RangePicker } = DatePicker;
@@ -55,6 +55,7 @@ interface SummaryRow {
   employee: Employee;
   workDays: number;
   restDays: number;
+  absentDays: number;
   x1: number;
   x2: number;
   x3: number;
@@ -64,7 +65,7 @@ interface SummaryRow {
   otDays: number;
 }
 
-type DayStatus = 'work' | 'rest' | 'leave' | 'future';
+type DayStatus = 'work' | 'rest' | 'leave' | 'future' | 'absent';
 
 // One-letter day-cell scheme, shared by the on-screen grid and the print
 // table, with 'leave' split out by which deduction tier the covering Leave
@@ -72,8 +73,8 @@ type DayStatus = 'work' | 'rest' | 'leave' | 'future';
 // cell reads as which rate it's billed at, not just "on leave". 'future' is
 // a day that hasn't happened yet — never counted as "work" just because
 // nothing else matched.
-type PrintDayState = 'work' | 'rest' | 'graceLeave' | 'x1Leave' | 'x2Leave' | 'x3Leave' | 'future' | 'out';
-type SummaryTone = 'work' | 'rest' | 'x1' | 'x2' | 'x3' | 'grace';
+type PrintDayState = 'work' | 'rest' | 'graceLeave' | 'x1Leave' | 'x2Leave' | 'x3Leave' | 'future' | 'out' | 'absent';
+type SummaryTone = 'work' | 'rest' | 'x1' | 'x2' | 'x3' | 'grace' | 'absent';
 
 const SUMMARY_TONE: Record<SummaryTone, { bg: string; text: string }> = {
   work: { bg: '#52c41a', text: '#ffffff' },
@@ -82,6 +83,9 @@ const SUMMARY_TONE: Record<SummaryTone, { bg: string; text: string }> = {
   x2: { bg: '#ff7875', text: '#ffffff' },
   x3: { bg: '#cf1322', text: '#ffffff' },
   grace: { bg: '#e6f4ff', text: '#1677ff' },
+  // Same red ປະຫວັດການສະແກນ uses for ຂາດວຽກ (see attendance/logs.tsx
+  // CELL_STYLE.absent) — same meaning, same color, on both pages.
+  absent: { bg: '#fff1f0', text: '#cf1322' },
 };
 
 const toneColors = (tone: SummaryTone) => ({
@@ -100,6 +104,7 @@ const PRINT_DAY_STYLE: Record<PrintDayState, { bg: string; text: string; label: 
   x2Leave: { bg: SUMMARY_TONE.x2.bg, text: SUMMARY_TONE.x2.text, label: '2' },
   x3Leave: { bg: SUMMARY_TONE.x3.bg, text: SUMMARY_TONE.x3.text, label: '3' },
   out: { bg: '#fff1f0', text: '#cf1322', label: '-' },
+  absent: { bg: SUMMARY_TONE.absent.bg, text: SUMMARY_TONE.absent.text, label: 'ຂ' },
   future: { bg: '#fafafa', text: '#bfbfbf', label: '-' },
 };
 const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
@@ -110,6 +115,7 @@ const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
   x2Leave: 'ລາ (ຕັດ x2)',
   x3Leave: 'ລາ (ຕັດ x3)',
   out: 'ລາອອກແລ້ວ',
+  absent: 'ຂາດວຽກ',
   future: 'ຍັງບໍ່ເຖິງວັນ',
 };
 
@@ -140,12 +146,13 @@ const PRINT_TD: CSSProperties = {
 // @page margin on each side.
 const PRINT_PAGE_WIDTH_PX = ((297 - 10) / 25.4) * 96;
 // Sum of every print-table column's width EXCEPT the day columns (ລ/ດ 22 +
-// ລະຫັດ 42 + ຊື່ 110 + ມາ 38 + ພັກ 32 + x1/x2/x3/ປ 22×4 + ລວມ 38 + ຊ/ມx3 34 +
-// ມື້x2 34). Day columns split whatever width is left over this many ways —
-// see dayColWidth below — so the printed table always spans exactly one page
-// width no matter how many days are in the selected range, instead of a
-// fixed per-day width that overflows once the range gets long enough.
-const PRINT_FIXED_COLS_WIDTH_PX = 22 + 42 + 110 + 38 + 32 + 22 * 4 + 38 + 34 + 34;
+// ລະຫັດ 42 + ຊື່ 110 + ມາ 38 + ພັກ 32 + ຂາດ 32 + x1/x2/x3/ປ 22×4 + ລວມ 38 +
+// ຊ/ມx3 34 + ມື້x2 34). Day columns split whatever width is left over this
+// many ways — see dayColWidth below — so the printed table always spans
+// exactly one page width no matter how many days are in the selected range,
+// instead of a fixed per-day width that overflows once the range gets long
+// enough.
+const PRINT_FIXED_COLS_WIDTH_PX = 22 + 42 + 110 + 38 + 32 + 32 + 22 * 4 + 38 + 34 + 34;
 const PRINT_MIN_DAY_COL_WIDTH_PX = 6;
 
 // Sends a per-employee attendance/leave rollup to ການເງິນ for payroll. Day-by-day
@@ -254,7 +261,7 @@ const PayrollSummaryGrid: React.FC = () => {
     PRINT_MIN_DAY_COL_WIDTH_PX,
     (PRINT_PAGE_WIDTH_PX - PRINT_FIXED_COLS_WIDTH_PX) / Math.max(days.length, 1)
   );
-  const printTotalColumns = 3 + days.length + 9;
+  const printTotalColumns = 3 + days.length + 10;
 
   const { data: scheduledShiftsData, isLoading: scheduledLoading } = useList<Shift>({
     resource: 'shifts',
@@ -305,6 +312,30 @@ const PayrollSummaryGrid: React.FC = () => {
     pagination: { pageSize: 5000 },
   });
   const overtimeRecords = overtimeData?.data ?? [];
+
+  // ขาดงาน — the one place this page reads the actual recorded attendance
+  // outcome rather than just what was scheduled. Without this, a day the
+  // employee was scheduled to work but never scanned for (a real no-show, or
+  // a disciplinary override — see attendanceActions.js mark-absent) still
+  // counted as a worked day here even while ປະຫວັດການສະແກນ correctly showed
+  // it as ຂາດວຽກ.
+  const { data: absentDailyData, isLoading: absentLoading } = useList<AttendanceDaily>({
+    resource: 'attendance-daily',
+    filters: [
+      { field: 'date', operator: 'gte', value: rangeStartKey },
+      { field: 'date', operator: 'lte', value: rangeEndKey },
+      { field: 'status', operator: 'eq', value: 'absent' },
+    ],
+    pagination: { pageSize: 5000 },
+  });
+  const absentSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of absentDailyData?.data ?? []) {
+      if (!a.employee) continue;
+      set.add(`${idOf(a.employee)}_${a.date}`);
+    }
+    return set;
+  }, [absentDailyData?.data]);
 
   const scheduledSet = useMemo(() => {
     const set = new Set<string>();
@@ -370,7 +401,9 @@ const PayrollSummaryGrid: React.FC = () => {
   // the precedence falls back to AttendanceLogsPage's isRestDay: a queued
   // 'scheduled' override wins over what would otherwise be a rest day, then
   // 'rest'/'swapped', then the recurring weekly default.
-  const classifyDay = (emp: Employee, dateKey: string, dow: number): DayStatus => {
+  // What the SCHEDULE says should have happened — doesn't yet know whether it
+  // actually did. classifyDay below is the one that checks that.
+  const classifyScheduledDay = (emp: Employee, dateKey: string, dow: number): DayStatus => {
     if (afterResignation(emp, dateKey)) return 'future';
     const coveringLeave = findCoveringLeave(emp, dateKey);
     if (coveringLeave) {
@@ -390,6 +423,30 @@ const PayrollSummaryGrid: React.FC = () => {
     return dayjs(dateKey).isAfter(dayjs(), 'day') ? 'future' : 'work';
   };
 
+  // A day the schedule says was a work day, but ປະຫວັດການສະແກນ's own
+  // AttendanceDaily record says the employee was actually marked absent that
+  // day (a genuine no-show, or a disciplinary override) — counts as ຂາດວຽກ
+  // here instead of a worked day, so the two pages never disagree. A day the
+  // schedule itself already resolves to rest/leave/future is left alone —
+  // there's no AttendanceDaily 'absent' row for those anyway (leave stamps
+  // 'leave' directly, a rest day is never swept for absence).
+  const classifyDay = (emp: Employee, dateKey: string, dow: number): DayStatus => {
+    const scheduled = classifyScheduledDay(emp, dateKey, dow);
+    if (scheduled === 'work' && absentSet.has(`${emp._id}_${dateKey}`)) return 'absent';
+    return scheduled;
+  };
+
+  // ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ's "ວັນຫ້າມຂາດ" — an absence on one of these weekdays
+  // is charged at the position's configured tier instead of just counting as
+  // a plain ຂາດວຽກ. Only meaningful for a day classifyDay already resolved to
+  // 'absent' (that precedence — rest/leave always wins first — is classifyDay's
+  // job, not this one's).
+  const noAbsenceSeverityFor = (emp: Employee, dow: number): 'X2' | 'X3' | null => {
+    const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
+    if (position?.noAbsenceDays?.includes(dow) && position.noAbsenceSeverity) return position.noAbsenceSeverity;
+    return null;
+  };
+
   // Same precedence as classifyDay, but for a 'leave' day it also looks up
   // which Leave record covers this date to report its deductAmount tier —
   // that's not needed for the work/rest/leave totals above, only for the
@@ -397,6 +454,12 @@ const PayrollSummaryGrid: React.FC = () => {
   const printDayState = (emp: Employee, dateKey: string, dow: number): PrintDayState => {
     if (afterResignation(emp, dateKey)) return 'out';
     const status = classifyDay(emp, dateKey, dow);
+    if (status === 'absent') {
+      const severity = noAbsenceSeverityFor(emp, dow);
+      if (severity === 'X2') return 'x2Leave';
+      if (severity === 'X3') return 'x3Leave';
+      return 'absent';
+    }
     if (status !== 'leave') return status;
     const coveringLeave = findCoveringLeave(emp, dateKey);
     if (coveringLeave?.deductAmount === 'X1') return 'x1Leave';
@@ -409,25 +472,35 @@ const PayrollSummaryGrid: React.FC = () => {
     return employees.map((emp) => {
       let workDays = 0;
       let restDays = 0;
+      let absentDays = 0;
       let leaveDays = 0;
       let futureDays = 0;
+      // Declared before the day loop (not after, like empLeaves below) because
+      // an absence on a ວັນຫ້າມຂາດ day feeds these same totals too — see
+      // noAbsenceSeverityFor.
+      let x1 = 0;
+      let x2 = 0;
+      let x3 = 0;
+      let grace = 0;
 
       for (const day of days) {
         const dateKey = day.format('YYYY-MM-DD');
-        const status = classifyDay(emp, dateKey, day.day());
+        const dow = day.day();
+        const status = classifyDay(emp, dateKey, dow);
         if (status === 'work') workDays += 1;
         else if (status === 'rest') restDays += 1;
-        else if (status === 'future') futureDays += 1;
+        else if (status === 'absent') {
+          absentDays += 1;
+          const severity = noAbsenceSeverityFor(emp, dow);
+          if (severity === 'X2') x2 += 1;
+          else if (severity === 'X3') x3 += 1;
+        } else if (status === 'future') futureDays += 1;
         else leaveDays += 1;
       }
 
       const empLeaves = leaves.filter(
         (l) => idOf(l.employee) === emp._id && toDateKey(l.startDate) <= rangeEndKey && toDateKey(l.endDate) >= rangeStartKey
       );
-      let x1 = 0;
-      let x2 = 0;
-      let x3 = 0;
-      let grace = 0;
       for (const l of empLeaves) {
         grace += l.deductDaysX2 ?? 0;
         const chargeableDays = l.deductDaysX1 ?? 0;
@@ -445,12 +518,24 @@ const PayrollSummaryGrid: React.FC = () => {
       const otHours = empOvertime.reduce((sum, ot) => sum + otHoursOf(ot), 0);
       const otDays = Math.floor(otHours / 24);
 
-      return { employee: emp, workDays, restDays, x1, x2, x3, grace, totalDays: workDays + restDays + leaveDays + futureDays, otHours, otDays };
+      return {
+        employee: emp,
+        workDays,
+        restDays,
+        absentDays,
+        x1,
+        x2,
+        x3,
+        grace,
+        totalDays: workDays + restDays + absentDays + leaveDays + futureDays,
+        otHours,
+        otDays,
+      };
     });
-  }, [employees, days, scheduledSet, restSet, swappedSet, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
   const exportCsv = () => {
-    const header = ['ລະຫັດ', 'ຊື່', 'ມາເຮັດວຽກ', 'ພັກ', 'x1', 'x2', 'x3', 'ປ', 'ວັນທັງໝົດ', 'ຊ/ມ x3', 'ມື້ x2'];
+    const header = ['ລະຫັດ', 'ຊື່', 'ມາເຮັດວຽກ', 'ພັກ', 'ຂາດວຽກ', 'x1', 'x2', 'x3', 'ປ', 'ວັນທັງໝົດ', 'ຊ/ມ x3', 'ມື້ x2'];
     const lines = rows.map((r) => {
       const name = `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`.trim();
       return [
@@ -458,6 +543,7 @@ const PayrollSummaryGrid: React.FC = () => {
         name,
         r.workDays,
         r.restDays,
+        r.absentDays,
         r.x1,
         r.x2,
         r.x3,
@@ -480,7 +566,7 @@ const PayrollSummaryGrid: React.FC = () => {
   };
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
-  const loading = employeesLoading || scheduledLoading || restLoading || swappedLoading || leavesLoading || overtimeLoading;
+  const loading = employeesLoading || scheduledLoading || restLoading || swappedLoading || absentLoading || leavesLoading || overtimeLoading;
 
   const handlePrintClick = () => window.print();
 
@@ -572,7 +658,7 @@ const PayrollSummaryGrid: React.FC = () => {
             </Button>
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            x1/x2/x3/ປ = ມາຈາກໜ້າ "ການລາ" (x1-x3 = ມື້ລາທີ່ຕັດເງິນ ແຍກຕາມອັດຕາ 1/2/3 ເທົ່າ, ປ = ມື້ລາທີ່ຍັງຟຣີ) &nbsp;|&nbsp; ຊ/ມ x3 = ຊົ່ວໂມງ OT ທັງໝົດ (ຈາກໜ້າ OT ທີ່ອະນຸມັດແລ້ວ), ມື້ x2 = ຈຳນວນມື້ທີ່ມີ OT
+            ຂາດວຽກ = ມາຈາກປະຫວັດການສະແກນຈິງ (ບໍ່ແມ່ນຕາຕະລາງ) ນັບທັງຂາດວຽກແທ້ໆ ແລະ ຂາດວຽກແບບລົງໂທດ &nbsp;|&nbsp; x1/x2/x3/ປ = ມາຈາກໜ້າ "ການລາ" (x1-x3 = ມື້ລາທີ່ຕັດເງິນ ແຍກຕາມອັດຕາ 1/2/3 ເທົ່າ, ປ = ມື້ລາທີ່ຍັງຟຣີ) &nbsp;|&nbsp; ຊ/ມ x3 = ຊົ່ວໂມງ OT ທັງໝົດ (ຈາກໜ້າ OT ທີ່ອະນຸມັດແລ້ວ), ມື້ x2 = ຈຳນວນມື້ທີ່ມີ OT
           </Typography.Text>
           <Space size={[14, 6]} wrap>
             {(Object.keys(PRINT_DAY_STYLE) as PrintDayState[]).map((state) => (
@@ -689,6 +775,14 @@ const PayrollSummaryGrid: React.FC = () => {
           render={(_, r: SummaryRow) => r.restDays}
         />
         <Table.Column
+          title="ຂາດວຽກ (ມື້)"
+          width={100}
+          align="center"
+          onCell={(r: SummaryRow) => ({ style: toneStyle(r.absentDays, 'absent') })}
+          onHeaderCell={() => ({ style: toneColors('absent') })}
+          render={(_, r: SummaryRow) => r.absentDays}
+        />
+        <Table.Column
           title="x1"
           width={70}
           align="center"
@@ -760,6 +854,7 @@ const PayrollSummaryGrid: React.FC = () => {
           ))}
           <col style={{ width: 38 }} />
           <col style={{ width: 32 }} />
+          <col style={{ width: 32 }} />
           <col style={{ width: 22 }} />
           <col style={{ width: 22 }} />
           <col style={{ width: 22 }} />
@@ -798,6 +893,7 @@ const PayrollSummaryGrid: React.FC = () => {
             ))}
             <th style={{ ...PRINT_TH, ...toneColors('work') }}>ມາ</th>
             <th style={{ ...PRINT_TH, ...toneColors('rest') }}>ພັກ</th>
+            <th style={{ ...PRINT_TH, ...toneColors('absent') }}>ຂາດ</th>
             <th style={{ ...PRINT_TH, ...toneColors('x1') }}>x1</th>
             <th style={{ ...PRINT_TH, ...toneColors('x2') }}>x2</th>
             <th style={{ ...PRINT_TH, ...toneColors('x3') }}>x3</th>
@@ -830,6 +926,7 @@ const PayrollSummaryGrid: React.FC = () => {
               })}
               <td style={{ ...PRINT_TD, ...toneStyle(r.workDays, 'work') }}>{r.workDays}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.restDays, 'rest') }}>{r.restDays}</td>
+              <td style={{ ...PRINT_TD, ...toneStyle(r.absentDays, 'absent') }}>{r.absentDays}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.x1, 'x1') }}>{r.x1}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.x2, 'x2') }}>{r.x2}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.x3, 'x3') }}>{r.x3}</td>

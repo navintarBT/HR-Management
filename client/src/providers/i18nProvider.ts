@@ -42,7 +42,7 @@ const dictionary: Record<string, string> = {
   'shifts.shifts': 'ກະ',
   'shift-swaps.shift-swaps': 'ສະຫຼັບກະ',
   'medicine-expenses.medicine-expenses': 'ຄ່າຢາ',
-  'substitute-rule.substitute-rule': 'ກົດ "ມາແທນ"',
+  'substitute-rule.substitute-rule': 'ກົດ "ມາບໍ່ປົກກະຕິ"',
 };
 
 function interpolate(template: string, params?: Record<string, any>): string {

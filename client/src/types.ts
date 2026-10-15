@@ -14,6 +14,8 @@ export interface Position {
   allowsSubstituteStatus?: boolean;
   restrictedRestDays?: number[];
   restDayFallback?: number | null;
+  noAbsenceDays?: number[]; // 0 = Sunday .. 6 = Saturday — this position can never be absent on these days
+  noAbsenceSeverity?: 'X2' | 'X3' | null; // deduction tier charged for an absence on a noAbsenceDays day
 }
 
 export interface EmploymentType {

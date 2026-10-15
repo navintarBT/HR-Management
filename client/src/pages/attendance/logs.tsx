@@ -20,6 +20,9 @@ function idOf(value: unknown) {
 // ordinary X2.
 function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' {
   const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
+  // An explicit ວັນຫ້າມຂາດ severity (ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ) wins when set — it's
+  // the more deliberately configured value, and the only way to reach X1.
+  if (position?.noAbsenceDays?.includes(day.day()) && position.noAbsenceSeverity) return position.noAbsenceSeverity;
   return position?.restrictedRestDays?.includes(day.day()) ? 'X3' : 'X2';
 }
 
@@ -403,7 +406,7 @@ const AttendanceSummaryGrid: React.FC = () => {
               { color: '#8c8c8c', outline: true, label: 'ມາເຮັດວຽກ (ບໍ່ມີສີ)' },
               { color: CELL_STYLE.late.text, label: 'ຊ້າ / ຊ້າເກີນ X ນາທີ / ຊ້າເກີນ Y (3 ລະດັບ, ສີດຽວກັນ)' },
               { color: CELL_STYLE.incomplete.text, label: 'ສະແກນຄັ້ງດຽວ' },
-              { color: CELL_STYLE.absent.text, label: 'ຂາດວຽກ (X2) = ວັນທຳມະດາ, (X3) = ວັນຫ້າມພັກຂອງຕຳແໜ່ງ' },
+              { color: CELL_STYLE.absent.text, label: 'ຂາດວຽກ (X2) = ວັນທຳມະດາ, (X3) = ວັນຫ້າມພັກຂອງຕຳແໜ່ງ, (X1-X3) = ວັນຫ້າມຂາດທີ່ຕັ້ງໄວ້ສະເພາະ' },
               { color: CELL_STYLE.leave.text, label: 'ລາ' },
               { color: CELL_STYLE.rest.text, label: 'ພັກ / ຮ້ານປິດ' },
               { color: CELL_STYLE.substituted.text, label: 'ມາແທນ' },

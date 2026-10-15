@@ -23,6 +23,17 @@ function validateRestDayFallback(restrictedRestDays, restDayFallback) {
   return null;
 }
 
+// Same "configured but incomplete" gap as restDayFallback above — a day
+// picked with no severity set would just silently do nothing, so a severity
+// is required the moment there's at least one day chosen.
+function validateNoAbsenceSeverity(noAbsenceDays, noAbsenceSeverity) {
+  if (!(noAbsenceDays ?? []).length) return null;
+  if (!noAbsenceSeverity) {
+    return 'ຖ້າມີວັນຫ້າມຂາດ ຕ້ອງຕັ້ງລະດັບການຕັດເງິນນຳທຸກຄັ້ງ';
+  }
+  return null;
+}
+
 module.exports = crudRouter(Position, {
   // `head` references a full Employee document — scoped to display-only
   // fields so every employee/manager who reads a position's head never gets
@@ -40,6 +51,8 @@ module.exports = crudRouter(Position, {
   beforeCreate: async (body) => {
     const fallbackError = validateRestDayFallback(body.restrictedRestDays, body.restDayFallback);
     if (fallbackError) return fallbackError;
+    const severityError = validateNoAbsenceSeverity(body.noAbsenceDays, body.noAbsenceSeverity);
+    if (severityError) return severityError;
     if (!body.head) return null;
     return checkHeadConflict({
       ownModel: Position,
@@ -57,6 +70,13 @@ module.exports = crudRouter(Position, {
       const effectiveFallback = 'restDayFallback' in body ? body.restDayFallback : current?.restDayFallback;
       const fallbackError = validateRestDayFallback(effectiveRestricted, effectiveFallback);
       if (fallbackError) return fallbackError;
+    }
+    if ('noAbsenceDays' in body || 'noAbsenceSeverity' in body) {
+      const current = await Position.findById(id, 'noAbsenceDays noAbsenceSeverity');
+      const effectiveDays = 'noAbsenceDays' in body ? body.noAbsenceDays : current?.noAbsenceDays;
+      const effectiveSeverity = 'noAbsenceSeverity' in body ? body.noAbsenceSeverity : current?.noAbsenceSeverity;
+      const severityError = validateNoAbsenceSeverity(effectiveDays, effectiveSeverity);
+      if (severityError) return severityError;
     }
     if (!body.head) return null;
     return checkHeadConflict({

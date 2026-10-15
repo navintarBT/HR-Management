@@ -410,7 +410,7 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
 //  - a Shift override marks it 'rest' or 'swapped', or no override exists but
 //    it's the employee's recurring defaultRestDay,
 //  - there's no resolvable expected shift at all that day (nothing to be
-//    absent FROM — e.g. a ກົດ "ມາແທນ" position with no fixed schedule),
+//    absent FROM — e.g. a ກົດ "ມາບໍ່ປົກກະຕິ" position with no fixed schedule),
 //  - its scan-capture window (resolveShiftWindow, overnight-aware) hasn't
 //    closed yet — too early to call it a no-show.
 const ABSENT_SWEEP_DAYS_BACK = 4;
