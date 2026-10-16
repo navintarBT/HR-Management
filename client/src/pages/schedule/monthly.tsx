@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
-import { useList, useGetIdentity, useCreate, useUpdate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Typography, Space, Button, Modal, Form, TimePicker, Select, Input, Popconfirm } from 'antd';
+import { useList, useCustom, useGetIdentity, useCreate, useUpdate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
+import { Table, Typography, Space, Button, Modal, Form, TimePicker, DatePicker, Select, Input, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, CalendarOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory, Leave } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory, Leave, ScheduledShiftChange } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
@@ -34,6 +34,20 @@ type Cell =
 
 function idOf(value: { _id: string } | string | null | undefined) {
   return value && typeof value === 'object' ? value._id : value;
+}
+
+function categoryLabel(category: ShiftCategory | string | undefined | null): string {
+  if (!category || typeof category === 'string') return '-';
+  return category.name ? `${category.name} (${category.startTime}-${category.endTime})` : `${category.startTime}-${category.endTime}`;
+}
+
+// An employee's own restrictedRestDays (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces
+// the position's when non-empty — same precedence as the server's
+// mergeRestDayRule in restDayRules.js.
+function effectiveRestrictedRestDays(employee?: Employee | null): number[] {
+  if (employee?.restrictedRestDays?.length) return employee.restrictedRestDays;
+  const position = employee && typeof employee.position === 'object' ? employee.position : undefined;
+  return position?.restrictedRestDays ?? [];
 }
 
 // A linked category is a live reference (unlike Shift.category, a one-time
@@ -223,11 +237,30 @@ export const MonthlySchedulePage: React.FC = () => {
     return !!approvedLeaveRangesByEmployee[employeeId]?.some((r) => !date.isBefore(r.start, 'day') && !date.isAfter(r.end, 'day'));
   };
 
+  // ຍ້າຍກະລ່ວງໜ້າ — a standing change to one employee's own default shift,
+  // scheduled ahead (see ScheduledShiftChange/scheduledShiftChange.js). Fetched
+  // unfiltered like the position-swap schedule list (useCustom, not useList —
+  // this route returns a plain array, not a paginated X-Total-Count response).
+  const { data: shiftChangesData, refetch: refetchShiftChanges } = useCustom<ScheduledShiftChange[]>({
+    url: `${API_URL}/scheduled-shift-changes`,
+    method: 'get',
+    queryOptions: { enabled: isManager },
+  });
+  const pendingShiftChangeByEmpDate = useMemo(() => {
+    const map: Record<string, ScheduledShiftChange> = {};
+    for (const c of shiftChangesData?.data ?? []) {
+      if (c.status !== 'pending') continue;
+      map[`${idOf(c.employee)}_${c.effectiveDate}`] = c;
+    }
+    return map;
+  }, [shiftChangesData?.data]);
+
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
   const editingOverride = editing ? overrideByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
   const editingIsSubstituted = editing ? !!substitutedByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : false;
   const editingIsOnLeave = editing ? hasApprovedLeaveOn(editing.employee._id, editing.dateKey) : false;
   const editingCell = editing ? computeCell(editing.employee, editing.dateKey, editingOverride, editingIsSubstituted, editingIsOnLeave) : null;
+  const editingPendingShiftChange = editing ? pendingShiftChangeByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
 
   const [timeForm] = Form.useForm();
   useEffect(() => {
@@ -284,8 +317,7 @@ export const MonthlySchedulePage: React.FC = () => {
       .filter((dateKey) => overrideByEmpDate[`${recurringRestFor._id}_${dateKey}`]?.status === 'scheduled');
   }, [recurringRestFor, recurringRestDay, days, overrideByEmpDate]);
 
-  const restrictedDaysForRecurring =
-    (recurringRestFor && typeof recurringRestFor.position === 'object' ? recurringRestFor.position?.restrictedRestDays : undefined) ?? [];
+  const restrictedDaysForRecurring = effectiveRestrictedRestDays(recurringRestFor);
   const weekdayOptionsForRecurringRest = useMemo(
     () => WEEKDAY_OPTIONS.map((opt) => ({ ...opt, disabled: restrictedDaysForRecurring.includes(opt.value) })),
     [restrictedDaysForRecurring]
@@ -332,7 +364,7 @@ export const MonthlySchedulePage: React.FC = () => {
     );
   };
 
-  const [choice, setChoice] = useState<'rest' | 'time' | 'cover' | 'editCover' | 'substitute' | null>(null);
+  const [choice, setChoice] = useState<'rest' | 'time' | 'cover' | 'editCover' | 'substitute' | 'shiftChange' | null>(null);
   useEffect(() => {
     setChoice(null);
   }, [editing?.employee._id, editing?.dateKey]);
@@ -348,6 +380,82 @@ export const MonthlySchedulePage: React.FC = () => {
 
   const personLabel = (emp?: Employee) => `${emp?.employeeCode ?? ''} ${emp?.firstName ?? ''} ${emp?.lastName ?? ''}`.trim();
   const shortDate = (dateKey: string) => dayjs(dateKey).format('DD/MM/YYYY');
+
+  // ຍ້າຍກະລ່ວງໜ້າ — opened from the 4th cell-menu option. The clicked cell's
+  // own date doubles as the effective date by default (editable, in case the
+  // wrong day was clicked), so there's no separate "which day" step.
+  const [shiftChangeDate, setShiftChangeDate] = useState<Dayjs | null>(null);
+  const [shiftChangeCategory, setShiftChangeCategory] = useState<string | undefined>(undefined);
+  const [creatingNewCategory, setCreatingNewCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryTime, setNewCategoryTime] = useState<[Dayjs, Dayjs] | null>(null);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [schedulingShiftChange, setSchedulingShiftChange] = useState(false);
+
+  const openShiftChange = () => {
+    if (!editing) return;
+    setChoice('shiftChange');
+    setShiftChangeDate(dayjs(editing.dateKey));
+    setShiftChangeCategory(undefined);
+    setCreatingNewCategory(false);
+    setNewCategoryName('');
+    setNewCategoryTime(null);
+  };
+
+  const createCategoryThenUse = async () => {
+    if (!newCategoryTime) return;
+    setCreatingCategory(true);
+    try {
+      const [start, end] = newCategoryTime;
+      const res = await axiosInstance.post(`${API_URL}/shift-categories`, {
+        name: newCategoryName.trim() || undefined,
+        startTime: start.format('HH:mm'),
+        endTime: end.format('HH:mm'),
+      });
+      setShiftChangeCategory(res.data._id);
+      setCreatingNewCategory(false);
+      setNewCategoryName('');
+      setNewCategoryTime(null);
+      invalidate({ resource: 'shift-categories', invalidates: ['list'] });
+      notify?.({ type: 'success', message: 'ສ້າງກະໃໝ່ແລ້ວ' });
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ສ້າງກະໃໝ່ບໍ່ສຳເລັດ' });
+    } finally {
+      setCreatingCategory(false);
+    }
+  };
+
+  const submitShiftChange = async () => {
+    if (!editing || !shiftChangeCategory || !shiftChangeDate) return;
+    setSchedulingShiftChange(true);
+    try {
+      await axiosInstance.post(`${API_URL}/scheduled-shift-changes`, {
+        employee: editing.employee._id,
+        newShiftCategory: shiftChangeCategory,
+        effectiveDate: shiftChangeDate.format('YYYY-MM-DD'),
+      });
+      notify?.({ type: 'success', message: `ຕັ້ງການຍ້າຍກະລ່ວງໜ້າແລ້ວ — ມີຜົນວັນທີ ${shiftChangeDate.format('DD/MM/YYYY')}` });
+      closeModal();
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
+      refetchShiftChanges();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ດໍາເນີນການບໍ່ສຳເລັດ' });
+    } finally {
+      setSchedulingShiftChange(false);
+    }
+  };
+
+  const cancelShiftChange = async (id: string) => {
+    try {
+      await axiosInstance.patch(`${API_URL}/scheduled-shift-changes/${id}`, { status: 'cancelled' });
+      notify?.({ type: 'success', message: 'ຍົກເລີກການຍ້າຍກະລ່ວງໜ້າແລ້ວ' });
+      closeModal();
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
+      refetchShiftChanges();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
+    }
+  };
 
   // A rest day can be silently moved to a fallback weekday by the server when
   // the position forbids the picked one — say so, instead of reporting the
@@ -377,8 +485,7 @@ export const MonthlySchedulePage: React.FC = () => {
   const editingCovered =
     editingOverride && typeof editingOverride.coveringFor === 'object' && editingOverride.coveringFor ? editingOverride.coveringFor : undefined;
 
-  const restrictedDaysForEditing =
-    (editing && typeof editing.employee.position === 'object' ? editing.employee.position?.restrictedRestDays : undefined) ?? [];
+  const restrictedDaysForEditing = effectiveRestrictedRestDays(editing?.employee);
   const isEditingDateRestDayBlocked =
     !!editing &&
     restrictedDaysForEditing.includes(dayjs(editing.dateKey).day()) &&
@@ -820,6 +927,22 @@ export const MonthlySchedulePage: React.FC = () => {
                 disabled={!!editingCovered}
                 onClick={() => setChoice('time')}
               />
+              <ChoiceButton
+                title="ຍ້າຍກະລ່ວງໜ້າ"
+                description={
+                  editingCovered
+                    ? 'ມື້ນີ້ກຳລັງໄປເຮັດແທນຄົນອື່ນຢູ່ ຕ້ອງລຶບການເຮັດແທນກ່ອນ'
+                    : editingCell?.kind === 'leave'
+                      ? 'ມື້ນີ້ລາ ບໍ່ສາມາດຕັ້ງຈຸດເລີ່ມຕົ້ນກະໃໝ່ທີ່ມື້ນີ້ໄດ້'
+                      : editingCell?.kind === 'substituted'
+                        ? 'ມື້ນີ້ມີຄົນມາແທນ ບໍ່ສາມາດຕັ້ງຈຸດເລີ່ມຕົ້ນກະໃໝ່ທີ່ມື້ນີ້ໄດ້'
+                        : editingOverride
+                          ? 'ມື້ນີ້ມີຕາຕະລາງພິເສດຢູ່ແລ້ວ ຕ້ອງຄືນຄ່າປົກກະຕິກ່ອນ'
+                          : 'ປ່ຽນກະປະຈຳຂອງຄົນນີ້ ໂດຍເລີ່ມນັບຈາກວັນທີ່ເລືອກເປັນຕົ້ນໄປ'
+                }
+                disabled={!!editingCovered || editingCell?.kind === 'leave' || editingCell?.kind === 'substituted' || !!editingOverride}
+                onClick={openShiftChange}
+              />
               {editingCovered ? (
                 <ChoiceButton
                   title="ແກ້ໄຂເວລາໄປເຮັດແທນ"
@@ -851,6 +974,19 @@ export const MonthlySchedulePage: React.FC = () => {
                   ຄືນຄ່າປົກກະຕິ
                 </Button>
               )}
+              {editingPendingShiftChange && (
+                <Popconfirm
+                  title="ຍົກເລີກການຍ້າຍກະລ່ວງໜ້ານີ້?"
+                  description="ວັນທີ່ນີ້ຈະເລີກເປັນຈຸດເລີ່ມຕົ້ນຂອງກະໃໝ່ ແລະ ກະເກົ່າຈະກັບມາເໝືອນເດີມ"
+                  okText="ຍົກເລີກ"
+                  cancelText="ບໍ່"
+                  onConfirm={() => cancelShiftChange(editingPendingShiftChange._id)}
+                >
+                  <Button type="link" danger style={{ paddingLeft: 0 }}>
+                    ຍົກເລີກການຍ້າຍກະລ່ວງໜ້ານີ້ (ໄປ {categoryLabel(editingPendingShiftChange.newShiftCategory)})
+                  </Button>
+                </Popconfirm>
+              )}
             </Space>
           ) : (
             <div>
@@ -878,6 +1014,70 @@ export const MonthlySchedulePage: React.FC = () => {
                     ບັນທຶກເວລາພິເສດ
                   </Button>
                 </Form>
+              )}
+
+              {choice === 'shiftChange' && editing && (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  <Typography.Text>
+                    ຍ້າຍກະລ່ວງໜ້າໃຫ້ {personLabel(editing.employee)} — ມີຜົນນັບແຕ່ວັນທີ່ເລືອກລຸ່ມນີ້ເປັນຕົ້ນໄປ
+                  </Typography.Text>
+                  <DatePicker
+                    format="DD/MM/YYYY"
+                    value={shiftChangeDate}
+                    onChange={(v) => setShiftChangeDate(v)}
+                    style={{ width: '100%' }}
+                    allowClear={false}
+                  />
+                  {!creatingNewCategory ? (
+                    <>
+                      <Select
+                        {...shiftCategorySelect}
+                        placeholder="ເລືອກກະທີ່ມີ"
+                        style={{ width: '100%' }}
+                        value={shiftChangeCategory}
+                        onChange={(v: any) => setShiftChangeCategory(v)}
+                      />
+                      <Button type="link" style={{ paddingLeft: 0 }} onClick={() => setCreatingNewCategory(true)}>
+                        + ສ້າງກະໃໝ່
+                      </Button>
+                    </>
+                  ) : (
+                    <div style={{ border: '1px dashed #d9d9d9', borderRadius: 6, padding: 12, width: '100%' }}>
+                      <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
+                        ສ້າງກະໃໝ່
+                      </Typography.Text>
+                      <Input
+                        placeholder="ຊື່ໝວດໝູ່ (ບໍ່ບັງຄັບ)"
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
+                        style={{ marginBottom: 8 }}
+                      />
+                      <TimePicker.RangePicker
+                        format="HH:mm"
+                        minuteStep={15}
+                        style={{ width: '100%', marginBottom: 8 }}
+                        value={newCategoryTime}
+                        onChange={(v) => setNewCategoryTime(v as [Dayjs, Dayjs] | null)}
+                      />
+                      <Space>
+                        <Button type="primary" size="small" loading={creatingCategory} disabled={!newCategoryTime} onClick={createCategoryThenUse}>
+                          ສ້າງ ແລະ ເລືອກໃຊ້
+                        </Button>
+                        <Button size="small" onClick={() => setCreatingNewCategory(false)}>
+                          ຍົກເລີກ, ເລືອກຈາກລາຍການ
+                        </Button>
+                      </Space>
+                    </div>
+                  )}
+                  <Button
+                    type="primary"
+                    onClick={submitShiftChange}
+                    loading={schedulingShiftChange}
+                    disabled={creatingNewCategory || !shiftChangeCategory || !shiftChangeDate}
+                  >
+                    ຢືນຢັນຍ້າຍກະລ່ວງໜ້າ
+                  </Button>
+                </Space>
               )}
 
               {choice === 'cover' && (

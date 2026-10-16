@@ -1,11 +1,11 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
-import { useList } from '@refinedev/core';
-import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, message } from 'antd';
-import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined } from '@ant-design/icons';
+import { useList, useCreate } from '@refinedev/core';
+import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, message } from 'antd';
+import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, CommentOutlined, BellOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 
 const { RangePicker } = DatePicker;
@@ -18,6 +18,29 @@ const LAO_MONTHS = [
 // fit the print table's narrow per-day header cells alongside the date number.
 const LAO_WEEKDAYS_SHORT = ['ອາ', 'ຈ', 'ອັງ', 'ພຸ', 'ພະ', 'ສຸ', 'ເສ'];
 const MAX_RANGE_DAYS = 31;
+
+// The 10 summary cells a comment can attach to, in the same order they're
+// rendered — used to both enumerate valid comment keys for the current range
+// and to resolve a stored column key back to the Lao label for display.
+const SUMMARY_COLUMN_LABELS: Record<string, string> = {
+  workDays: 'ມາເຮັດວຽກ (ມື້)',
+  restDays: 'ພັກ (ມື້)',
+  absentDays: 'ຂາດວຽກ (ມື້)',
+  x1: 'x1',
+  x2: 'x2',
+  x3: 'x3',
+  grace: 'ປ',
+  totalDays: 'ວັນທັງໝົດ',
+  otHours: 'ຊ/ມ x3',
+  otDays: 'ມື້ x2',
+};
+const SUMMARY_COLUMN_KEYS = Object.keys(SUMMARY_COLUMN_LABELS);
+
+function labelForColumn(column: string): string {
+  if (column.startsWith('day:')) return dayjs(column.slice(4)).format('DD/MM/YYYY');
+  const [col] = column.split(':');
+  return SUMMARY_COLUMN_LABELS[col] ?? col;
+}
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -443,7 +466,11 @@ const PayrollSummaryGrid: React.FC = () => {
   // job, not this one's).
   const noAbsenceSeverityFor = (emp: Employee, dow: number): 'X2' | 'X3' | null => {
     const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
-    if (position?.noAbsenceDays?.includes(dow) && position.noAbsenceSeverity) return position.noAbsenceSeverity;
+    // The employee's own override (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces the
+    // position's when set — same precedence as the server's mergeRestDayRule.
+    const noAbsenceDays = emp.noAbsenceDays?.length ? emp.noAbsenceDays : position?.noAbsenceDays ?? [];
+    const noAbsenceSeverity = emp.noAbsenceSeverity ?? position?.noAbsenceSeverity;
+    if (noAbsenceDays.includes(dow) && noAbsenceSeverity) return noAbsenceSeverity;
     return null;
   };
 
@@ -534,6 +561,118 @@ const PayrollSummaryGrid: React.FC = () => {
     });
   }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
+  // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
+  // column) for whoever maintains payroll to see and address. Fetched in bulk
+  // like every other data source on this page, then grouped by a flat
+  // employee+column key — see the PayrollComment type for what that key looks
+  // like for each cell kind.
+  const { data: commentsData, refetch: refetchComments } = useList<PayrollComment>({
+    resource: 'payroll-comments',
+    pagination: { pageSize: 5000 },
+  });
+  const commentsByKey = useMemo(() => {
+    const map = new Map<string, PayrollComment[]>();
+    for (const c of commentsData?.data ?? []) {
+      const key = `${idOf(c.employee)}::${c.column}`;
+      const list = map.get(key) ?? [];
+      list.push(c);
+      map.set(key, list);
+    }
+    return map;
+  }, [commentsData?.data]);
+
+  const dayCommentColumn = (dateKey: string) => `day:${dateKey}`;
+  const summaryCommentColumn = (col: string) => `${col}:${rangeStartKey}_${rangeEndKey}`;
+
+  const [commentCell, setCommentCell] = useState<{ employeeId: string; employeeName: string; column: string; label: string } | null>(
+    null
+  );
+  const { mutate: createComment, isLoading: postingComment } = useCreate();
+
+  const openComments = (employeeId: string, employeeName: string, column: string, label: string) => {
+    setCommentCell({ employeeId, employeeName, column, label });
+  };
+
+  // Typing a draft lives inside CommentThreadModal itself (its own local
+  // state), not here — this component also renders the full payroll table
+  // (every employee × every day, twice over for the print copy), so if the
+  // draft were state on THIS component every keystroke would re-render all
+  // of that and the textbox would visibly lag/freeze.
+  const submitComment = (text: string) => {
+    if (!commentCell) return;
+    createComment(
+      { resource: 'payroll-comments', values: { employee: commentCell.employeeId, column: commentCell.column, text } },
+      { onSuccess: () => refetchComments() }
+    );
+  };
+
+  // Small clickable marker in a cell's corner — orange when the cell already
+  // has comments, faint when it doesn't, so a reviewer scanning the grid can
+  // spot flagged cells without opening anything. Wraps whatever the cell was
+  // already rendering, so the cell's own styling (background tone, day-color)
+  // is untouched.
+  const withComment = (content: React.ReactNode, employeeId: string, employeeName: string, column: string, label: string) => {
+    const list = commentsByKey.get(`${employeeId}::${column}`) ?? [];
+    return (
+      <div id={`comment-${employeeId}::${column}`} style={{ position: 'relative' }}>
+        {content}
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            openComments(employeeId, employeeName, column, label);
+          }}
+          title={list.length ? `${list.length} ຄອມເມັ້ນ` : 'ເພີ່ມຄອມເມັ້ນ'}
+          style={{
+            position: 'absolute',
+            top: -3,
+            right: -3,
+            cursor: 'pointer',
+            fontSize: 11,
+            lineHeight: 1,
+            color: list.length ? '#fa8c16' : 'rgba(0,0,0,0.15)',
+          }}
+        >
+          <CommentOutlined />
+        </span>
+      </div>
+    );
+  };
+
+  // Notification list — every comment that belongs to a cell actually shown
+  // in the CURRENT view (this employee list, this date range). A comment from
+  // a different month or a filtered-out employee has no matching cell to
+  // scroll to, so it's left out rather than shown as a dead link.
+  const validDayColumns = useMemo(() => new Set(days.map((d) => dayCommentColumn(d.format('YYYY-MM-DD')))), [days]);
+  const validSummaryColumns = useMemo(
+    () => new Set(SUMMARY_COLUMN_KEYS.map(summaryCommentColumn)),
+    [rangeStartKey, rangeEndKey]
+  );
+  const employeeById = useMemo(() => new Map(rows.map((r) => [r.employee._id, r.employee])), [rows]);
+  const visibleComments = useMemo(() => {
+    return (commentsData?.data ?? [])
+      .filter((c) => employeeById.has(idOf(c.employee) ?? '') && (validDayColumns.has(c.column) || validSummaryColumns.has(c.column)))
+      .slice()
+      .sort((a, b) => dayjs(b.createdAt).valueOf() - dayjs(a.createdAt).valueOf());
+  }, [commentsData?.data, employeeById, validDayColumns, validSummaryColumns]);
+
+  const [notifOpen, setNotifOpen] = useState(false);
+
+  // Imperative, not React state — scrolling/flashing a cell must NOT trigger
+  // a re-render of the whole table (same reasoning as the comment draft
+  // living in its own component instead of state up here).
+  const focusComment = (employeeId: string, column: string) => {
+    const el = document.getElementById(`comment-${employeeId}::${column}`);
+    if (!el) {
+      message.info('ຊ່ອງນີ້ບໍ່ໄດ້ສະແດງຢູ່ໃນມຸມມອງປັດຈຸບັນ');
+      return;
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    el.classList.remove('payroll-comment-flash');
+    void el.offsetWidth;
+    el.classList.add('payroll-comment-flash');
+    setTimeout(() => el.classList.remove('payroll-comment-flash'), 3200);
+  };
+
   const exportCsv = () => {
     const header = ['ລະຫັດ', 'ຊື່', 'ມາເຮັດວຽກ', 'ພັກ', 'ຂາດວຽກ', 'x1', 'x2', 'x3', 'ປ', 'ວັນທັງໝົດ', 'ຊ/ມ x3', 'ມື້ x2'];
     const lines = rows.map((r) => {
@@ -577,6 +716,11 @@ const PayrollSummaryGrid: React.FC = () => {
         .payroll-print-table { display: none; }
         .payroll-resigned-row > td { border-top: 1px solid #cf1322 !important; border-bottom: 1px solid #cf1322 !important; }
         .payroll-resigned-row > td:first-child { border-left: 2px solid #cf1322 !important; }
+        .payroll-comment-flash { animation: payrollCommentFlash 1.6s ease-out 2; border-radius: 4px; }
+        @keyframes payrollCommentFlash {
+          0% { box-shadow: 0 0 0 0 rgba(250, 140, 22, 0.65); }
+          100% { box-shadow: 0 0 0 10px rgba(250, 140, 22, 0); }
+        }
         @media print {
           @page { size: A4 landscape; margin: 5mm; }
           .payroll-no-print { display: none !important; }
@@ -656,6 +800,42 @@ const PayrollSummaryGrid: React.FC = () => {
             <Button icon={<DownloadOutlined />} onClick={exportCsv}>
               ສົ່ງອອກ CSV
             </Button>
+            <Popover
+              trigger="click"
+              open={notifOpen}
+              onOpenChange={setNotifOpen}
+              placement="bottomRight"
+              title={`ລາຍການຄອມເມັ້ນ (${visibleComments.length})`}
+              content={
+                <div style={{ width: 340, maxHeight: 420, overflowY: 'auto' }}>
+                  {visibleComments.length === 0 && <Typography.Text type="secondary">ບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
+                  {visibleComments.map((c) => {
+                    const emp = employeeById.get(idOf(c.employee) ?? '');
+                    const empName = emp ? `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim() : '-';
+                    const author = typeof c.author === 'object' ? c.author : null;
+                    const authorName = author ? `${author.firstName ?? ''} ${author.lastName ?? ''}`.trim() : c.authorEmail || 'ບໍ່ຮູ້ຈັກ';
+                    return (
+                      <div
+                        key={c._id}
+                        onClick={() => {
+                          setNotifOpen(false);
+                          focusComment(idOf(c.employee) ?? '', c.column);
+                        }}
+                        style={{ padding: '8px 4px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>{empName} · {labelForColumn(c.column)}</div>
+                        <div style={{ fontSize: 12, color: '#595959', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.text}</div>
+                        <div style={{ fontSize: 11, color: '#bfbfbf' }}>{authorName} · {dayjs(c.createdAt).format('DD/MM HH:mm')}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              }
+            >
+              <Badge count={visibleComments.length} size="small" offset={[-4, 4]}>
+                <Button icon={<BellOutlined />} />
+              </Badge>
+            </Popover>
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             ຂາດວຽກ = ມາຈາກປະຫວັດການສະແກນຈິງ (ບໍ່ແມ່ນຕາຕະລາງ) ນັບທັງຂາດວຽກແທ້ໆ ແລະ ຂາດວຽກແບບລົງໂທດ &nbsp;|&nbsp; x1/x2/x3/ປ = ມາຈາກໜ້າ "ການລາ" (x1-x3 = ມື້ລາທີ່ຕັດເງິນ ແຍກຕາມອັດຕາ 1/2/3 ເທົ່າ, ປ = ມື້ລາທີ່ຍັງຟຣີ) &nbsp;|&nbsp; ຊ/ມ x3 = ຊົ່ວໂມງ OT ທັງໝົດ (ຈາກໜ້າ OT ທີ່ອະນຸມັດແລ້ວ), ມື້ x2 = ຈຳນວນມື້ທີ່ມີ OT
@@ -749,10 +929,17 @@ const PayrollSummaryGrid: React.FC = () => {
               render={(_, r: SummaryRow) => {
                 const state = printDayState(r.employee, dateKey, day.day());
                 const style = PRINT_DAY_STYLE[state];
-                return (
+                const content = (
                   <div style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 0', fontSize: 12 * (style.zoom ?? 1), fontWeight: 600 }}>
                     {style.label}
                   </div>
+                );
+                return withComment(
+                  content,
+                  r.employee._id,
+                  `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`,
+                  dayCommentColumn(dateKey),
+                  day.format('DD/MM/YYYY')
                 );
               }}
             />
@@ -764,7 +951,9 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.workDays, 'work') })}
           onHeaderCell={() => ({ style: toneColors('work') })}
-          render={(_, r: SummaryRow) => r.workDays}
+          render={(_, r: SummaryRow) =>
+            withComment(r.workDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('workDays'), 'ມາເຮັດວຽກ (ມື້)')
+          }
         />
         <Table.Column
           title="ພັກ (ມື້)"
@@ -772,7 +961,9 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.restDays, 'rest') })}
           onHeaderCell={() => ({ style: toneColors('rest') })}
-          render={(_, r: SummaryRow) => r.restDays}
+          render={(_, r: SummaryRow) =>
+            withComment(r.restDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('restDays'), 'ພັກ (ມື້)')
+          }
         />
         <Table.Column
           title="ຂາດວຽກ (ມື້)"
@@ -780,7 +971,9 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.absentDays, 'absent') })}
           onHeaderCell={() => ({ style: toneColors('absent') })}
-          render={(_, r: SummaryRow) => r.absentDays}
+          render={(_, r: SummaryRow) =>
+            withComment(r.absentDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('absentDays'), 'ຂາດວຽກ (ມື້)')
+          }
         />
         <Table.Column
           title="x1"
@@ -788,7 +981,9 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.x1, 'x1') })}
           onHeaderCell={() => ({ style: toneColors('x1') })}
-          render={(_, r: SummaryRow) => r.x1}
+          render={(_, r: SummaryRow) =>
+            withComment(r.x1, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('x1'), 'x1')
+          }
         />
         <Table.Column
           title="x2"
@@ -796,7 +991,9 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.x2, 'x2') })}
           onHeaderCell={() => ({ style: toneColors('x2') })}
-          render={(_, r: SummaryRow) => r.x2}
+          render={(_, r: SummaryRow) =>
+            withComment(r.x2, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('x2'), 'x2')
+          }
         />
         <Table.Column
           title="x3"
@@ -804,7 +1001,9 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.x3, 'x3') })}
           onHeaderCell={() => ({ style: toneColors('x3') })}
-          render={(_, r: SummaryRow) => r.x3}
+          render={(_, r: SummaryRow) =>
+            withComment(r.x3, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('x3'), 'x3')
+          }
         />
         <Table.Column
           title="ປ"
@@ -812,11 +1011,34 @@ const PayrollSummaryGrid: React.FC = () => {
           align="center"
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.grace, 'grace') })}
           onHeaderCell={() => ({ style: toneColors('grace') })}
-          render={(_, r: SummaryRow) => r.grace}
+          render={(_, r: SummaryRow) =>
+            withComment(r.grace, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('grace'), 'ປ')
+          }
         />
-        <Table.Column title="ວັນທັງໝົດ" width={100} align="center" render={(_, r: SummaryRow) => r.totalDays} />
-        <Table.Column title="ຊ/ມ x3" width={90} align="center" render={(_, r: SummaryRow) => r.otHours} />
-        <Table.Column title="ມື້ x2" width={80} align="center" render={(_, r: SummaryRow) => r.otDays} />
+        <Table.Column
+          title="ວັນທັງໝົດ"
+          width={100}
+          align="center"
+          render={(_, r: SummaryRow) =>
+            withComment(r.totalDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('totalDays'), 'ວັນທັງໝົດ')
+          }
+        />
+        <Table.Column
+          title="ຊ/ມ x3"
+          width={90}
+          align="center"
+          render={(_, r: SummaryRow) =>
+            withComment(r.otHours, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('otHours'), 'ຊ/ມ x3')
+          }
+        />
+        <Table.Column
+          title="ມື້ x2"
+          width={80}
+          align="center"
+          render={(_, r: SummaryRow) =>
+            withComment(r.otDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('otDays'), 'ມື້ x2')
+          }
+        />
       </Table>
       </div>
 
@@ -948,9 +1170,92 @@ const PayrollSummaryGrid: React.FC = () => {
           </div>
         ))}
       </div>
+
+      <CommentThreadModal
+        cell={commentCell}
+        comments={commentCell ? commentsByKey.get(`${commentCell.employeeId}::${commentCell.column}`) ?? [] : []}
+        posting={postingComment}
+        onClose={() => setCommentCell(null)}
+        onSubmit={submitComment}
+      />
     </div>
   );
 };
+
+// Split out so a keystroke in the textarea only re-renders this small modal,
+// not PayrollSummaryGrid's full table (every employee × every day, twice
+// over for the print copy) — co-locating the draft as state up there made
+// typing visibly freeze.
+function CommentThreadModal({
+  cell,
+  comments,
+  posting,
+  onClose,
+  onSubmit,
+}: {
+  cell: { employeeId: string; employeeName: string; column: string; label: string } | null;
+  comments: PayrollComment[];
+  posting: boolean;
+  onClose: () => void;
+  onSubmit: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const submit = () => {
+    const text = draft.trim();
+    if (!text) return;
+    onSubmit(text);
+    setDraft('');
+  };
+
+  return (
+    <Modal
+      open={!!cell}
+      onCancel={onClose}
+      title={cell ? `ຄອມເມັ້ນ — ${cell.employeeName} / ${cell.label}` : ''}
+      footer={null}
+      className="payroll-no-print"
+      destroyOnClose
+    >
+      {cell && (
+        <div>
+          <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
+            {comments.length === 0 && <Typography.Text type="secondary">ຍັງບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
+            {comments.map((c) => {
+              const author = typeof c.author === 'object' ? c.author : null;
+              const authorName = author ? `${author.firstName ?? ''} ${author.lastName ?? ''}`.trim() : c.authorEmail || 'ບໍ່ຮູ້ຈັກ';
+              return (
+                <div key={c._id} style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
+                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>
+                    {authorName} · {dayjs(c.createdAt).format('DD/MM/YYYY HH:mm')}
+                  </div>
+                  <div>{c.text}</div>
+                </div>
+              );
+            })}
+          </div>
+          <Input.TextArea
+            rows={2}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="ພິມຄອມເມັ້ນ..."
+            onPressEnter={(e) => {
+              if (!e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+          />
+          <div style={{ textAlign: 'right', marginTop: 8 }}>
+            <Button type="primary" loading={posting} disabled={!draft.trim()} onClick={submit}>
+              ສົ່ງ
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 export const PayrollSummaryPage: React.FC = () => (
   <List title="ສະຫຼຸບເງິນເດືອນ" breadcrumb={false}>

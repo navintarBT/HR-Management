@@ -34,6 +34,31 @@ async function resolveRestDay(positionId, daysOfWeek) {
   return resolveRestDayForPosition(position, days);
 }
 
+// An employee's own restrictedRestDays/restDayFallback (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ)
+// fully replaces the position's when set — not merged day-by-day — so one
+// person's personal exception doesn't quietly inherit a fallback picked for
+// everyone else in the position. Each of the two fields falls back to the
+// position's own independently, so setting just one of them on an employee
+// still inherits the other from the position. `employeeOverride` only needs
+// to carry these two fields, so callers can pass a not-yet-saved payload
+// just as easily as a loaded Employee doc.
+function mergeRestDayRule(employeeOverride, positionRule) {
+  const empDays = employeeOverride?.restrictedRestDays;
+  return {
+    restrictedRestDays: empDays && empDays.length > 0 ? empDays : positionRule?.restrictedRestDays ?? [],
+    restDayFallback: employeeOverride?.restDayFallback ?? positionRule?.restDayFallback ?? null,
+  };
+}
+
+// Same as resolveRestDay, but also takes the employee's own override fields
+// into account before falling back to the position's.
+async function resolveRestDayForEmployee(employeeOverride, positionId, daysOfWeek) {
+  const days = Array.isArray(daysOfWeek) ? daysOfWeek : daysOfWeek == null ? [] : [daysOfWeek];
+  if (!days.length) return days;
+  const position = positionId ? await Position.findById(positionId) : null;
+  return resolveRestDayForPosition(mergeRestDayRule(employeeOverride, position), days);
+}
+
 // Shifts a YYYY-MM-DD date to the nearest calendar date (forward or
 // backward, whichever is closer — always unique since candidate weekdays are
 // never more than 3 days apart either way) that falls on `targetDow`. Used
@@ -51,4 +76,4 @@ function nearestDateForWeekday(dateKey, targetDow) {
   return toDateKey(d);
 }
 
-module.exports = { resolveRestDay, resolveRestDayForPosition, nearestDateForWeekday };
+module.exports = { resolveRestDay, resolveRestDayForPosition, resolveRestDayForEmployee, mergeRestDayRule, nearestDateForWeekday };

@@ -20,10 +20,17 @@ function idOf(value: unknown) {
 // ordinary X2.
 function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' {
   const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
+  const dow = day.day();
+  // The employee's own override (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces the
+  // position's noAbsenceDays/restrictedRestDays when set — same precedence
+  // as the server's mergeRestDayRule in restDayRules.js.
+  const noAbsenceDays = emp.noAbsenceDays?.length ? emp.noAbsenceDays : position?.noAbsenceDays ?? [];
+  const noAbsenceSeverity = emp.noAbsenceSeverity ?? position?.noAbsenceSeverity;
   // An explicit ວັນຫ້າມຂາດ severity (ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ) wins when set — it's
   // the more deliberately configured value, and the only way to reach X1.
-  if (position?.noAbsenceDays?.includes(day.day()) && position.noAbsenceSeverity) return position.noAbsenceSeverity;
-  return position?.restrictedRestDays?.includes(day.day()) ? 'X3' : 'X2';
+  if (noAbsenceDays.includes(dow) && noAbsenceSeverity) return noAbsenceSeverity;
+  const restrictedRestDays = emp.restrictedRestDays?.length ? emp.restrictedRestDays : position?.restrictedRestDays ?? [];
+  return restrictedRestDays.includes(dow) ? 'X3' : 'X2';
 }
 
 const { RangePicker } = DatePicker;

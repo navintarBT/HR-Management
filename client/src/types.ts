@@ -58,6 +58,13 @@ export interface Employee {
   salary?: number | null;
   annualLeaveDays?: number | null;
   allowsSubstituteStatus?: boolean | null; // overrides Position.allowsSubstituteStatus when set
+  // Individual overrides of the matching Position fields — empty/unset
+  // inherits the position's rule; set non-empty to replace it for this one
+  // person. See server/src/utils/restDayRules.js.
+  restrictedRestDays?: number[];
+  restDayFallback?: number | null;
+  noAbsenceDays?: number[];
+  noAbsenceSeverity?: 'X2' | 'X3' | null;
 }
 
 export interface Identity {
@@ -139,6 +146,23 @@ export interface ScheduledPositionSwap {
   appliedAt?: string;
   movedFromA?: number;
   movedFromB?: number;
+  createdAt: string;
+}
+
+export type ScheduledShiftChangeStatus = 'pending' | 'applied' | 'cancelled';
+
+// A standing change to one employee's own default shift (ย้ายกะล่วงหน้า),
+// scheduled ahead and applied automatically on effectiveDate — see
+// server/src/utils/scheduledShiftChange.js.
+export interface ScheduledShiftChange {
+  _id: string;
+  employee: Employee | string;
+  newShiftCategory: ShiftCategory | string;
+  effectiveDate: string; // YYYY-MM-DD
+  status: ScheduledShiftChangeStatus;
+  createdBy?: Employee | string;
+  createdByEmail?: string;
+  appliedAt?: string;
   createdAt: string;
 }
 
@@ -240,6 +264,17 @@ export interface DashboardPendingApproval {
   shiftStart?: string;
   shiftEnd?: string;
   toEmployeeName?: string | null;
+}
+
+export interface PayrollComment {
+  _id: string;
+  employee: Employee | string;
+  // A day-grid cell: `day:YYYY-MM-DD`. A summary column: `<columnName>:<rangeStartKey>_<rangeEndKey>`.
+  column: string;
+  text: string;
+  author?: Employee | string;
+  authorEmail?: string;
+  createdAt: string;
 }
 
 export interface DashboardSummary {

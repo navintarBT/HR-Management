@@ -3,7 +3,7 @@ const Shift = require('../models/Shift');
 const Employee = require('../models/Employee');
 const Leave = require('../models/Leave');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { resolveRestDay, nearestDateForWeekday } = require('../utils/restDayRules');
+const { resolveRestDayForEmployee, nearestDateForWeekday } = require('../utils/restDayRules');
 
 const router = express.Router();
 
@@ -44,10 +44,13 @@ async function ensurePersonalRestDayAllowed(employeeId, date, holidayId) {
     endDate: { $gte: new Date(`${date}T00:00:00.000`) },
   });
   if (onLeave) return date;
-  const employee = await Employee.findById(employeeId, 'position');
-  if (!employee?.position) return date;
+  // Selected fields include this employee's own restrictedRestDays/
+  // restDayFallback override, not just position — resolveRestDayForEmployee
+  // checks those first (see utils/restDayRules.js's mergeRestDayRule).
+  const employee = await Employee.findById(employeeId, 'position restrictedRestDays restDayFallback');
+  if (!employee) return date;
   const dayOfWeek = new Date(`${date}T00:00:00`).getDay();
-  const resolvedDow = await resolveRestDay(employee.position, dayOfWeek);
+  const resolvedDow = await resolveRestDayForEmployee(employee, employee.position, dayOfWeek);
   return resolvedDow === dayOfWeek ? date : nearestDateForWeekday(date, resolvedDow);
 }
 

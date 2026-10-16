@@ -45,6 +45,16 @@ const employeeSchema = new mongoose.Schema(
     substituteBackupShiftCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'ShiftCategory' },
     substituteBackupShiftStart: { type: String, trim: true },
     substituteBackupShiftEnd: { type: String, trim: true },
+    // Individual override of Position.restrictedRestDays/restDayFallback —
+    // empty/unset inherits the position's rule; a non-empty array here
+    // replaces it entirely for this one person (not merged with the
+    // position's own days). See utils/restDayRules.js.
+    restrictedRestDays: [{ type: Number, min: 0, max: 6 }],
+    restDayFallback: { type: Number, min: 0, max: 6, default: null },
+    // Individual override of Position.noAbsenceDays/noAbsenceSeverity — same
+    // inherit-when-empty rule as above.
+    noAbsenceDays: [{ type: Number, min: 0, max: 6 }],
+    noAbsenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
   },
   { timestamps: true }
 );

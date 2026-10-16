@@ -103,13 +103,15 @@ export const EmployeeCreate: React.FC = () => {
         <Divider orientation="left">ຂໍ້ມູນພະນັກງານ</Divider>
         <Row gutter={16}>
           <Col xs={24} md={12}>
-            <Form.Item label="ລະຫັດພະນັກງານ" name="employeeCode">
-              <Input disabled placeholder="ຈະສ້າງໃຫ້ອັດຕະໂນມັດ" />
-            </Form.Item>
-          </Col>
-          <Col xs={24} md={12}>
-            <Form.Item label="ລະຫັດເຄື່ອງສະແກນ" name="deviceUserId">
-              <Input placeholder="19" />
+            <Form.Item
+              label="ລະຫັດພະນັກງານ"
+              name="employeeCode"
+              rules={[
+                { required: true, message: 'ກະລຸນາປ້ອນລະຫັດພະນັກງານ' },
+                { pattern: /^\d{1,5}$/, message: 'ຕ້ອງເປັນຕົວເລກ ແລະ ບໍ່ເກີນ 5 ຕົວ' },
+              ]}
+            >
+              <Input maxLength={5} placeholder="ຕົວຢ່າງ: 00212" />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>

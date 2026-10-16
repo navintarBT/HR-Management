@@ -5,7 +5,7 @@ const RestDayHistory = require('../models/RestDayHistory');
 const Shift = require('../models/Shift');
 const ShiftCategory = require('../models/ShiftCategory');
 const { toDateKey } = require('./attendanceProcessor');
-const { resolveRestDayForPosition } = require('./restDayRules');
+const { resolveRestDayForPosition, mergeRestDayRule } = require('./restDayRules');
 
 // Attendance (recomputeDay/resolveExpectedShift) always reads an employee's
 // CURRENT position/defaultShiftCategory live, at the moment each scan comes
@@ -153,7 +153,7 @@ async function resolveMoverRestDay(employee, newPosition) {
   if (!current.length) return null;
   let resolved;
   try {
-    resolved = resolveRestDayForPosition(newPosition, current);
+    resolved = resolveRestDayForPosition(mergeRestDayRule(employee, newPosition), current);
   } catch {
     return null;
   }

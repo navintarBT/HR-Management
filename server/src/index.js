@@ -31,8 +31,11 @@ const holidayRoutes = require('./routes/holidays');
 const medicineExpenseRoutes = require('./routes/medicineExpenses');
 const dashboardRoutes = require('./routes/dashboard');
 const restDayHistoryRoutes = require('./routes/restDayHistory');
+const payrollCommentRoutes = require('./routes/payrollComments');
+const scheduledShiftChangeRoutes = require('./routes/scheduledShiftChanges');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
+const { runDueScheduledShiftChanges } = require('./utils/scheduledShiftChange');
 const { markAbsentForMissedScans } = require('./utils/attendanceProcessor');
 const { deactivateEndedResignations } = require('./utils/employeeStatus');
 
@@ -79,6 +82,8 @@ app.use('/api/holidays', holidayRoutes);
 app.use('/api/medicine-expenses', medicineExpenseRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/rest-day-history', restDayHistoryRoutes);
+app.use('/api/payroll-comments', payrollCommentRoutes);
+app.use('/api/scheduled-shift-changes', scheduledShiftChangeRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -102,6 +107,10 @@ connectDB()
     runDueScheduledSwaps().catch((err) => console.error('[position-swaps] startup check failed', err));
     setInterval(() => {
       runDueScheduledSwaps().catch((err) => console.error('[position-swaps] scheduled check failed', err));
+    }, 15 * 60 * 1000);
+    runDueScheduledShiftChanges().catch((err) => console.error('[shift-changes] startup check failed', err));
+    setInterval(() => {
+      runDueScheduledShiftChanges().catch((err) => console.error('[shift-changes] scheduled check failed', err));
     }, 15 * 60 * 1000);
     // Same catch-up-on-restart + periodic-recheck pattern as the swap check
     // above — sweeps the last few days for anyone who never scanned at all

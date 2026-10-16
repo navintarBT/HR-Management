@@ -9,7 +9,29 @@ const Position = require('../models/Position');
 const RestDayHistory = require('../models/RestDayHistory');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
-const { resolveRestDay } = require('../utils/restDayRules');
+const { resolveRestDayForEmployee } = require('../utils/restDayRules');
+
+// Same "configured but incomplete" guards as positions.js's
+// validateRestDayFallback/validateNoAbsenceSeverity, applied to this one
+// employee's own override fields instead of a position's.
+function validateEmployeeRestDayFallback(restrictedRestDays, restDayFallback) {
+  const restricted = restrictedRestDays ?? [];
+  if (!restricted.length) return null;
+  if (restDayFallback == null) {
+    return 'ຖ້າຕັ້ງວັນທີ່ຫ້າມພັກສະເພາະຄົນນີ້ ຕ້ອງຕັ້ງວັນພັກສຳຮອງນຳທຸກຄັ້ງ';
+  }
+  if (restricted.includes(restDayFallback)) {
+    return 'ວັນພັກສຳຮອງຕ້ອງບໍ່ແມ່ນວັນທີ່ຢູ່ໃນລາຍການຫ້າມພັກ';
+  }
+  return null;
+}
+function validateEmployeeNoAbsenceSeverity(noAbsenceDays, noAbsenceSeverity) {
+  if (!(noAbsenceDays ?? []).length) return null;
+  if (!noAbsenceSeverity) {
+    return 'ຖ້າຕັ້ງວັນຫ້າມຂາດສະເພາະຄົນນີ້ ຕ້ອງຕັ້ງລະດັບການຕັດເງິນນຳທຸກຄັ້ງ';
+  }
+  return null;
+}
 
 const router = express.Router();
 
@@ -171,6 +193,17 @@ async function generateEmployeeCode() {
   return String(max + 1).padStart(5, '0');
 }
 
+// Manually-entered employeeCode must stay numeric and within 5 digits — it
+// doubles as deviceUserId below, and ADMS scanner hardware only accepts a
+// numeric id anyway (see generateEmployeeCode's own comment).
+function validateEmployeeCodeFormat(code) {
+  if (!/^\d{1,5}$/.test(code)) {
+    const err = new Error('ລະຫັດພະນັກງານຕ້ອງເປັນຕົວເລກ ແລະ ບໍ່ເກີນ 5 ຕົວ');
+    err.status = 400;
+    throw err;
+  }
+}
+
 // Resolves "ມາແທນ" eligibility: an explicit true/false wins outright, otherwise
 // falls back to whatever the position currently has set.
 async function effectiveAllowsSubstitute(allowsOverride, positionId) {
@@ -270,7 +303,14 @@ router.get('/:id', authenticate, requireRole('admin', 'manager', 'employee'), as
 router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
   try {
     const { employeePayload, userPayload } = cleanEmployeePayload(req.body);
-    employeePayload.employeeCode = await generateEmployeeCode();
+    // The create form now collects this directly (ເພີ່ມພະນັກງານ) — only
+    // auto-generate when it's genuinely missing (a draft save, or any other
+    // caller that doesn't send one).
+    if (employeePayload.employeeCode) {
+      validateEmployeeCodeFormat(employeePayload.employeeCode);
+    } else {
+      employeePayload.employeeCode = await generateEmployeeCode();
+    }
     // Same number doubles as the scan-device id unless the admin set a
     // different one explicitly (a device that's already provisioned with its
     // own numbering, say).
@@ -278,8 +318,12 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
     validateEmployee(employeePayload);
     await ensureUniqueEmployeeFields(employeePayload);
     await syncSubstituteShiftTime(null, employeePayload);
+    const restFallbackError = validateEmployeeRestDayFallback(employeePayload.restrictedRestDays, employeePayload.restDayFallback);
+    if (restFallbackError) return res.status(400).json({ message: restFallbackError });
+    const noAbsenceError = validateEmployeeNoAbsenceSeverity(employeePayload.noAbsenceDays, employeePayload.noAbsenceSeverity);
+    if (noAbsenceError) return res.status(400).json({ message: noAbsenceError });
     if (employeePayload.defaultRestDay != null) {
-      employeePayload.defaultRestDay = await resolveRestDay(employeePayload.position, employeePayload.defaultRestDay);
+      employeePayload.defaultRestDay = await resolveRestDayForEmployee(employeePayload, employeePayload.position, employeePayload.defaultRestDay);
     }
 
     if (userPayload.createUser) {
@@ -334,9 +378,27 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     validateEmployee(nextPayload);
     await ensureUniqueEmployeeFields(employeePayload, req.params.id);
     await syncSubstituteShiftTime(current, employeePayload);
+
+    const effectiveRestrictedRestDays = 'restrictedRestDays' in employeePayload ? employeePayload.restrictedRestDays : current.restrictedRestDays;
+    const effectiveRestDayFallback = 'restDayFallback' in employeePayload ? employeePayload.restDayFallback : current.restDayFallback;
+    if ('restrictedRestDays' in employeePayload || 'restDayFallback' in employeePayload) {
+      const restFallbackError = validateEmployeeRestDayFallback(effectiveRestrictedRestDays, effectiveRestDayFallback);
+      if (restFallbackError) return res.status(400).json({ message: restFallbackError });
+    }
+    const effectiveNoAbsenceDays = 'noAbsenceDays' in employeePayload ? employeePayload.noAbsenceDays : current.noAbsenceDays;
+    const effectiveNoAbsenceSeverity = 'noAbsenceSeverity' in employeePayload ? employeePayload.noAbsenceSeverity : current.noAbsenceSeverity;
+    if ('noAbsenceDays' in employeePayload || 'noAbsenceSeverity' in employeePayload) {
+      const noAbsenceError = validateEmployeeNoAbsenceSeverity(effectiveNoAbsenceDays, effectiveNoAbsenceSeverity);
+      if (noAbsenceError) return res.status(400).json({ message: noAbsenceError });
+    }
+
     if (employeePayload.defaultRestDay != null) {
       const effectivePosition = employeePayload.position !== undefined ? employeePayload.position : current.position;
-      employeePayload.defaultRestDay = await resolveRestDay(effectivePosition, employeePayload.defaultRestDay);
+      employeePayload.defaultRestDay = await resolveRestDayForEmployee(
+        { restrictedRestDays: effectiveRestrictedRestDays, restDayFallback: effectiveRestDayFallback },
+        effectivePosition,
+        employeePayload.defaultRestDay
+      );
     }
 
     // 'defaultRestDay' in employeePayload (rather than a truthy check) also
