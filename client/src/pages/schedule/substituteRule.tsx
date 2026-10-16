@@ -94,7 +94,7 @@ const PositionRuleTable: React.FC<{ employeesByPosition: Record<string, number> 
         dataSource={positions}
         rowKey="_id"
         loading={isLoading}
-        pagination={false}
+        pagination={{ pageSize: 10 }}
         size="small"
         locale={{
           emptyText: hasFilter ? 'ບໍ່ພົບຕຳແໜ່ງ' : 'ຍັງບໍ່ມີຕຳແໜ່ງໃດເປີດໃຊ້ກົດນີ້ — ຄົ້ນຫາ ຫຼື ເລືອກຕົວກອງ ເພື່ອຫາຕຳແໜ່ງອື່ນ',
@@ -254,6 +254,7 @@ const EmployeeRuleTable: React.FC = () => {
         dataSource={employees}
         rowKey="_id"
         loading={isLoading}
+        pagination={{ pageSize: 10 }}
         scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader }}
         size="small"
@@ -509,7 +510,7 @@ const RestDayRuleTable: React.FC<{ employeesByPosition: Record<string, number> }
         dataSource={positions}
         rowKey="_id"
         loading={isLoading}
-        pagination={false}
+        pagination={{ pageSize: 10 }}
         size="small"
         locale={{
           emptyText: 'ບໍ່ພົບຕຳແໜ່ງທີ່ຕັ້ງຂໍ້ຈຳກັດ — ໃຊ້ປຸ່ມ "ສ້າງຂໍ້ຈຳກັດວັນພັກ" ຂ້າງເທິງເພື່ອຕັ້ງໃຫ້ຕຳແໜ່ງອື່ນ',
@@ -781,6 +782,7 @@ const EmployeeRestDayRuleTable: React.FC = () => {
         dataSource={employees}
         rowKey="_id"
         loading={isLoading}
+        pagination={{ pageSize: 10 }}
         scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader }}
         size="small"
@@ -1052,7 +1054,7 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
         dataSource={positions}
         rowKey="_id"
         loading={isLoading}
-        pagination={false}
+        pagination={{ pageSize: 10 }}
         size="small"
         locale={{
           emptyText: 'ບໍ່ພົບຕຳແໜ່ງທີ່ຕັ້ງວັນຫ້າມຂາດ — ໃຊ້ປຸ່ມ "ສ້າງວັນຫ້າມຂາດ" ຂ້າງເທິງເພື່ອຕັ້ງໃຫ້ຕຳແໜ່ງອື່ນ',
@@ -1331,6 +1333,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
         dataSource={employees}
         rowKey="_id"
         loading={isLoading}
+        pagination={{ pageSize: 10 }}
         scroll={{ x: 'max-content' }}
         sticky={{ offsetHeader }}
         size="small"

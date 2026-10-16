@@ -1,14 +1,14 @@
 import { useMemo, useState } from 'react';
-import { List, useTable, useSelect, EditButton, ShowButton, DeleteButton, CreateButton } from '@refinedev/antd';
+import { List, useTable, useSelect, EditButton, ShowButton, CreateButton } from '@refinedev/antd';
 import { useGetIdentity, useList, useUpdate, useNotification, useInvalidate } from '@refinedev/core';
 import { Table, Space, Input, Select, Avatar, Typography, Card, Row, Col, Statistic, DatePicker, Modal, Form, Button, Tooltip } from 'antd';
-import { UserOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
+import { UserOutlined, SearchOutlined, StopOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Employee, Department, Position, Identity } from '../../types';
 import { EmployeeStatusTag } from '../../components/StatusTags';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { categorical } from '../../theme/palette';
-import { resolvePhotoUrl } from '../../providers/axios';
+import { resolvePhotoUrl, axiosInstance, API_URL } from '../../providers/axios';
 
 export const EmployeeList: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
@@ -122,6 +122,42 @@ export const EmployeeList: React.FC = () => {
         },
       }
     );
+  };
+
+  // Delete is only offered for an 'inactive' employee (server enforces this
+  // too — see routes/employees.js) — by the time someone reaches that status
+  // their pay/history has already been settled, so it's safe to let an admin
+  // choose between purging them from our data outright, or just freeing up
+  // their scanner PIN while keeping the history. Either path queues a
+  // "DATA DELETE USERINFO" command to every known terminal (see
+  // utils/deviceCommands.js) — not yet verified against a real device.
+  const [deleting, setDeleting] = useState<Employee | null>(null);
+  const [deleteAction, setDeleteAction] = useState<'full' | 'deviceOnly' | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
+
+  const closeDeleteModal = () => {
+    setDeleting(null);
+    setDeleteAction(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleting || !deleteAction) return;
+    setDeletingBusy(true);
+    try {
+      if (deleteAction === 'full') {
+        await axiosInstance.delete(`${API_URL}/employees/${deleting._id}`);
+        notify?.({ type: 'success', message: 'ລຶບພະນັກງານ ແລະ ຕັ້ງຄິວລຶບອອກຈາກເຄື່ອງສະແກນແລ້ວ' });
+      } else {
+        await axiosInstance.post(`${API_URL}/employees/${deleting._id}/clear-device`);
+        notify?.({ type: 'success', message: 'ຕັ້ງຄິວລຶບອອກຈາກເຄື່ອງສະແກນແລ້ວ — ຂໍ້ມູນພະນັກງານຍັງຄົງຢູ່' });
+      }
+      closeDeleteModal();
+      invalidate({ resource: 'employees', invalidates: ['list'] });
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ດໍາເນີນການບໍ່ສຳເລັດ' });
+    } finally {
+      setDeletingBusy(false);
+    }
   };
 
   const colorFor = (seed: string) => (seed ? categorical[seed.charCodeAt(seed.length - 1) % categorical.length] : categorical[0]);
@@ -298,7 +334,11 @@ export const EmployeeList: React.FC = () => {
                       <Button danger size="small" icon={<StopOutlined />} onClick={() => openTerminate(record)} />
                     </Tooltip>
                   )}
-                  <DeleteButton hideText size="small" recordItemId={record._id} />
+                  {record.status === 'inactive' && (
+                    <Tooltip title="ລຶບ">
+                      <Button danger size="small" icon={<DeleteOutlined />} onClick={() => setDeleting(record)} />
+                    </Tooltip>
+                  )}
                 </>
               )}
             </Space>
@@ -332,6 +372,57 @@ export const EmployeeList: React.FC = () => {
             <Input.TextArea rows={3} placeholder="ຕົວຢ່າງ: ລາອອກເອງ, ໝົດສັນຍາ, ຖືກໃຫ້ອອກ ..." />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`ລຶບພະນັກງານ: ${deleting?.firstName ?? ''} ${deleting?.lastName ?? ''}`}
+        open={!!deleting}
+        onCancel={closeDeleteModal}
+        footer={null}
+        destroyOnClose
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">ເລືອກວິທີການລຶບ:</Typography.Text>
+          <Button
+            block
+            danger={deleteAction === 'full'}
+            type={deleteAction === 'full' ? 'primary' : 'default'}
+            style={{ height: 'auto', padding: '10px 12px', textAlign: 'left' }}
+            onClick={() => setDeleteAction('full')}
+          >
+            <div>
+              <div style={{ fontWeight: 600 }}>1. ລຶບອອກຈາກຂໍ້ມູນ ແລະ ເຄື່ອງສະແກນ</div>
+              <div style={{ fontSize: 12, whiteSpace: 'normal' }}>
+                ລຶບຂໍ້ມູນພະນັກງານອອກຈາກລະບົບແບບຖາວອນ (ປະຫວັດການເຮັດວຽກຈະຫາຍໄປພ້ອມກັນ) ແລະ ຕັ້ງຄິວລຶບອອກຈາກເຄື່ອງສະແກນ
+              </div>
+            </div>
+          </Button>
+          <Button
+            block
+            danger={deleteAction === 'deviceOnly'}
+            type={deleteAction === 'deviceOnly' ? 'primary' : 'default'}
+            style={{ height: 'auto', padding: '10px 12px', textAlign: 'left' }}
+            onClick={() => setDeleteAction('deviceOnly')}
+          >
+            <div>
+              <div style={{ fontWeight: 600 }}>2. ລຶບອອກຈາກເຄື່ອງສະແກນຢ່າງດຽວ</div>
+              <div style={{ fontSize: 12, whiteSpace: 'normal' }}>
+                ຂໍ້ມູນ ແລະ ປະຫວັດການເຮັດວຽກຍັງຄົງຢູ່ຄືເກົ່າ — ແຕ່ຈະຕັ້ງຄິວລຶບອອກຈາກເຄື່ອງສະແກນ ແລະ ລ້າງລະຫັດເຄື່ອງສະແກນ ເພື່ອໃຫ້ນຳໄປໃຊ້ກັບຄົນອື່ນໄດ້
+              </div>
+            </div>
+          </Button>
+          <Typography.Text type="danger" style={{ fontSize: 12 }}>
+            ໝາຍເຫດ: ການລຶບອອກຈາກເຄື່ອງສະແກນຍັງບໍ່ທັນໄດ້ທົດສອບກັບເຄື່ອງຈິງ — ກະລຸນາກວດສອບທີ່ເຄື່ອງອີກຄັ້ງຫຼັງຈາກນີ້
+          </Typography.Text>
+          <div style={{ textAlign: 'right' }}>
+            <Space>
+              <Button onClick={closeDeleteModal}>ຍົກເລີກ</Button>
+              <Button danger type="primary" disabled={!deleteAction} loading={deletingBusy} onClick={confirmDelete}>
+                ຢືນຢັນ
+              </Button>
+            </Space>
+          </div>
+        </Space>
       </Modal>
     </List>
   );

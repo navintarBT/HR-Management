@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCreate } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, message } from 'antd';
-import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, CommentOutlined, BellOutlined } from '@ant-design/icons';
+import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
@@ -606,34 +606,24 @@ const PayrollSummaryGrid: React.FC = () => {
     );
   };
 
-  // Small clickable marker in a cell's corner — orange when the cell already
-  // has comments, faint when it doesn't, so a reviewer scanning the grid can
-  // spot flagged cells without opening anything. Wraps whatever the cell was
-  // already rendering, so the cell's own styling (background tone, day-color)
-  // is untouched.
+  // Small clickable marker in a cell's corner — orange dot when the cell
+  // already has comments, faint when it doesn't, so a reviewer scanning the
+  // grid can spot flagged cells without opening anything. A pure-CSS ::after
+  // dot (see the .payroll-comment-cell rules below) instead of a rendered
+  // icon component — with up to ~250 employees × ~41 columns, an antd icon
+  // (several real DOM nodes: span > svg > path) on every single cell was
+  // enough extra DOM weight to make the whole table noticeably sluggish;
+  // a CSS pseudo-element costs nothing in the DOM at all.
   const withComment = (content: React.ReactNode, employeeId: string, employeeName: string, column: string, label: string) => {
     const list = commentsByKey.get(`${employeeId}::${column}`) ?? [];
     return (
-      <div id={`comment-${employeeId}::${column}`} style={{ position: 'relative' }}>
+      <div
+        id={`comment-${employeeId}::${column}`}
+        className={`payroll-comment-cell${list.length ? ' has-comment' : ''}`}
+        onClick={() => openComments(employeeId, employeeName, column, label)}
+        title={list.length ? `${list.length} ຄອມເມັ້ນ` : 'ເພີ່ມຄອມເມັ້ນ'}
+      >
         {content}
-        <span
-          onClick={(e) => {
-            e.stopPropagation();
-            openComments(employeeId, employeeName, column, label);
-          }}
-          title={list.length ? `${list.length} ຄອມເມັ້ນ` : 'ເພີ່ມຄອມເມັ້ນ'}
-          style={{
-            position: 'absolute',
-            top: -3,
-            right: -3,
-            cursor: 'pointer',
-            fontSize: 11,
-            lineHeight: 1,
-            color: list.length ? '#fa8c16' : 'rgba(0,0,0,0.15)',
-          }}
-        >
-          <CommentOutlined />
-        </span>
       </div>
     );
   };
@@ -716,6 +706,18 @@ const PayrollSummaryGrid: React.FC = () => {
         .payroll-print-table { display: none; }
         .payroll-resigned-row > td { border-top: 1px solid #cf1322 !important; border-bottom: 1px solid #cf1322 !important; }
         .payroll-resigned-row > td:first-child { border-left: 2px solid #cf1322 !important; }
+        .payroll-comment-cell { position: relative; cursor: pointer; }
+        .payroll-comment-cell::after {
+          content: '';
+          position: absolute;
+          top: 1px;
+          right: 1px;
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: rgba(0, 0, 0, 0.12);
+        }
+        .payroll-comment-cell.has-comment::after { background: #fa8c16; width: 6px; height: 6px; }
         .payroll-comment-flash { animation: payrollCommentFlash 1.6s ease-out 2; border-radius: 4px; }
         @keyframes payrollCommentFlash {
           0% { box-shadow: 0 0 0 0 rgba(250, 140, 22, 0.65); }
@@ -886,6 +888,8 @@ const PayrollSummaryGrid: React.FC = () => {
         </div>
       </Card>
 
+      {useMemo(
+        () => (
       <div className="payroll-no-print">
       <Table
         dataSource={rows}
@@ -1041,6 +1045,9 @@ const PayrollSummaryGrid: React.FC = () => {
         />
       </Table>
       </div>
+        ),
+        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, leaves, loading, offsetHeader]
+      )}
 
       <div className="payroll-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
         {(Object.keys(PRINT_DAY_STYLE) as PrintDayState[]).map((state) => (
@@ -1066,6 +1073,8 @@ const PayrollSummaryGrid: React.FC = () => {
         ))}
       </div>
 
+      {useMemo(
+        () => (
       <table className="payroll-print-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 9 }}>
         <colgroup>
           <col style={{ width: 22 }} />
@@ -1160,6 +1169,9 @@ const PayrollSummaryGrid: React.FC = () => {
           ))}
         </tbody>
       </table>
+        ),
+        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, leaves, printTitle, printTotalColumns, printDayColWidth]
+      )}
 
       <div className="payroll-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>
         {['ຜູ້ຮັບຜິດຊອບ', 'ຜູ້ທວດສອບ', 'ຜູ້ທວດສອບ'].map((label, i) => (

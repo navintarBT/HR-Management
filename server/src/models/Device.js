@@ -10,6 +10,10 @@ const deviceSchema = new mongoose.Schema(
     attStamp: { type: Number, default: 0 },
     opStamp: { type: Number, default: 0 },
     lastSeenAt: { type: Date },
+    // Sequential id handed out to each DeviceCommand queued for this device —
+    // kept here (not derived from DeviceCommand's own count) so it stays
+    // correct even after old commands are pruned.
+    cmdCounter: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

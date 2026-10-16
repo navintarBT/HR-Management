@@ -2,6 +2,7 @@ const express = require('express');
 const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
 const Device = require('../models/Device');
+const DeviceCommand = require('../models/DeviceCommand');
 const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attendanceProcessor');
 
 // ZKTeco's "push" (ADMS) protocol. Real terminals are configured with this
@@ -11,6 +12,13 @@ const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attend
 //   GET  /iclock/cdata?SN=<serial>&options=all   device handshake / config pull
 //   POST /iclock/cdata?SN=<serial>&table=ATTLOG  attendance punches (body: one per line)
 //   GET  /iclock/getrequest?SN=<serial>           device polls for pending commands
+//   POST /iclock/devicecmd?SN=<serial>            device reports a command's result
+//
+// Commands currently only flow one way we generate ourselves: deleting an
+// employee's enrollment from the terminal (see utils/deviceCommands.js,
+// queued from routes/employees.js). getrequest below delivers whatever's
+// queued and devicecmd records whether the terminal actually ran it —
+// nothing here pushes a *new* enrollment to a device, only removes one.
 //
 // Why this matters for "scans go missing when the network drops": the terminal keeps
 // every punch in local flash until this endpoint acknowledges it with a plain-text
@@ -23,6 +31,10 @@ const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attend
 //
 // NOTE: implemented against the documented ADMS wire format but not yet against a
 // physical terminal — run one real device against it before relying on this broadly.
+// That caveat applies doubly to the command-push pair above (getrequest/devicecmd):
+// the exact command syntax and ack body shape are known to vary across ZKTeco
+// firmware versions, so confirm "DATA DELETE USERINFO" actually removes the
+// enrollment on your specific hardware before trusting it to work unattended.
 const router = express.Router();
 
 // This endpoint is unauthenticated by necessity (see above), so `SN`/`table`
@@ -174,9 +186,63 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
   }
 });
 
-router.get('/iclock/getrequest', (req, res) => {
-  // No pending device commands (e.g. "enroll new user") to push right now.
-  res.type('text/plain').send('OK');
+router.get('/iclock/getrequest', async (req, res, next) => {
+  try {
+    const SN = parseSerial(req.query.SN);
+    if (!SN) return res.type('text/plain').send('OK');
+
+    const pending = await DeviceCommand.find({ serialNumber: SN, status: 'pending' }).sort('cmdId');
+    if (!pending.length) return res.type('text/plain').send('OK');
+
+    // ADMS format: one "C:<cmdId>:<command>" per line. Marked 'sent' (not
+    // 'acked') here — POST /iclock/devicecmd below is what actually confirms
+    // the terminal executed it; a command that's sent but never acked (lost
+    // reply, device rebooted mid-command) stays 'sent' rather than silently
+    // looking done, so it's visible to whoever's checking the queue later.
+    const lines = pending.map((cmd) => `C:${cmd.cmdId}:${cmd.command}`);
+    await DeviceCommand.updateMany({ _id: { $in: pending.map((c) => c._id) } }, { status: 'sent', sentAt: new Date() });
+    res.type('text/plain').send(lines.join('\n'));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// The terminal's result for a command it ran, sent some time after it polled
+// getrequest above. Documented ADMS format is query-string-shaped fields in
+// the body ("ID=<cmdId>&Return=<code>&CMD=<echoed command>"); some firmware
+// sends one of these per line when multiple commands were run. Parsed
+// leniently — this hasn't been run against a real terminal, so treat the
+// exact shape as a best guess (see routes/adms.js's top-of-file note) and
+// surface anything unparseable in the server log rather than silently
+// dropping it.
+router.post('/iclock/devicecmd', express.text({ type: '*/*' }), async (req, res, next) => {
+  try {
+    const SN = parseSerial(req.query.SN);
+    if (!SN) return res.type('text/plain').send('OK');
+
+    const lines = (req.body || '').split(/\r\n|\r|\n/).map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      const params = new URLSearchParams(line);
+      const id = params.get('ID');
+      const returnCode = params.get('Return');
+      if (!id) {
+        console.log(`[adms] devicecmd from SN=${SN}: couldn't find an ID in "${line}"`);
+        continue;
+      }
+      const cmdId = Number(id);
+      // eslint-disable-next-line no-await-in-loop
+      const updated = await DeviceCommand.findOneAndUpdate(
+        { serialNumber: SN, cmdId },
+        { status: returnCode === '0' ? 'acked' : 'failed', returnCode: returnCode ?? undefined, ackedAt: new Date() },
+        { new: true }
+      );
+      if (!updated) console.log(`[adms] devicecmd from SN=${SN}: no queued command matches cmdId=${cmdId}`);
+    }
+
+    res.type('text/plain').send('OK');
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Must be registered after every route above — Express only routes an error to

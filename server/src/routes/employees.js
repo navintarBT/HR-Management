@@ -10,6 +10,7 @@ const RestDayHistory = require('../models/RestDayHistory');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
 const { resolveRestDayForEmployee } = require('../utils/restDayRules');
+const { queueDeleteUserCommand } = require('../utils/deviceCommands');
 
 // Same "configured but incomplete" guards as positions.js's
 // validateRestDayFallback/validateNoAbsenceSeverity, applied to this one
@@ -432,12 +433,45 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
   }
 });
 
+// Deleting someone who's still active/resigned wipes out attendance/shift/leave
+// history that other pages (and this month's payroll) still depend on — the
+// "ຢຸດເຮັດວຽກ" flow exists specifically so someone goes through 'resigned' then
+// 'inactive' first, by which point their pay/history has already been settled.
+// Restricted to that state here rather than just as a UI nicety, so a direct
+// API call can't skip it either.
 router.delete('/:id', authenticate, requireRole('admin'), async (req, res, next) => {
   try {
+    const existing = await Employee.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Not found' });
+    if (existing.status !== 'inactive') {
+      return res.status(400).json({ message: 'ລຶບໄດ້ສະເພາະພະນັກງານທີ່ສະຖານະ "ບໍ່ໃຊ້ງານ" (inactive) ເທົ່ານັ້ນ' });
+    }
+    await queueDeleteUserCommand(existing);
     const item = await Employee.findByIdAndDelete(req.params.id);
-    if (!item) return res.status(404).json({ message: 'Not found' });
     await User.updateMany({ employeeId: item._id }, { isActive: false });
     res.json({ id: req.params.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// The other half of the delete-confirmation choice — removes the enrollment
+// from the physical scanner(s) only, keeping the Employee record (and all its
+// history) intact. Clears deviceUserId so the PIN is free to hand to someone
+// else and old scans stop trying to match this person.
+router.post('/:id/clear-device', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const existing = await Employee.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Not found' });
+    if (existing.status !== 'inactive') {
+      return res.status(400).json({ message: 'ເຮັດໄດ້ສະເພາະພະນັກງານທີ່ສະຖານະ "ບໍ່ໃຊ້ງານ" (inactive) ເທົ່ານັ້ນ' });
+    }
+    if (!existing.deviceUserId) {
+      return res.status(400).json({ message: 'ພະນັກງານຄົນນີ້ບໍ່ມີລະຫັດເຄື່ອງສະແກນຢູ່ແລ້ວ' });
+    }
+    const queued = await queueDeleteUserCommand(existing);
+    await Employee.updateOne({ _id: existing._id }, { deviceUserId: null });
+    res.json({ id: existing._id, queuedCommands: queued.length });
   } catch (err) {
     next(err);
   }

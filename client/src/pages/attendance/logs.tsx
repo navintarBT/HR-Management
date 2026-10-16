@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
-import { useList, useGetIdentity, useNotification } from '@refinedev/core';
+import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { AttendanceDaily, Department, Employee, Identity, Position, Shift } from '../../types';
+import type { AttendanceDaily, Department, Employee, Identity, Position, Shift, ScheduledPositionSwap } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import { lateLabel } from '../../utils/lateSeverity';
@@ -221,6 +221,29 @@ const AttendanceSummaryGrid: React.FC = () => {
     }
     return map;
   }, [swappedShiftsData?.data]);
+
+  // ສະຫຼັບຕຳແໜ່ງ — a pending ScheduledPositionSwap doesn't touch anyone's
+  // position/shift until its own effectiveDate arrives (see positionSwap.js),
+  // so there's nothing in the attendance data to reflect yet. This is purely
+  // a heads-up overlay on the day it WILL happen — same marker as ຕາຕະລາງວັນພັກ.
+  const { data: positionSwapsData } = useCustom<ScheduledPositionSwap[]>({
+    url: `${API_URL}/position-swaps`,
+    method: 'get',
+    queryOptions: { enabled: isManager },
+  });
+  const pendingSwapByPositionDate = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of positionSwapsData?.data ?? []) {
+      if (s.status !== 'pending') continue;
+      const nameA = typeof s.positionA === 'object' ? s.positionA?.name : undefined;
+      const nameB = typeof s.positionB === 'object' ? s.positionB?.name : undefined;
+      const idA = idOf(s.positionA);
+      const idB = idOf(s.positionB);
+      if (idA) map[`${idA}_${s.effectiveDate}`] = nameB ?? 'ຕຳແໜ່ງອື່ນ';
+      if (idB) map[`${idB}_${s.effectiveDate}`] = nameA ?? 'ຕຳແໜ່ງອື່ນ';
+    }
+    return map;
+  }, [positionSwapsData?.data]);
 
   // A day scheduled off has nothing to correct — "manual fix" is for a scan
   // that should have happened but didn't (or logged the wrong time). A real
@@ -497,7 +520,18 @@ const AttendanceSummaryGrid: React.FC = () => {
                 // positionSwap.js) — nothing for manual-fix to correct, same
                 // reasoning as a rest day.
                 const clickable = isManager && !isRestDay(emp, dateKey, day) && !swappedByEmpDate[`${emp._id}_${dateKey}`];
-                return clickable ? { onClick: () => openEdit(emp, dateKey), style: { cursor: 'pointer' } } : {};
+                const pendingSwapWith = pendingSwapByPositionDate[`${idOf(emp.position)}_${dateKey}`];
+                const style: React.CSSProperties = {};
+                if (clickable) style.cursor = 'pointer';
+                if (pendingSwapWith) {
+                  style.outline = '2px dashed #9254de';
+                  style.outlineOffset = -2;
+                }
+                return {
+                  ...(clickable ? { onClick: () => openEdit(emp, dateKey) } : {}),
+                  style,
+                  title: pendingSwapWith ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້` : undefined,
+                };
               }}
               render={(_, emp: Employee) => {
                 const row = byEmpDate[`${emp._id}_${dateKey}`];

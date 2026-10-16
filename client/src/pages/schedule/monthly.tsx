@@ -4,7 +4,7 @@ import { useList, useCustom, useGetIdentity, useCreate, useUpdate, useDelete, us
 import { Table, Typography, Space, Button, Modal, Form, TimePicker, DatePicker, Select, Input, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, CalendarOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory, Leave, ScheduledShiftChange } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory, Leave, ScheduledShiftChange, ScheduledPositionSwap } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
@@ -254,6 +254,30 @@ export const MonthlySchedulePage: React.FC = () => {
     }
     return map;
   }, [shiftChangesData?.data]);
+
+  // ສະຫຼັບຕຳແໜ່ງ — a pending ScheduledPositionSwap doesn't touch anyone's
+  // position/shift until its own effectiveDate arrives (see positionSwap.js),
+  // so there's nothing in Employee/Shift data to reflect yet. This is purely
+  // a heads-up overlay on the day it WILL happen, not a preview of the result
+  // — the cell underneath keeps showing today's real, unchanged schedule.
+  const { data: positionSwapsData } = useCustom<ScheduledPositionSwap[]>({
+    url: `${API_URL}/position-swaps`,
+    method: 'get',
+    queryOptions: { enabled: isManager },
+  });
+  const pendingSwapByPositionDate = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of positionSwapsData?.data ?? []) {
+      if (s.status !== 'pending') continue;
+      const nameA = typeof s.positionA === 'object' ? s.positionA?.name : undefined;
+      const nameB = typeof s.positionB === 'object' ? s.positionB?.name : undefined;
+      const idA = idOf(s.positionA);
+      const idB = idOf(s.positionB);
+      if (idA) map[`${idA}_${s.effectiveDate}`] = nameB ?? 'ຕຳແໜ່ງອື່ນ';
+      if (idB) map[`${idB}_${s.effectiveDate}`] = nameA ?? 'ຕຳແໜ່ງອື່ນ';
+    }
+    return map;
+  }, [positionSwapsData?.data]);
 
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
   const editingOverride = editing ? overrideByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
@@ -844,13 +868,24 @@ export const MonthlySchedulePage: React.FC = () => {
                 // read-only cell for a non-manager.
                 const isLocked = cell.kind === 'swapped';
                 const clickable = isManager && !isLocked;
+                // Heads-up only — the cell's own content above is untouched,
+                // since nothing actually changes until effectiveDate arrives.
+                const pendingSwapWith = pendingSwapByPositionDate[`${idOf(emp.position)}_${dateKey}`];
                 return (
                   <div
                     onClick={() => clickable && setEditing({ employee: emp, dateKey })}
-                    title={isLocked ? 'ສ້າງໂດຍລະບົບຕອນສະຫຼັບຕຳແໜ່ງ — ແກ້ໄຂຢູ່ນີ້ບໍ່ໄດ້' : undefined}
+                    title={
+                      isLocked
+                        ? 'ສ້າງໂດຍລະບົບຕອນສະຫຼັບຕຳແໜ່ງ — ແກ້ໄຂຢູ່ນີ້ບໍ່ໄດ້'
+                        : pendingSwapWith
+                          ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້`
+                          : undefined
+                    }
                     style={{
                       ...CELL_STYLE[cell.kind],
                       borderLeft: isOverride ? '3px solid #d46b08' : CELL_STYLE[cell.kind].borderLeft,
+                      outline: pendingSwapWith ? '2px dashed #9254de' : undefined,
+                      outlineOffset: pendingSwapWith ? -2 : undefined,
                       cursor: clickable ? 'pointer' : 'default',
                       minHeight: 40,
                       padding: '4px 6px',
@@ -876,6 +911,9 @@ export const MonthlySchedulePage: React.FC = () => {
                     {cell.kind === 'substituted' && <span style={{ color: '#08979c' }}>ມາແທນ</span>}
                     {cell.kind === 'leave' && <span style={{ color: '#d48806' }}>ລາ</span>}
                     {cell.kind === 'swapped' && <span style={{ color: '#c41d7f' }}>ສະຫຼັບກະ</span>}
+                    {pendingSwapWith && (
+                      <div style={{ fontSize: 9, color: '#9254de', fontWeight: 600 }}>ສະຫຼັບ</div>
+                    )}
                   </div>
                 );
               }}
