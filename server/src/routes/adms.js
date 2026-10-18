@@ -174,7 +174,12 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
 
       console.log(`[adms] SN=${SN} ATTLOG batch: ${rows.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
     } else {
-      console.log(`[adms] ignoring table=${table} from SN=${SN} (${(req.body || '').length} bytes)`);
+      // Captured for later inspection (see Device.lastNonAttlogUpload) rather
+      // than just logged — this is how a device answers "DATA QUERY
+      // USERINFO" among other things, and the exact table name/format isn't
+      // documented consistently enough to assume without seeing a real one.
+      console.log(`[adms] SN=${SN} non-ATTLOG upload table=${table} (${(req.body || '').length} bytes) — saved to Device.lastNonAttlogUpload`);
+      await Device.updateOne({ serialNumber: SN }, { lastNonAttlogUpload: { table, body: req.body, receivedAt: new Date() } });
     }
 
     res.type('text/plain').send('OK');

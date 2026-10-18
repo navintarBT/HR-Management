@@ -14,6 +14,17 @@ const deviceSchema = new mongoose.Schema(
     // kept here (not derived from DeviceCommand's own count) so it stays
     // correct even after old commands are pruned.
     cmdCounter: { type: Number, default: 0 },
+    // Debug aid — whatever a device sends to POST /iclock/cdata under any
+    // table name other than ATTLOG (e.g. a response to a "DATA QUERY
+    // USERINFO" command) used to be logged and discarded with nowhere to
+    // inspect it afterward. Captured here instead so it can be read back
+    // from the database — the exact table name/format a real terminal uses
+    // for this isn't documented consistently enough to assume in advance.
+    lastNonAttlogUpload: {
+      table: { type: String, trim: true },
+      body: { type: String },
+      receivedAt: { type: Date },
+    },
   },
   { timestamps: true }
 );
