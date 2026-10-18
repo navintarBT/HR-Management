@@ -243,6 +243,7 @@ router.get('/iclock/getrequest', async (req, res, next) => {
   try {
     const SN = parseSerial(req.query.SN);
     if (!SN) return res.type('text/plain').send('OK');
+    await Device.updateOne({ serialNumber: SN }, { $setOnInsert: { attStamp: 0, opStamp: 0 }, lastGetRequestAt: new Date() }, { upsert: true });
 
     const pending = await DeviceCommand.find({ serialNumber: SN, status: 'pending' }).sort('cmdId');
     if (!pending.length) return res.type('text/plain').send('OK');

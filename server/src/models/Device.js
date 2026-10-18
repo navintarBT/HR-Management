@@ -9,7 +9,16 @@ const deviceSchema = new mongoose.Schema(
     serialNumber: { type: String, required: true, unique: true, trim: true },
     attStamp: { type: Number, default: 0 },
     opStamp: { type: Number, default: 0 },
+    // Updated on every /iclock/cdata handshake (findOrTouchDevice).
     lastSeenAt: { type: Date },
+    // Separate from lastSeenAt — updated on every GET /iclock/getrequest hit,
+    // whether or not anything was pending. cdata and getrequest are two
+    // independent polling loops on a real terminal and can run on very
+    // different schedules; a device stuck with queued commands never acked
+    // could mean it isn't calling getrequest at all, or is calling it but
+    // something else is wrong — this field is what tells the two apart
+    // instead of just inferring from how long a DeviceCommand sits pending.
+    lastGetRequestAt: { type: Date },
     // Sequential id handed out to each DeviceCommand queued for this device —
     // kept here (not derived from DeviceCommand's own count) so it stays
     // correct even after old commands are pruned.
