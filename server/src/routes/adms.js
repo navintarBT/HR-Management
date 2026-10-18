@@ -89,16 +89,20 @@ function parseAttLog(body) {
     .filter((row) => row.pin && row.dateTime);
 }
 
-// Each line looks like "BIODATA Pin=10308\tNo=0\tIndex=0\t...\tTmp=<base64>"
-// — one enrolled template per line. Only the PIN matters here (who's
-// enrolled), not the template blob itself. Confirmed against a real MB10's
-// reply to "DATA QUERY USERINFO".
-function parseBiodataPins(body) {
+// A real MB10 answers "DATA QUERY USERINFO" inconsistently — sometimes
+// table=BIODATA ("BIODATA Pin=10308\tNo=0\t...\tTmp=<base64>", one biometric
+// template per line), sometimes table=OPERLOG ("USER PIN=10179\tName=Mr
+// Aek\t...", one enrolled user per line, same request, same device). Case
+// differs too (Pin= vs PIN=). Only the PIN matters for this list, so this
+// just scans every line for "pin=" case-insensitively rather than trying to
+// match either format's exact shape — works for both, and for whatever
+// other casing/table name shows up next.
+function parsePinsFromUpload(body) {
   return (body || '')
     .split(/\r\n|\r|\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => line.match(/Pin=(\S+)/))
+    .map((line) => line.match(/pin=(\S+)/i))
     .filter(Boolean)
     .map((match) => match[1]);
 }
@@ -195,18 +199,20 @@ router.post('/iclock/cdata', express.text({ type: '*/*', limit: '10mb' }), async
       }
 
       console.log(`[adms] SN=${SN} ATTLOG batch: ${rows.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
-    } else if (table.toUpperCase() === 'BIODATA') {
+    } else if (table.toUpperCase() === 'BIODATA' || table.toUpperCase() === 'OPERLOG') {
       // The device's reply to a queued "DATA QUERY USERINFO" — confirmed
-      // against a real MB10. Upserted per (device, pin) rather than appended,
-      // so this stays "who's enrolled right now" instead of growing forever —
-      // a PIN that gets re-enrolled later just refreshes lastSeenAt.
-      const pins = parseBiodataPins(req.body);
+      // against a real MB10, which answers as either table depending on the
+      // moment (see parsePinsFromUpload). Upserted per (device, pin) rather
+      // than appended, so this stays "who's enrolled right now" instead of
+      // growing forever — a PIN that gets re-enrolled later just refreshes
+      // lastSeenAt.
+      const pins = parsePinsFromUpload(req.body);
       const now = new Date();
       for (const pin of pins) {
         // eslint-disable-next-line no-await-in-loop
         await DeviceEnrolledUser.updateOne({ serialNumber: SN, pin }, { lastSeenAt: now }, { upsert: true });
       }
-      console.log(`[adms] SN=${SN} BIODATA batch: ${pins.length} PIN(s) recorded`);
+      console.log(`[adms] SN=${SN} ${table} batch: ${pins.length} PIN(s) recorded`);
     } else {
       // Captured for later inspection (see Device.lastNonAttlogUpload) rather
       // than just logged — the exact table name/format a device uses for
