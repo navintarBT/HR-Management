@@ -117,7 +117,14 @@ router.get('/iclock/cdata', async (req, res, next) => {
   }
 });
 
-router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, next) => {
+// Default body-parser limit (100kb) is too small for a real terminal's
+// uploads — a BIODATA (biometric template) batch alone was observed at
+// ~170kb from a single MB10, well past that default. Every failed parse
+// trips PayloadTooLargeError before the handler (and so before
+// findOrTouchDevice) ever runs, which is why a device stuck like this never
+// even shows up as having contacted the server at all — it just retries the
+// same oversized batch forever, silently from this server's point of view.
+router.post('/iclock/cdata', express.text({ type: '*/*', limit: '10mb' }), async (req, res, next) => {
   try {
     const SN = parseSerial(req.query.SN);
     const table = typeof req.query.table === 'string' ? req.query.table : '';
@@ -191,6 +198,14 @@ router.post('/iclock/cdata', express.text({ type: '*/*' }), async (req, res, nex
   }
 });
 
+// A lightweight keepalive some terminals send between full /iclock/cdata
+// handshakes — observed hitting this path and getting a plain 404 since
+// nothing handled it. Not documented anywhere I could find, so this just
+// acknowledges it rather than guessing at a richer response.
+router.get('/iclock/ping', (req, res) => {
+  res.type('text/plain').send('OK');
+});
+
 router.get('/iclock/getrequest', async (req, res, next) => {
   try {
     const SN = parseSerial(req.query.SN);
@@ -220,7 +235,7 @@ router.get('/iclock/getrequest', async (req, res, next) => {
 // exact shape as a best guess (see routes/adms.js's top-of-file note) and
 // surface anything unparseable in the server log rather than silently
 // dropping it.
-router.post('/iclock/devicecmd', express.text({ type: '*/*' }), async (req, res, next) => {
+router.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '10mb' }), async (req, res, next) => {
   try {
     const SN = parseSerial(req.query.SN);
     if (!SN) return res.type('text/plain').send('OK');
