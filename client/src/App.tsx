@@ -30,6 +30,7 @@ import {
   SettingOutlined,
   ToolOutlined,
   DollarOutlined,
+  IdcardOutlined,
 } from '@ant-design/icons';
 
 import { dataProvider } from './providers/dataProvider';
@@ -59,6 +60,7 @@ import { ShiftCategoryListPage } from './pages/schedule/categories';
 import { HolidayListPage } from './pages/schedule/holidays';
 import { SubstituteRulePage } from './pages/schedule/substituteRule';
 import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
+import { DeviceUsersPage } from './pages/schedule/deviceUsers';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
@@ -168,6 +170,11 @@ function RootLayout() {
             meta: { label: 'ປະຫວັດການປ່ຽນວັນພັກປະຈຳ', icon: <HistoryOutlined />, parent: 'schedule' },
           },
           {
+            name: 'device-users',
+            list: '/schedule/device-users',
+            meta: { label: 'ໄອດີທີ່ບໍ່ກົງກັບລະບົບ', icon: <IdcardOutlined />, parent: 'schedule' },
+          },
+          {
             name: 'shift-settings',
             meta: { label: 'ຕັ້ງຄ່າກະ', icon: <ToolOutlined /> },
           },
@@ -275,6 +282,7 @@ export const appRoutes = (
         <Route path="holidays" element={<HolidayListPage />} />
         <Route path="substitute-rule" element={<SubstituteRulePage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
+        <Route path="device-users" element={<DeviceUsersPage />} />
       </Route>
 
       <Route path="*" element={<ErrorComponent />} />

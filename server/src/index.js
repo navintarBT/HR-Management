@@ -33,6 +33,7 @@ const dashboardRoutes = require('./routes/dashboard');
 const restDayHistoryRoutes = require('./routes/restDayHistory');
 const payrollCommentRoutes = require('./routes/payrollComments');
 const scheduledShiftChangeRoutes = require('./routes/scheduledShiftChanges');
+const deviceUserRoutes = require('./routes/deviceUsers');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
 const { runDueScheduledShiftChanges } = require('./utils/scheduledShiftChange');
@@ -84,6 +85,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/rest-day-history', restDayHistoryRoutes);
 app.use('/api/payroll-comments', payrollCommentRoutes);
 app.use('/api/scheduled-shift-changes', scheduledShiftChangeRoutes);
+app.use('/api/device-users', deviceUserRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 

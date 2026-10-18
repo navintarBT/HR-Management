@@ -149,6 +149,16 @@ export interface ScheduledPositionSwap {
   createdAt: string;
 }
 
+// A PIN a scanner reports as enrolled (table=BIODATA) with no matching
+// Employee.deviceUserId anywhere in our system — see
+// server/src/routes/deviceUsers.js.
+export interface OrphanedDeviceUser {
+  id: string;
+  serialNumber: string;
+  pin: string;
+  lastSeenAt: string;
+}
+
 export type ScheduledShiftChangeStatus = 'pending' | 'applied' | 'cancelled';
 
 // A standing change to one employee's own default shift (ย้ายกะล่วงหน้า),

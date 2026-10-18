@@ -3,6 +3,7 @@ const Employee = require('../models/Employee');
 const AttendanceLog = require('../models/AttendanceLog');
 const Device = require('../models/Device');
 const DeviceCommand = require('../models/DeviceCommand');
+const DeviceEnrolledUser = require('../models/DeviceEnrolledUser');
 const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attendanceProcessor');
 
 // ZKTeco's "push" (ADMS) protocol. Real terminals are configured with this
@@ -86,6 +87,20 @@ function parseAttLog(body) {
       return { pin: (fields[0] || '').trim(), dateTime: (fields[1] || '').trim(), raw: line };
     })
     .filter((row) => row.pin && row.dateTime);
+}
+
+// Each line looks like "BIODATA Pin=10308\tNo=0\tIndex=0\t...\tTmp=<base64>"
+// — one enrolled template per line. Only the PIN matters here (who's
+// enrolled), not the template blob itself. Confirmed against a real MB10's
+// reply to "DATA QUERY USERINFO".
+function parseBiodataPins(body) {
+  return (body || '')
+    .split(/\r\n|\r|\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.match(/Pin=(\S+)/))
+    .filter(Boolean)
+    .map((match) => match[1]);
 }
 
 router.get('/iclock/cdata', async (req, res, next) => {
@@ -180,11 +195,23 @@ router.post('/iclock/cdata', express.text({ type: '*/*', limit: '10mb' }), async
       }
 
       console.log(`[adms] SN=${SN} ATTLOG batch: ${rows.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
+    } else if (table.toUpperCase() === 'BIODATA') {
+      // The device's reply to a queued "DATA QUERY USERINFO" — confirmed
+      // against a real MB10. Upserted per (device, pin) rather than appended,
+      // so this stays "who's enrolled right now" instead of growing forever —
+      // a PIN that gets re-enrolled later just refreshes lastSeenAt.
+      const pins = parseBiodataPins(req.body);
+      const now = new Date();
+      for (const pin of pins) {
+        // eslint-disable-next-line no-await-in-loop
+        await DeviceEnrolledUser.updateOne({ serialNumber: SN, pin }, { lastSeenAt: now }, { upsert: true });
+      }
+      console.log(`[adms] SN=${SN} BIODATA batch: ${pins.length} PIN(s) recorded`);
     } else {
       // Captured for later inspection (see Device.lastNonAttlogUpload) rather
-      // than just logged — this is how a device answers "DATA QUERY
-      // USERINFO" among other things, and the exact table name/format isn't
-      // documented consistently enough to assume without seeing a real one.
+      // than just logged — the exact table name/format a device uses for
+      // anything else isn't documented consistently enough to assume without
+      // seeing a real one.
       console.log(`[adms] SN=${SN} non-ATTLOG upload table=${table} (${(req.body || '').length} bytes) — saved to Device.lastNonAttlogUpload`);
       await Device.updateOne({ serialNumber: SN }, { lastNonAttlogUpload: { table, body: req.body, receivedAt: new Date() } });
     }
