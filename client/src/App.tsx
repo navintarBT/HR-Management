@@ -59,7 +59,6 @@ import { ShiftCategoryListPage } from './pages/schedule/categories';
 import { HolidayListPage } from './pages/schedule/holidays';
 import { SubstituteRulePage } from './pages/schedule/substituteRule';
 import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
-import { ScheduleCoversPage } from './pages/schedule/covers';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
@@ -169,11 +168,6 @@ function RootLayout() {
             meta: { label: 'ປະຫວັດການປ່ຽນວັນພັກປະຈຳ', icon: <HistoryOutlined />, parent: 'schedule' },
           },
           {
-            name: 'schedule-covers',
-            list: '/schedule/covers',
-            meta: { label: 'ການເຮັດແທນ', icon: <UserSwitchOutlined />, parent: 'schedule' },
-          },
-          {
             name: 'shift-settings',
             meta: { label: 'ຕັ້ງຄ່າກະ', icon: <ToolOutlined /> },
           },
@@ -281,7 +275,6 @@ export const appRoutes = (
         <Route path="holidays" element={<HolidayListPage />} />
         <Route path="substitute-rule" element={<SubstituteRulePage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
-        <Route path="covers" element={<ScheduleCoversPage />} />
       </Route>
 
       <Route path="*" element={<ErrorComponent />} />

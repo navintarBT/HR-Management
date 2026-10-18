@@ -8,6 +8,7 @@ import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, 
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
+import { ScheduleCoversGrid } from './covers';
 
 // One action in the cell menu — a full-width button with a title and a one-line hint.
 const ChoiceButton: React.FC<{ title: string; description: string; onClick: () => void; disabled?: boolean }> = ({
@@ -27,7 +28,7 @@ const ChoiceButton: React.FC<{ title: string; description: string; onClick: () =
 type Cell =
   | { kind: 'unset' }
   | { kind: 'rest'; isOverride: boolean; overrideId?: string; isHoliday?: boolean; holidayName?: string }
-  | { kind: 'work'; start: string; end: string; isOverride: boolean; overrideId?: string }
+  | { kind: 'work'; start: string; end: string; isOverride: boolean; overrideId?: string; coveringFor?: Employee }
   | { kind: 'substituted' }
   | { kind: 'leave' }
   | { kind: 'swapped' };
@@ -85,7 +86,8 @@ function computeCell(employee: Employee, dateKey: string, override?: Shift, isSu
     // all on the transition day itself (see positionSwap.js) — distinct from
     // 'rest' so it doesn't count as a personal day off for leave purposes.
     if (override.status === 'swapped') return { kind: 'swapped' };
-    return { kind: 'work', start: override.startTime!, end: override.endTime!, isOverride: true, overrideId: override._id };
+    const coveringFor = override.coveringFor && typeof override.coveringFor === 'object' ? override.coveringFor : undefined;
+    return { kind: 'work', start: override.startTime!, end: override.endTime!, isOverride: true, overrideId: override._id, coveringFor };
   }
   const dow = dayjs(dateKey).day();
   if ((employee.defaultRestDay ?? []).includes(dow)) return { kind: 'rest', isOverride: false };
@@ -103,7 +105,10 @@ const CELL_STYLE: Record<Cell['kind'], React.CSSProperties> = {
   swapped: { background: '#fff0f6' },
 };
 
-export const MonthlySchedulePage: React.FC = () => {
+// Just the calendar grid itself, no page chrome — MonthlySchedulePage below
+// wraps this (and ScheduleCoversGrid) in one List with a dropdown to switch
+// between them, so this needs to stay a bare fragment rather than its own List.
+export const MonthlyScheduleGrid: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isManager = identity?.role === 'admin' || identity?.role === 'manager';
 
@@ -152,22 +157,31 @@ export const MonthlySchedulePage: React.FC = () => {
     pagination: { pageSize: 100, mode: 'server' },
   });
 
-  const employees = useMemo(
-    () =>
-      allEmployees.filter((e) => {
-        if (search) {
-          const q = search.trim().toLowerCase();
-          const name = `${e.firstName ?? ''} ${e.lastName ?? ''}`.toLowerCase();
-          const code = (e.employeeCode ?? '').toLowerCase();
-          if (!name.includes(q) && !code.includes(q)) return false;
-        }
-        if (departmentFilter && idOf(e.department) !== departmentFilter) return false;
-        if (positionFilter && idOf(e.position) !== positionFilter) return false;
-        if (shiftCategoryFilter && idOf(e.defaultShiftCategory) !== shiftCategoryFilter) return false;
-        return true;
-      }),
-    [allEmployees, search, departmentFilter, positionFilter, shiftCategoryFilter]
-  );
+  const employees = useMemo(() => {
+    const filtered = allEmployees.filter((e) => {
+      if (search) {
+        const q = search.trim().toLowerCase();
+        const name = `${e.firstName ?? ''} ${e.lastName ?? ''}`.toLowerCase();
+        const code = (e.employeeCode ?? '').toLowerCase();
+        if (!name.includes(q) && !code.includes(q)) return false;
+      }
+      if (departmentFilter && idOf(e.department) !== departmentFilter) return false;
+      if (positionFilter && idOf(e.position) !== positionFilter) return false;
+      if (shiftCategoryFilter && idOf(e.defaultShiftCategory) !== shiftCategoryFilter) return false;
+      return true;
+    });
+    // Only while filtering by department — a department usually spans
+    // several positions, so grouping by position here keeps everyone in the
+    // same one together instead of staying interleaved in plain employeeCode
+    // order. No filter active still sorts by employeeCode only, as before.
+    if (!departmentFilter) return filtered;
+    const positionNameById = new Map(allPositions.map((p) => [p._id, p.name]));
+    return [...filtered].sort((a, b) => {
+      const posA = positionNameById.get(idOf(a.position) ?? '') ?? '';
+      const posB = positionNameById.get(idOf(b.position) ?? '') ?? '';
+      return posA.localeCompare(posB) || (a.employeeCode ?? '').localeCompare(b.employeeCode ?? '');
+    });
+  }, [allEmployees, allPositions, search, departmentFilter, positionFilter, shiftCategoryFilter]);
 
   const { data: shiftsData, isLoading: shiftsLoading } = useList<Shift>({
     resource: 'shifts',
@@ -704,7 +718,7 @@ export const MonthlySchedulePage: React.FC = () => {
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
-    <List title="ຕາຕະລາງວັນພັກ" breadcrumb={false}>
+    <>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Space>
@@ -871,15 +885,22 @@ export const MonthlySchedulePage: React.FC = () => {
                 // Heads-up only — the cell's own content above is untouched,
                 // since nothing actually changes until effectiveDate arrives.
                 const pendingSwapWith = pendingSwapByPositionDate[`${idOf(emp.position)}_${dateKey}`];
+                const coveringFor = cell.kind === 'work' ? cell.coveringFor : undefined;
+                const coverDetail =
+                  cell.kind === 'work' && cell.coveringFor
+                    ? `ໄປເຮັດແທນ ${personLabel(cell.coveringFor)} (${typeof cell.coveringFor.department === 'object' ? cell.coveringFor.department?.name ?? '-' : '-'} / ${typeof cell.coveringFor.position === 'object' ? cell.coveringFor.position?.name ?? '-' : '-'}) — ${cell.start}-${cell.end}`
+                    : undefined;
                 return (
                   <div
                     onClick={() => clickable && setEditing({ employee: emp, dateKey })}
                     title={
                       isLocked
                         ? 'ສ້າງໂດຍລະບົບຕອນສະຫຼັບຕຳແໜ່ງ — ແກ້ໄຂຢູ່ນີ້ບໍ່ໄດ້'
-                        : pendingSwapWith
-                          ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້`
-                          : undefined
+                        : coverDetail
+                          ? coverDetail
+                          : pendingSwapWith
+                            ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້`
+                            : undefined
                     }
                     style={{
                       ...CELL_STYLE[cell.kind],
@@ -906,6 +927,7 @@ export const MonthlySchedulePage: React.FC = () => {
                         {cell.start}
                         <br />
                         {cell.end}
+                        {coveringFor && <div style={{ fontSize: 9, color: '#08979c', fontWeight: 600 }}>ໄປແທນ</div>}
                       </>
                     )}
                     {cell.kind === 'substituted' && <span style={{ color: '#08979c' }}>ມາແທນ</span>}
@@ -1248,6 +1270,48 @@ export const MonthlySchedulePage: React.FC = () => {
           </Popconfirm>
         )}
       </Modal>
+    </>
+  );
+};
+
+const SCHEDULE_VIEW_OPTIONS = [
+  { value: 'monthly', label: 'ຕາຕະລາງວັນພັກ' },
+  { value: 'covers', label: 'ການເຮັດແທນ — ລາຍລະອຽດ' },
+];
+
+// Combines ຕາຕະລາງວັນພັກ and ການເຮັດແທນ (previously two separate sidebar pages)
+// behind one dropdown. Switching toggles visibility only (display:none), never
+// unmounts either grid — swapping which one renders would tear the hidden one
+// down and remount the other from scratch every time (refetching everything
+// and rebuilding its whole table), which is exactly what made switching feel
+// slow/stuck. ScheduleCoversGrid only mounts the first time it's actually
+// selected (no point paying its fetch cost if nobody ever opens it), then
+// stays mounted so every switch after that first one is instant either way.
+export const MonthlySchedulePage: React.FC = () => {
+  const [view, setView] = useState<'monthly' | 'covers'>('monthly');
+  const [coversMounted, setCoversMounted] = useState(false);
+
+  const handleViewChange = (v: 'monthly' | 'covers') => {
+    setView(v);
+    if (v === 'covers') setCoversMounted(true);
+  };
+
+  return (
+    <List
+      title={view === 'monthly' ? 'ຕາຕະລາງວັນພັກ' : 'ການເຮັດແທນ — ລາຍລະອຽດ'}
+      breadcrumb={false}
+      headerButtons={
+        <Select value={view} onChange={handleViewChange} options={SCHEDULE_VIEW_OPTIONS} style={{ minWidth: 220 }} />
+      }
+    >
+      <div style={{ display: view === 'monthly' ? 'block' : 'none' }}>
+        <MonthlyScheduleGrid />
+      </div>
+      {coversMounted && (
+        <div style={{ display: view === 'covers' ? 'block' : 'none' }}>
+          <ScheduleCoversGrid />
+        </div>
+      )}
     </List>
   );
 };

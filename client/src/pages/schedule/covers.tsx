@@ -1,12 +1,10 @@
 import { useMemo, useState } from 'react';
-import { List, useSelect } from '@refinedev/antd';
-import { useList, useDelete, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Segmented } from 'antd';
-import { LeftOutlined, RightOutlined, DeleteOutlined } from '@ant-design/icons';
+import { useSelect } from '@refinedev/antd';
+import { useList, useCreate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
+import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker } from 'antd';
+import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Department, Employee, Position, Shift } from '../../types';
-
-const LAO_WEEKDAYS = ['ອາທິດ', 'ຈັນ', 'ອັງຄານ', 'ພຸດ', 'ພະຫັດ', 'ສຸກ', 'ເສົາ'];
 
 function idOf(value: { _id: string } | string | null | undefined) {
   if (!value) return undefined;
@@ -42,21 +40,20 @@ function hoursBetween(start?: string, end?: string): number {
   return minutes / 60;
 }
 
-// Weekly or monthly view of ການເຮັດແທນ: one row per employee covering someone in
-// the range, one column per day. Each cell lists that day's covers with who
-// they're covering, the covered person's department and position, and the time.
-// Records are created from ຕາຕະລາງວັນພັກ (click a day → ໄປເຮັດແທນຄົນອື່ນ).
-type CoverView = 'week' | 'month';
-
+// Monthly grid of ການເຮັດແທນ, same month-at-a-time shape as ຕາຕະລາງວັນພັກ: one
+// row per employee covering someone this month, one column per day. Each
+// cell lists that day's covers with who they're covering, the covered
+// person's department and position, and the time — kept full-size (not
+// shrunk to match ຕາຕະລາງວັນພັກ's compact day cells), since a cover genuinely
+// needs more than that to show. Records are created from ຕາຕະລາງວັນພັກ (click
+// a day → ໄປເຮັດແທນຄົນອື່ນ) or from the "ມອບໝາຍການເຮັດແທນ" button below.
 export const ScheduleCoversGrid: React.FC = () => {
-  const [view, setView] = useState<CoverView>('week');
-  const [anchor, setAnchor] = useState<Dayjs>(() => dayjs());
-  const step = view === 'week' ? 'week' : 'month';
-  const rangeStart = view === 'week' ? anchor.startOf('week') : anchor.startOf('month');
-  const dayCount = view === 'week' ? 7 : anchor.daysInMonth();
+  const [monthStart, setMonthStart] = useState(() => dayjs().startOf('month'));
+  const rangeStart = monthStart;
+  const dayCount = monthStart.daysInMonth();
   const rangeEnd = rangeStart.add(dayCount - 1, 'day');
   const rangeDays = Array.from({ length: dayCount }, (_, i) => rangeStart.add(i, 'day'));
-  const periodText = view === 'week' ? 'ໃນອາທິດນີ້' : 'ໃນເດືອນນີ້';
+  const periodText = 'ໃນເດືອນນີ້';
   const startKey = rangeStart.format('YYYY-MM-DD');
   const endKey = rangeEnd.format('YYYY-MM-DD');
 
@@ -141,6 +138,109 @@ export const ScheduleCoversGrid: React.FC = () => {
     );
   };
 
+  // Mirrors ຕາຕະລາງວັນພັກ's own "ໄປເຮັດແທນຄົນອື່ນ" flow (monthly.tsx's
+  // handleCover) — same fields, same createShift call — just with its own
+  // coverer/date pickers up front instead of those coming from a clicked day
+  // cell, since this page has no such cell to click.
+  const { data: allEmployeesData } = useList<Employee>({
+    resource: 'employees',
+    filters: [{ field: 'status', operator: 'eq', value: 'active' }],
+    pagination: { pageSize: 500 },
+  });
+  const allEmployees = allEmployeesData?.data ?? [];
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm] = Form.useForm();
+  const createCoverer = Form.useWatch('coverer', createForm);
+  const createCoverDept = Form.useWatch('coverDept', createForm);
+  const createCoverPos = Form.useWatch('coverPos', createForm);
+  const { mutate: createShift, isLoading: creatingCover } = useCreate();
+
+  const createDeptOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEmployees) {
+      if (e.department && typeof e.department === 'object') map.set(e.department._id, e.department.name);
+    }
+    return Array.from(map, ([value, label]) => ({ value, label }));
+  }, [allEmployees]);
+  const createPosOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of allEmployees) {
+      if (createCoverDept && idOf(e.department) !== createCoverDept) continue;
+      if (e.position && typeof e.position === 'object') map.set(e.position._id, e.position.name);
+    }
+    return Array.from(map, ([value, label]) => ({ value, label }));
+  }, [allEmployees, createCoverDept]);
+  const createTargetOptions = useMemo(
+    () =>
+      allEmployees
+        .filter((e) => e._id !== createCoverer)
+        .filter((e) => (!createCoverDept || idOf(e.department) === createCoverDept) && (!createCoverPos || idOf(e.position) === createCoverPos))
+        .map((e) => ({ value: e._id, label: `${e.employeeCode ?? ''} ${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() })),
+    [allEmployees, createCoverDept, createCoverPos, createCoverer]
+  );
+  const covererOptions = useMemo(
+    () => allEmployees.map((e) => ({ value: e._id, label: `${e.employeeCode ?? ''} ${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() })),
+    [allEmployees]
+  );
+
+  // The covered person's own time for that day, same fallback order as
+  // monthly.tsx's defaultTimeFor — a real schedule to start the picker from
+  // instead of an empty one.
+  const defaultTimeFor = (emp: Employee, dateKey: string): [Dayjs, Dayjs] | undefined => {
+    const category = emp.defaultShiftCategory;
+    if (category && typeof category === 'object') {
+      return [dayjs(`${dateKey}T${category.startTime}`), dayjs(`${dateKey}T${category.endTime}`)];
+    }
+    if (emp.defaultShiftStart && emp.defaultShiftEnd) {
+      return [dayjs(`${dateKey}T${emp.defaultShiftStart}`), dayjs(`${dateKey}T${emp.defaultShiftEnd}`)];
+    }
+    return undefined;
+  };
+  const fillCoverTime = (coveredId: string) => {
+    const date = createForm.getFieldValue('date') as Dayjs | undefined;
+    if (!date) return;
+    const covered = allEmployees.find((e) => e._id === coveredId);
+    const time = covered ? defaultTimeFor(covered, date.format('YYYY-MM-DD')) : undefined;
+    if (time) createForm.setFieldValue('time', time);
+  };
+
+  const submitCreateCover = async () => {
+    const values = await createForm.validateFields();
+    const covered = allEmployees.find((e) => e._id === values.coveredEmployee);
+    const coveredPositionId = idOf(covered?.position);
+    if (!coveredPositionId) {
+      notify?.({ type: 'error', message: 'ຜູ້ຖືກແທນຍັງບໍ່ມີຕຳແໜ່ງ ກະລຸນາຕັ້ງຕຳແໜ່ງໃຫ້ກ່ອນ' });
+      return;
+    }
+    createShift(
+      {
+        resource: 'shifts',
+        values: {
+          employee: values.coverer,
+          coveringFor: values.coveredEmployee,
+          position: coveredPositionId,
+          date: (values.date as Dayjs).format('YYYY-MM-DD'),
+          startTime: (values.time as [Dayjs, Dayjs])[0].format('HH:mm'),
+          endTime: (values.time as [Dayjs, Dayjs])[1].format('HH:mm'),
+          status: 'scheduled',
+        },
+      },
+      {
+        onSuccess: () => {
+          notify?.({ type: 'success', message: 'ບັນທຶກການເຮັດແທນແລ້ວ' });
+          invalidate({ resource: 'shifts', invalidates: ['list'] });
+          refetch();
+          setCreateOpen(false);
+          createForm.resetFields();
+        },
+        onError: (err: any) => {
+          notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
+        },
+      }
+    );
+  };
+
   const CoverCell = ({ list }: { list: Shift[] }) => (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
       {list.map((s) => (
@@ -178,22 +278,12 @@ export const ScheduleCoversGrid: React.FC = () => {
   return (
     <div>
       <Space wrap style={{ marginBottom: 16 }}>
-        <Segmented
-          value={view}
-          onChange={(v) => setView(v as CoverView)}
-          options={[
-            { label: 'ອາທິດ', value: 'week' },
-            { label: 'ເດືອນ', value: 'month' },
-          ]}
-        />
-        <Button icon={<LeftOutlined />} onClick={() => setAnchor(anchor.subtract(1, step))} />
-        <Button onClick={() => setAnchor(dayjs())}>{view === 'week' ? 'ອາທິດນີ້' : 'ເດືອນນີ້'}</Button>
-        <Button icon={<RightOutlined />} onClick={() => setAnchor(anchor.add(1, step))} />
-        <Typography.Text strong>
-          {view === 'week'
-            ? `${rangeStart.format('DD/MM/YYYY')} – ${rangeEnd.format('DD/MM/YYYY')}`
-            : rangeStart.format('MM/YYYY')}
-        </Typography.Text>
+        <Button icon={<LeftOutlined />} onClick={() => setMonthStart(monthStart.subtract(1, 'month'))} />
+        <Typography.Text strong>{monthStart.format('MMMM YYYY')}</Typography.Text>
+        <Button icon={<RightOutlined />} onClick={() => setMonthStart(dayjs().startOf('month'))}>
+          ເດືອນນີ້
+        </Button>
+        <Button icon={<RightOutlined />} onClick={() => setMonthStart(monthStart.add(1, 'month'))} />
         <Select
           {...departmentSelect}
           placeholder="ກອງຕາມພະແນກ"
@@ -216,6 +306,9 @@ export const ScheduleCoversGrid: React.FC = () => {
           value={positionFilter}
           onChange={(v: any) => setPositionFilter(v)}
         />
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          ມອບໝາຍການເຮັດແທນ
+        </Button>
       </Space>
 
       <Space size={16} wrap style={{ marginBottom: 16 }}>
@@ -261,12 +354,12 @@ export const ScheduleCoversGrid: React.FC = () => {
           return (
             <Table.Column
               key={dateKey}
-              width={view === 'week' ? 170 : 150}
+              width={150}
               title={
                 <div style={{ textAlign: 'center' }}>
-                  <div>{day.format('DD/MM')}</div>
+                  <div>{day.format('D')}</div>
                   <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    {LAO_WEEKDAYS[day.day()]}
+                    {day.format('ddd')}
                   </Typography.Text>
                 </div>
               }
@@ -278,12 +371,64 @@ export const ScheduleCoversGrid: React.FC = () => {
           );
         })}
       </Table>
+
+      <Modal
+        title="ມອບໝາຍການເຮັດແທນ"
+        open={createOpen}
+        onCancel={() => {
+          setCreateOpen(false);
+          createForm.resetFields();
+        }}
+        onOk={submitCreateCover}
+        confirmLoading={creatingCover}
+        okText="ບັນທຶກ"
+        cancelText="ຍົກເລີກ"
+        destroyOnClose
+      >
+        <Form form={createForm} layout="vertical">
+          <Form.Item name="coverer" label="ຜູ້ເຮັດແທນ" rules={[{ required: true, message: 'ກະລຸນາເລືອກຜູ້ເຮັດແທນ' }]}>
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="ເລືອກຜູ້ເຮັດແທນ"
+              options={covererOptions}
+              onChange={() => createForm.setFieldValue('coveredEmployee', undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="date" label="ວັນທີ່" rules={[{ required: true, message: 'ກະລຸນາເລືອກວັນທີ່' }]}>
+            <DatePicker style={{ width: '100%' }} format="DD/MM/YYYY" />
+          </Form.Item>
+          <Space wrap>
+            <Form.Item name="coverDept" label="ພະແນກ (ຜູ້ຖືກແທນ)">
+              <Select
+                allowClear
+                placeholder="ທຸກພະແນກ"
+                style={{ width: 170 }}
+                options={createDeptOptions}
+                onChange={() => {
+                  createForm.setFieldValue('coverPos', undefined);
+                  createForm.setFieldValue('coveredEmployee', undefined);
+                }}
+              />
+            </Form.Item>
+            <Form.Item name="coverPos" label="ຕຳແໜ່ງ (ຜູ້ຖືກແທນ)">
+              <Select
+                allowClear
+                placeholder="ທຸກຕຳແໜ່ງ"
+                style={{ width: 190 }}
+                options={createPosOptions}
+                onChange={() => createForm.setFieldValue('coveredEmployee', undefined)}
+              />
+            </Form.Item>
+          </Space>
+          <Form.Item name="coveredEmployee" label="ຜູ້ຖືກແທນ" rules={[{ required: true, message: 'ກະລຸນາເລືອກຜູ້ຖືກແທນ' }]}>
+            <Select showSearch optionFilterProp="label" placeholder="ຜູ້ຖືກແທນ" options={createTargetOptions} onChange={fillCoverTime} />
+          </Form.Item>
+          <Form.Item name="time" label="ເວລາ" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
+            <TimePicker.RangePicker format="HH:mm" minuteStep={15} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 };
-
-export const ScheduleCoversPage: React.FC = () => (
-  <List title="ການເຮັດແທນ — ລາຍລະອຽດ" breadcrumb={false}>
-    <ScheduleCoversGrid />
-  </List>
-);
