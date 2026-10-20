@@ -175,37 +175,55 @@ async function recomputeDay(employeeId, dateKey) {
 
   if (!logs.length) return null;
 
-  const firstIn = logs[0].timestamp;
-  const lastOut = logs.length > 1 ? logs[logs.length - 1].timestamp : null;
+  let firstIn = logs[0].timestamp;
+  let lastOut = logs.length > 1 ? logs[logs.length - 1].timestamp : null;
+
+  let standardStart = null;
+  let standardEnd = null;
+  if (expected) {
+    standardStart = new Date(`${dateKey}T00:00:00`);
+    standardStart.setHours(expected.startHour, expected.startMinute, 0, 0);
+    standardEnd = new Date(`${dateKey}T00:00:00`);
+    standardEnd.setHours(expected.endHour, expected.endMinute, 0, 0);
+    if (overnight) standardEnd.setDate(standardEnd.getDate() + 1);
+  }
+
+  // A single scan is ambiguous on its own — it could be a check-in with no
+  // check-out yet, or a check-out from someone who forgot to scan in at the
+  // start. Split the shift at its own midpoint: a lone scan before that
+  // (covers anywhere from arriving early through an ordinary late check-in)
+  // reads as check-in same as before; at or past it, this was almost
+  // certainly their check-out, not a check-in nobody would ever be this
+  // late for. Only possible when there's an expected shift to split at all.
+  if (logs.length === 1 && standardStart && standardEnd) {
+    const shiftMidpoint = new Date(standardStart.getTime() + (standardEnd.getTime() - standardStart.getTime()) / 2);
+    if (firstIn >= shiftMidpoint) {
+      lastOut = firstIn;
+      firstIn = null;
+    }
+  }
 
   let lateMinutes = 0;
   let earlyLeaveMinutes = 0;
-  let autoAbsentMinutes = null;
-  if (expected) {
+  const autoAbsentMinutes = expected ? expected.autoAbsentMinutes : null;
+  if (standardStart && firstIn) {
     // Measured from the exact shift start — graceMinutes no longer shifts
     // this threshold (and so no longer keeps a slightly-late scan classified
     // as "present"); it now only sizes the "ຊ້າ" vs "ຊ້າເກີນ X ນາທີ" label
     // tiers on the attendance-log UI, against the raw minutes here.
-    const standardStart = new Date(`${dateKey}T00:00:00`);
-    standardStart.setHours(expected.startHour, expected.startMinute, 0, 0);
     lateMinutes = firstIn > standardStart ? Math.round((firstIn - standardStart) / 60000) : 0;
-    autoAbsentMinutes = expected.autoAbsentMinutes;
-
-    if (lastOut) {
-      const standardEnd = new Date(`${dateKey}T00:00:00`);
-      standardEnd.setHours(expected.endHour, expected.endMinute, 0, 0);
-      if (overnight) standardEnd.setDate(standardEnd.getDate() + 1);
-      earlyLeaveMinutes = lastOut < standardEnd ? Math.round((standardEnd - lastOut) / 60000) : 0;
-    }
+  }
+  if (standardEnd && lastOut) {
+    earlyLeaveMinutes = lastOut < standardEnd ? Math.round((standardEnd - lastOut) / 60000) : 0;
   }
 
-  const workedHours = lastOut ? Math.round(((lastOut - firstIn) / 3600000) * 100) / 100 : 0;
+  const workedHours = firstIn && lastOut ? Math.round(((lastOut - firstIn) / 3600000) * 100) / 100 : 0;
   const otHours = workedHours > STANDARD_WORK_HOURS
     ? Math.round((workedHours - STANDARD_WORK_HOURS) * 100) / 100
     : 0;
   const expectedHours = computeExpectedHours(expected);
 
-  const status = !lastOut
+  const status = !firstIn || !lastOut
     ? 'incomplete'
     : autoAbsentMinutes != null && lateMinutes > autoAbsentMinutes
       ? 'absent'

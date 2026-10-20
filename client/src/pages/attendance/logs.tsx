@@ -535,8 +535,16 @@ const AttendanceSummaryGrid: React.FC = () => {
               }}
               render={(_, emp: Employee) => {
                 const row = byEmpDate[`${emp._id}_${dateKey}`];
+                // A lone late-arriving scan can land as lastOut with no
+                // firstIn at all now (see attendanceProcessor.js's
+                // shift-midpoint check) — show that one time too instead of
+                // silently dropping it just because it's not firstIn.
                 const timeText = (r: AttendanceDaily) =>
-                  r.firstIn ? `${dayjs(r.firstIn).format('HH:mm')}${r.lastOut ? `-${dayjs(r.lastOut).format('HH:mm')}` : ''}` : '';
+                  r.firstIn
+                    ? `${dayjs(r.firstIn).format('HH:mm')}${r.lastOut ? `-${dayjs(r.lastOut).format('HH:mm')}` : ''}`
+                    : r.lastOut
+                      ? dayjs(r.lastOut).format('HH:mm')
+                      : '';
 
                 const style = row ? CELL_STYLE[row.status] : undefined;
                 if (style) {
