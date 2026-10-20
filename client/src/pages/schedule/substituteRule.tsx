@@ -899,11 +899,13 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
   });
   const allPositions = positionsData?.data ?? [];
 
-  // Always only positions that already have noAbsenceDays set — same change
-  // as RestDayRuleTable above, for the same reason.
+  // Shows a position once EITHER rule below is configured — noAbsenceDays
+  // (specific no-absence days) or ordinaryAbsenceSeverity (ມື້ທຳມະດາ) on its
+  // own, since the two are now set up through separate, independent "ສ້າງ"
+  // flows (see uncreatedPositions vs uncreatedOrdinaryPositions below).
   const positions = useMemo(() => {
     return allPositions.filter((p) => {
-      if ((p.noAbsenceDays ?? []).length === 0) return false;
+      if ((p.noAbsenceDays ?? []).length === 0 && !p.ordinaryAbsenceSeverity) return false;
       if (search && !p.name.toLowerCase().includes(search.trim().toLowerCase())) return false;
       if (departmentFilter && !(p.departments ?? []).some((d) => idOf(d) === departmentFilter)) return false;
       return true;
@@ -998,6 +1000,25 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
     [allPositions, createDeptFilter]
   );
 
+  const [createOrdinaryOpen, setCreateOrdinaryOpen] = useState(false);
+  const [createOrdinaryForm] = Form.useForm();
+  const [creatingOrdinaryMany, setCreatingOrdinaryMany] = useState(false);
+  const [createOrdinaryDeptFilter, setCreateOrdinaryDeptFilter] = useState<string>();
+
+  // Unlike uncreatedPositions above, this one does NOT exclude a position
+  // already in ຂໍ້ຈຳກັດວັນພັກ (restrictedRestDays) — ມື້ທຳມະດາ has nothing to
+  // do with choosing specific no-absence days, so a position locked out of
+  // the ວັນຫ້າມຂາດ flow should still be free to get this set.
+  const uncreatedOrdinaryPositions = useMemo(
+    () =>
+      allPositions.filter(
+        (p) =>
+          !p.ordinaryAbsenceSeverity &&
+          (!createOrdinaryDeptFilter || (p.departments ?? []).some((d) => idOf(d) === createOrdinaryDeptFilter))
+      ),
+    [allPositions, createOrdinaryDeptFilter]
+  );
+
   // Applying the same days+severity to every position at once (e.g. the
   // whole bar on New Year's Eve) one at a time would mean reopening this
   // modal 50+ times — the position field takes several, or all of them via
@@ -1034,6 +1055,41 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
     setCreateDeptFilter(undefined);
   };
 
+  // Separate submit for ມື້ທຳມະດາ — writes only ordinaryAbsenceSeverity, never
+  // touches noAbsenceDays/noAbsenceSeverity, so it can't collide with the
+  // ວັນຫ້າມຂາດ flow above even when applied to the same position.
+  const submitCreateOrdinary = async () => {
+    const values = await createOrdinaryForm.validateFields();
+    const positionIds: string[] = Array.isArray(values.position) ? values.position : [values.position];
+    setCreatingOrdinaryMany(true);
+    let succeeded = 0;
+    for (const id of positionIds) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((resolve) => {
+        updatePosition(
+          { resource: 'positions', id, values: { ordinaryAbsenceSeverity: values.ordinaryAbsenceSeverity } },
+          {
+            onSuccess: () => {
+              succeeded += 1;
+              resolve();
+            },
+            onError: () => resolve(),
+          }
+        );
+      });
+    }
+    setCreatingOrdinaryMany(false);
+    notify?.({
+      type: succeeded === positionIds.length ? 'success' : 'error',
+      message: `ຕັ້ງຄ່າມື້ທຳມະດາສຳເລັດ ${succeeded}/${positionIds.length} ຕຳແໜ່ງ`,
+    });
+    invalidate({ resource: 'positions', invalidates: ['list'] });
+    refetch();
+    setCreateOrdinaryOpen(false);
+    createOrdinaryForm.resetFields();
+    setCreateOrdinaryDeptFilter(undefined);
+  };
+
   const SEVERITY_OPTIONS = [
     { label: 'X2', value: 'X2' },
     { label: 'X3', value: 'X3' },
@@ -1043,11 +1099,17 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          ຖ້າວັນນັ້ນເປັນວັນພັກປະຈຳ ຫຼື ຖືກຕັ້ງເປັນວັນພັກຢູ່ແລ້ວ ຈະຂ້າມໃຫ້ ບໍ່ຕັດເງິນ — ມີຜົນສະເພາະວັນທີ່ຄົນນັ້ນຄວນມາເຮັດວຽກແຕ່ຂາດຈິງເທົ່ານັ້ນ
+          ຖ້າວັນນັ້ນເປັນວັນພັກປະຈຳ ຫຼື ຖືກຕັ້ງເປັນວັນພັກຢູ່ແລ້ວ ຈະຂ້າມໃຫ້ ບໍ່ຕັດເງິນ — ມີຜົນສະເພາະວັນທີ່ຄົນນັ້ນຄວນມາເຮັດວຽກແຕ່ຂາດຈິງເທົ່ານັ້ນ.
+          ວັນຫ້າມຂາດ ແລະ ມື້ທຳມະດາ ຕັ້ງແຍກກັນໄດ້ຢ່າງອິດສະລະ — ຕຳແໜ່ງທີ່ມີ ຂໍ້ຈຳກັດວັນພັກ ຢູ່ແລ້ວ ຍັງຕັ້ງ ມື້ທຳມະດາ ໄດ້ປົກກະຕິ
         </Typography.Paragraph>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          ສ້າງວັນຫ້າມຂາດ
-        </Button>
+        <Space>
+          <Button icon={<PlusOutlined />} onClick={() => setCreateOrdinaryOpen(true)}>
+            ຕັ້ງຄ່າມື້ທຳມະດາ
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            ສ້າງວັນຫ້າມຂາດ
+          </Button>
+        </Space>
       </div>
       <Space wrap style={{ marginBottom: 12 }}>
         <Select
@@ -1074,7 +1136,7 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
         pagination={{ pageSize: 10 }}
         size="small"
         locale={{
-          emptyText: 'ບໍ່ພົບຕຳແໜ່ງທີ່ຕັ້ງວັນຫ້າມຂາດ — ໃຊ້ປຸ່ມ "ສ້າງວັນຫ້າມຂາດ" ຂ້າງເທິງເພື່ອຕັ້ງໃຫ້ຕຳແໜ່ງອື່ນ',
+          emptyText: 'ບໍ່ພົບຕຳແໜ່ງທີ່ຕັ້ງຄ່ານີ້ — ໃຊ້ປຸ່ມ "ຕັ້ງຄ່າມື້ທຳມະດາ" ຫຼື "ສ້າງວັນຫ້າມຂາດ" ຂ້າງເທິງເພື່ອຕັ້ງໃຫ້ຕຳແໜ່ງອື່ນ',
         }}
       >
         <Table.Column title="ຕຳແໜ່ງ" dataIndex="name" width={220} />
@@ -1137,8 +1199,12 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
           align="center"
           render={(_, position: Position) => (
             <Popconfirm
-              title="ລຶບວັນຫ້າມຂາດນີ້?"
-              description={`ຕຳແໜ່ງ "${position.name}" ຈະບໍ່ມີວັນຫ້າມຂາດອີກຕໍ່ໄປ`}
+              title="ລຶບການຕັ້ງຄ່ານີ້?"
+              description={
+                (position.noAbsenceDays ?? []).length > 0
+                  ? `ຕຳແໜ່ງ "${position.name}" ຈະບໍ່ມີວັນຫ້າມຂາດ ແລະ ມື້ທຳມະດາອີກຕໍ່ໄປ`
+                  : `ຕຳແໜ່ງ "${position.name}" ຈະບໍ່ມີລະດັບການຕັດເງິນສຳລັບມື້ທຳມະດາອີກຕໍ່ໄປ`
+              }
               okText="ລຶບ"
               cancelText="ບໍ່"
               onConfirm={() => removeNoAbsence(position)}
@@ -1213,6 +1279,71 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
           </Form.Item>
           <Form.Item
             name="noAbsenceSeverity"
+            label="ລະດັບການຕັດເງິນ"
+            rules={[{ required: true, message: 'ກະລຸນາເລືອກລະດັບການຕັດເງິນ' }]}
+          >
+            <Select placeholder="ເລືອກລະດັບ" options={SEVERITY_OPTIONS} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title="ຕັ້ງຄ່າລະດັບການຕັດເງິນສຳລັບມື້ອື່ນໆ (ມື້ທຳມະດາ)"
+        open={createOrdinaryOpen}
+        onCancel={() => {
+          setCreateOrdinaryOpen(false);
+          createOrdinaryForm.resetFields();
+          setCreateOrdinaryDeptFilter(undefined);
+        }}
+        onOk={submitCreateOrdinary}
+        confirmLoading={creatingOrdinaryMany}
+        okText="ບັນທຶກ"
+        cancelText="ຍົກເລີກ"
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          ແຍກອອກຈາກ ວັນຫ້າມຂາດ ຂ້າງເທິງ — ຕັ້ງໄດ້ເລີຍບໍ່ວ່າຕຳແໜ່ງນັ້ນຈະມີ ຂໍ້ຈຳກັດວັນພັກ ຫຼື ວັນຫ້າມຂາດເຈາະຈົງວັນຢູ່ແລ້ວຫຼືບໍ່. ເລືອກໄດ້ຫຼາຍຕຳແໜ່ງພ້ອມກັນ ຫຼື ກົດ
+          "ເລືອກທັງໝົດ" ເພື່ອໃຊ້ຄ່າດຽວກັນກັບທຸກຕຳແໜ່ງທີ່ຍັງບໍ່ໄດ້ຕັ້ງ (ກອງຕາມພະແນກກ່ອນໄດ້ ເພື່ອຈຳກັດໃຫ້ແຄບລົງ)
+        </Typography.Paragraph>
+        <Space style={{ marginBottom: 12, width: '100%' }} direction="vertical" size={4}>
+          <Typography.Text>ກອງຕາມພະແນກ (ບໍ່ບັງຄັບ)</Typography.Text>
+          <Select
+            {...departmentSelect}
+            allowClear
+            style={{ width: '100%' }}
+            placeholder="ທຸກພະແນກ"
+            value={createOrdinaryDeptFilter}
+            onChange={(v: any) => {
+              setCreateOrdinaryDeptFilter(v);
+              createOrdinaryForm.setFieldValue('position', undefined);
+            }}
+          />
+        </Space>
+        <Form form={createOrdinaryForm} layout="vertical">
+          <Form.Item
+            name="position"
+            label={
+              <Space>
+                ຕຳແໜ່ງ
+                <Button
+                  size="small"
+                  onClick={() => createOrdinaryForm.setFieldValue('position', uncreatedOrdinaryPositions.map((p) => p._id))}
+                >
+                  ເລືອກທັງໝົດ ({uncreatedOrdinaryPositions.length})
+                </Button>
+              </Space>
+            }
+            rules={[{ required: true, type: 'array', min: 1, message: 'ກະລຸນາເລືອກຕຳແໜ່ງຢ່າງໜ້ອຍ 1 ຕຳແໜ່ງ' }]}
+          >
+            <Select
+              mode="multiple"
+              showSearch
+              optionFilterProp="label"
+              placeholder="ເລືອກຕຳແໜ່ງທີ່ຍັງບໍ່ໄດ້ຕັ້ງ (ເລືອກໄດ້ຫຼາຍຕຳແໜ່ງ)"
+              options={uncreatedOrdinaryPositions.map((p) => ({ value: p._id, label: p.name }))}
+            />
+          </Form.Item>
+          <Form.Item
+            name="ordinaryAbsenceSeverity"
             label="ລະດັບການຕັດເງິນ"
             rules={[{ required: true, message: 'ກະລຸນາເລືອກລະດັບການຕັດເງິນ' }]}
           >
