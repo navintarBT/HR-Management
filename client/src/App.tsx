@@ -177,6 +177,11 @@ function RootLayout() {
             meta: { label: 'ໄອດີທີ່ບໍ່ກົງກັບລະບົບ', icon: <IdcardOutlined />, parent: 'schedule' },
           },
           {
+            name: 'holidays',
+            list: '/schedule/holidays',
+            meta: { label: 'ວັນພັກຮ້ານ', icon: <ShopOutlined />, parent: 'schedule' },
+          },
+          {
             name: 'shift-settings',
             meta: { label: 'ຕັ້ງຄ່າກະ', icon: <ToolOutlined /> },
           },
@@ -203,11 +208,6 @@ function RootLayout() {
             name: 'organization',
             list: '/organization',
             meta: { label: 'ພະແນກ / ຕໍາແໜ່ງ', icon: <ApartmentOutlined />, parent: 'settings' },
-          },
-          {
-            name: 'holidays',
-            list: '/schedule/holidays',
-            meta: { label: 'ວັນພັກຮ້ານ', icon: <ShopOutlined />, parent: 'settings' },
           },
           {
             name: 'position-rules',
