@@ -211,7 +211,7 @@ function RootLayout() {
           },
           {
             name: 'position-rules',
-            meta: { label: 'ຕັ້ງຄ່າກົດຕຳແໜ່ງ', icon: <UserSwitchOutlined />, parent: 'settings' },
+            meta: { label: 'ຕັ້ງຄ່າກົດຕຳແໜ່ງ', icon: <UserSwitchOutlined /> },
           },
           {
             name: 'substitute-rule',
