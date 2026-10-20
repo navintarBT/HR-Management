@@ -138,7 +138,7 @@ function RootLayout() {
           {
             name: 'overtime-summary',
             list: '/overtime/summary',
-            meta: { label: 'ຕາຕະລາງສະຫຼຸບ', icon: <BarChartOutlined />, parent: 'overtime' },
+            meta: { label: 'ສະຫຼູບOT', icon: <BarChartOutlined />, parent: 'overtime' },
           },
           {
             name: 'overtime-manage',
