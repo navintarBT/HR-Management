@@ -168,7 +168,7 @@ function RootLayout() {
           {
             name: 'rest-day-history',
             list: '/schedule/rest-day-history',
-            meta: { label: 'ປະຫວັດການປ່ຽນວັນພັກປະຈຳ', icon: <HistoryOutlined />, parent: 'schedule' },
+            meta: { label: 'ປະຫວັດປ່ຽນວັນພັກ', icon: <HistoryOutlined />, parent: 'schedule' },
           },
           {
             name: 'device-users',

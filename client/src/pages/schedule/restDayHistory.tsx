@@ -73,7 +73,7 @@ export const RestDayHistoryPage: React.FC = () => {
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
-    <List title="ປະຫວັດການປ່ຽນວັນພັກປະຈຳ" breadcrumb={false}>
+    <List title="ປະຫວັດປ່ຽນວັນພັກ" breadcrumb={false}>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space wrap>
           <Input.Search
