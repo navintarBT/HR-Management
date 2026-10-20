@@ -158,12 +158,12 @@ function RootLayout() {
           {
             name: 'schedule',
             list: '/schedule',
-            meta: { label: 'ຕາຕະລາງວັນພັກ', icon: <ScheduleOutlined /> },
+            meta: { label: 'ຕັ້ງຄ່າແຜນວຽກ', icon: <ScheduleOutlined /> },
           },
           {
             name: 'schedule-monthly',
             list: '/schedule/monthly',
-            meta: { label: 'ຕາຕະລາງວັນພັກ', icon: <CoffeeOutlined />, parent: 'schedule' },
+            meta: { label: 'ຕັ້ງຄ່າແຜນວຽກ', icon: <CoffeeOutlined />, parent: 'schedule' },
           },
           {
             name: 'rest-day-history',
