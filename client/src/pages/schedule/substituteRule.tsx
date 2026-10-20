@@ -1483,13 +1483,16 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
   );
 };
 
-export const SubstituteRulePage: React.FC = () => {
+// Shared by all three rule pages below — each is its own route now, but all
+// of them show the "ຈຳນວນພະນັກງານ" column against the same active-employee
+// headcount per position.
+function useEmployeesByPosition(): Record<string, number> {
   const { data: employeesData } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
     pagination: { pageSize: 500 },
   });
-  const employeesByPosition = useMemo(() => {
+  return useMemo(() => {
     const map: Record<string, number> = {};
     for (const e of employeesData?.data ?? []) {
       const posId = idOf(e.position);
@@ -1498,10 +1501,13 @@ export const SubstituteRulePage: React.FC = () => {
     }
     return map;
   }, [employeesData?.data]);
+}
+
+export const SubstituteRulePage: React.FC = () => {
+  const employeesByPosition = useEmployeesByPosition();
 
   return (
-    <List title="ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ" breadcrumb={false}>
-      <Typography.Title level={5}>ກົດ "ມາບໍ່ປົກກະຕິ"</Typography.Title>
+    <List title='ກົດ "ມາບໍ່ປົກກະຕິ"' breadcrumb={false}>
       <Typography.Paragraph type="secondary">
         ຄົນທີ່ເປີດໃຊ້ກົດນີ້ (ຈາກຕຳແໜ່ງ ຫຼື ຕັ້ງພິເສດເປັນລາຍບຸກຄົນ) ຈະບໍ່ຖືກຕັດສິນວ່າມາຊ້າ/ຂາດວຽກຈາກເວລາສະແກນ ແລະ ສາມາດໃຊ້ສະຖານະ
         "ມາແທນ" ໃນຕາຕະລາງ ປະຫວັດການສະແກນ ໄດ້ — ການເປີດໃຊ້ຈະລ້າງເວລາເຂົ້າວຽກປົກກະຕິຂອງຄົນນັ້ນອອກໃຫ້ອັດຕະໂນມັດ
@@ -1516,10 +1522,15 @@ export const SubstituteRulePage: React.FC = () => {
         2. ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ
       </Typography.Title>
       <EmployeeRuleTable />
+    </List>
+  );
+};
 
-      <Typography.Title level={5} style={{ marginTop: 40 }}>
-        ຂໍ້ຈຳກັດວັນພັກ
-      </Typography.Title>
+export const RestDayRulePage: React.FC = () => {
+  const employeesByPosition = useEmployeesByPosition();
+
+  return (
+    <List title="ຂໍ້ຈຳກັດວັນພັກ" breadcrumb={false}>
       <Typography.Paragraph type="secondary">
         ຕຳແໜ່ງທີ່ຕັ້ງໄວ້ນີ້ ຈະຫ້າມທຸກຄົນໃນຕຳແໜ່ງນັ້ນເລືອກວັນທີ່ຫ້າມເປັນວັນພັກປະຈຳ ຫຼື ວັນພັກທີ່ຕັ້ງລ່ວງໜ້າ (ບໍ່ກະທົບການລາປ່ວຍ ຫຼື ວັນພັກຮ້ານທີ່ປິດທັງບໍລິສັດ)
       </Typography.Paragraph>
@@ -1535,10 +1546,15 @@ export const SubstituteRulePage: React.FC = () => {
         ຖ້າຕັ້ງໄວ້ທີ່ນີ້ ຈະໃຊ້ຄ່າຂອງຄົນນີ້ແທນຄ່າຂອງຕຳແໜ່ງທັງໝົດ (ບໍ່ແມ່ນລວມກັນ) — ລ້າງຄືນທັງສອງຊ່ອງເພື່ອກັບໄປໃຊ້ຄ່າຈາກຕຳແໜ່ງ
       </Typography.Paragraph>
       <EmployeeRestDayRuleTable />
+    </List>
+  );
+};
 
-      <Typography.Title level={5} style={{ marginTop: 40 }}>
-        ວັນຫ້າມຂາດ
-      </Typography.Title>
+export const NoAbsenceRulePage: React.FC = () => {
+  const employeesByPosition = useEmployeesByPosition();
+
+  return (
+    <List title="ວັນຫ້າມຂາດ" breadcrumb={false}>
       <Typography.Paragraph type="secondary">
         ຕຳແໜ່ງທີ່ຕັ້ງໄວ້ນີ້ ຈະຕັດເງິນໃນລະດັບທີ່ກຳນົດ (X1/X2/X3) ຖ້າຄົນໃນຕຳແໜ່ງນັ້ນຂາດວຽກໃນວັນນີ້ — ແຕ່ຈະບໍ່ມີຜົນຖ້າວັນນັ້ນເປັນວັນພັກຂອງເຂົາຢູ່ແລ້ວ
         (ບໍ່ວ່າວັນພັກປະຈຳ ຫຼື ວັນພັກທີ່ຕັ້ງໄວ້)

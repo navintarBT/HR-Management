@@ -31,6 +31,8 @@ import {
   ToolOutlined,
   DollarOutlined,
   IdcardOutlined,
+  PauseCircleOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 
 import { dataProvider } from './providers/dataProvider';
@@ -58,7 +60,7 @@ import { ShiftSwapListPage } from './pages/schedule/swaps';
 import { BulkShiftEditPage } from './pages/schedule/bulk';
 import { ShiftCategoryListPage } from './pages/schedule/categories';
 import { HolidayListPage } from './pages/schedule/holidays';
-import { SubstituteRulePage } from './pages/schedule/substituteRule';
+import { SubstituteRulePage, RestDayRulePage, NoAbsenceRulePage } from './pages/schedule/substituteRule';
 import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
 import { DeviceUsersPage } from './pages/schedule/deviceUsers';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
@@ -208,9 +210,23 @@ function RootLayout() {
             meta: { label: 'ວັນພັກຮ້ານ', icon: <ShopOutlined />, parent: 'settings' },
           },
           {
+            name: 'position-rules',
+            meta: { label: 'ຕັ້ງຄ່າກົດຕຳແໜ່ງ', icon: <UserSwitchOutlined />, parent: 'settings' },
+          },
+          {
             name: 'substitute-rule',
             list: '/schedule/substitute-rule',
-            meta: { label: 'ຕັ້ງຄ່າກົດຕຳແໜ່ງ', icon: <UserSwitchOutlined />, parent: 'settings' },
+            meta: { label: 'ກົດ "ມາບໍ່ປົກກະຕິ"', icon: <UserSwitchOutlined />, parent: 'position-rules' },
+          },
+          {
+            name: 'rest-day-rule',
+            list: '/schedule/rest-day-rule',
+            meta: { label: 'ຂໍ້ຈຳກັດວັນພັກ', icon: <PauseCircleOutlined />, parent: 'position-rules' },
+          },
+          {
+            name: 'no-absence-rule',
+            list: '/schedule/no-absence-rule',
+            meta: { label: 'ວັນຫ້າມຂາດ', icon: <StopOutlined />, parent: 'position-rules' },
           },
         ]}
         options={{
@@ -281,6 +297,8 @@ export const appRoutes = (
         <Route path="categories" element={<ShiftCategoryListPage />} />
         <Route path="holidays" element={<HolidayListPage />} />
         <Route path="substitute-rule" element={<SubstituteRulePage />} />
+        <Route path="rest-day-rule" element={<RestDayRulePage />} />
+        <Route path="no-absence-rule" element={<NoAbsenceRulePage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
         <Route path="device-users" element={<DeviceUsersPage />} />
       </Route>
