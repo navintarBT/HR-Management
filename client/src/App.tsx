@@ -27,7 +27,6 @@ import {
   ShopOutlined,
   MedicineBoxOutlined,
   UserSwitchOutlined,
-  SettingOutlined,
   ToolOutlined,
   DollarOutlined,
   IdcardOutlined,
@@ -201,13 +200,9 @@ function RootLayout() {
             meta: { label: 'ແກ້ໄຂກະແບບກຸ່ມ', icon: <EditOutlined />, parent: 'shift-settings' },
           },
           {
-            name: 'settings',
-            meta: { label: 'ຕັ້ງຄ່າ', icon: <SettingOutlined /> },
-          },
-          {
             name: 'organization',
             list: '/organization',
-            meta: { label: 'ພະແນກ / ຕໍາແໜ່ງ', icon: <ApartmentOutlined />, parent: 'settings' },
+            meta: { label: 'ຕັ້ງຄ່າພະແນກ / ຕໍາແໜ່ງ', icon: <ApartmentOutlined /> },
           },
           {
             name: 'position-rules',
