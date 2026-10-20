@@ -123,7 +123,7 @@ function RootLayout() {
           {
             name: 'leaves-summary',
             list: '/leaves/summary',
-            meta: { label: 'ສະຫຼູບການລາ', icon: <BarChartOutlined />, parent: 'leaves' },
+            meta: { label: 'ສະຫຼຸບການລາ', icon: <BarChartOutlined />, parent: 'leaves' },
           },
           {
             name: 'leaves-manage',
@@ -138,7 +138,7 @@ function RootLayout() {
           {
             name: 'overtime-summary',
             list: '/overtime/summary',
-            meta: { label: 'ສະຫຼູບOT', icon: <BarChartOutlined />, parent: 'overtime' },
+            meta: { label: 'ສະຫຼຸບOT', icon: <BarChartOutlined />, parent: 'overtime' },
           },
           {
             name: 'overtime-manage',

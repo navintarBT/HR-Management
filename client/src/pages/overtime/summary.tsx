@@ -2,7 +2,7 @@ import { List } from '@refinedev/antd';
 import { OvertimeSummaryGrid } from './index';
 
 export const OvertimeSummaryPage: React.FC = () => (
-  <List title="ສະຫຼູບOT" breadcrumb={false}>
+  <List title="ສະຫຼຸບOT" breadcrumb={false}>
     <OvertimeSummaryGrid />
   </List>
 );
