@@ -16,6 +16,7 @@ export interface Position {
   restDayFallback?: number | null;
   noAbsenceDays?: number[]; // 0 = Sunday .. 6 = Saturday — this position can never be absent on these days
   noAbsenceSeverity?: 'X2' | 'X3' | null; // deduction tier charged for an absence on a noAbsenceDays day
+  ordinaryAbsenceSeverity?: 'X2' | 'X3' | null; // deduction tier for an absence on any OTHER day — independent of noAbsenceDays
 }
 
 export interface EmploymentType {
@@ -65,6 +66,7 @@ export interface Employee {
   restDayFallback?: number | null;
   noAbsenceDays?: number[];
   noAbsenceSeverity?: 'X2' | 'X3' | null;
+  ordinaryAbsenceSeverity?: 'X2' | 'X3' | null;
 }
 
 export interface Identity {

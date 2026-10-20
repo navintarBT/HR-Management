@@ -55,6 +55,9 @@ const employeeSchema = new mongoose.Schema(
     // inherit-when-empty rule as above.
     noAbsenceDays: [{ type: Number, min: 0, max: 6 }],
     noAbsenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
+    // Individual override of Position.ordinaryAbsenceSeverity — same
+    // inherit-when-unset rule as above.
+    ordinaryAbsenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
   },
   { timestamps: true }
 );

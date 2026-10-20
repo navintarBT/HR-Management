@@ -96,7 +96,18 @@ type DayStatus = 'work' | 'rest' | 'leave' | 'future' | 'absent';
 // cell reads as which rate it's billed at, not just "on leave". 'future' is
 // a day that hasn't happened yet — never counted as "work" just because
 // nothing else matched.
-type PrintDayState = 'work' | 'rest' | 'graceLeave' | 'x1Leave' | 'x2Leave' | 'x3Leave' | 'future' | 'out' | 'absent';
+type PrintDayState =
+  | 'work'
+  | 'rest'
+  | 'graceLeave'
+  | 'x1Leave'
+  | 'x2Leave'
+  | 'x3Leave'
+  | 'x2Absent'
+  | 'x3Absent'
+  | 'future'
+  | 'out'
+  | 'absent';
 type SummaryTone = 'work' | 'rest' | 'x1' | 'x2' | 'x3' | 'grace' | 'absent';
 
 const SUMMARY_TONE: Record<SummaryTone, { bg: string; text: string }> = {
@@ -126,6 +137,11 @@ const PRINT_DAY_STYLE: Record<PrintDayState, { bg: string; text: string; label: 
   x1Leave: { bg: SUMMARY_TONE.x1.bg, text: SUMMARY_TONE.x1.text, label: '1' },
   x2Leave: { bg: SUMMARY_TONE.x2.bg, text: SUMMARY_TONE.x2.text, label: '2' },
   x3Leave: { bg: SUMMARY_TONE.x3.bg, text: SUMMARY_TONE.x3.text, label: '3' },
+  // Same severity colors as the leave-deduction tiers above (same meaning —
+  // how hard this hits pay) but a distinct label so it never looks like a
+  // leave record: this is an unexcused absence, not leave.
+  x2Absent: { bg: SUMMARY_TONE.x2.bg, text: SUMMARY_TONE.x2.text, label: 'ຂ2' },
+  x3Absent: { bg: SUMMARY_TONE.x3.bg, text: SUMMARY_TONE.x3.text, label: 'ຂ3' },
   out: { bg: '#fff1f0', text: '#cf1322', label: '-' },
   absent: { bg: SUMMARY_TONE.absent.bg, text: SUMMARY_TONE.absent.text, label: 'ຂ' },
   future: { bg: '#fafafa', text: '#bfbfbf', label: '-' },
@@ -134,9 +150,11 @@ const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
   work: 'ມາເຮັດວຽກ',
   rest: 'ພັກ',
   graceLeave: 'ລາ (ຍັງຟຣີ)',
-  x1Leave: 'ລາ (ຕັດ x1)',
-  x2Leave: 'ລາ (ຕັດ x2)',
-  x3Leave: 'ລາ (ຕັດ x3)',
+  x1Leave: 'ລx1',
+  x2Leave: 'ລx2',
+  x3Leave: 'ລx3',
+  x2Absent: 'ຂX2',
+  x3Absent: 'ຂX3',
   out: 'ລາອອກແລ້ວ',
   absent: 'ຂາດວຽກ',
   future: 'ຍັງບໍ່ເຖິງວັນ',
@@ -471,7 +489,10 @@ const PayrollSummaryGrid: React.FC = () => {
     const noAbsenceDays = emp.noAbsenceDays?.length ? emp.noAbsenceDays : position?.noAbsenceDays ?? [];
     const noAbsenceSeverity = emp.noAbsenceSeverity ?? position?.noAbsenceSeverity;
     if (noAbsenceDays.includes(dow) && noAbsenceSeverity) return noAbsenceSeverity;
-    return null;
+    // Otherwise whatever's configured for an ordinary (non-listed) day — same
+    // precedence/fallback as attendance/logs.tsx's absentSeverity, so this
+    // page and ປະຫວັດການສະແກນ always agree on the tier.
+    return emp.ordinaryAbsenceSeverity ?? position?.ordinaryAbsenceSeverity ?? null;
   };
 
   // Same precedence as classifyDay, but for a 'leave' day it also looks up
@@ -483,8 +504,8 @@ const PayrollSummaryGrid: React.FC = () => {
     const status = classifyDay(emp, dateKey, dow);
     if (status === 'absent') {
       const severity = noAbsenceSeverityFor(emp, dow);
-      if (severity === 'X2') return 'x2Leave';
-      if (severity === 'X3') return 'x3Leave';
+      if (severity === 'X2') return 'x2Absent';
+      if (severity === 'X3') return 'x3Absent';
       return 'absent';
     }
     if (status !== 'leave') return status;

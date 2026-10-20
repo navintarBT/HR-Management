@@ -13,24 +13,23 @@ function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
 
-// An unexcused absence (no leave covering the day) is worse when it lands on
-// a day the employee's position isn't even allowed to schedule as a rest day
-// (Position.restrictedRestDays, ตั้งค่ากฎตำแหน่ง) — the business specifically
-// can't afford anyone missing that day, so it's flagged X3 instead of the
-// ordinary X2.
-function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' {
+// An unexcused absence (no leave covering the day) is charged a deduction
+// tier only when one's actually configured — ວັນຫ້າມຂາດ (ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ)
+// for the specific days chosen there, ordinaryAbsenceSeverity for any other
+// day. null (no tier at all) when neither is set for this employee/position —
+// no hardcoded default, unlike before this was configurable.
+function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' | null {
   const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
   const dow = day.day();
   // The employee's own override (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces the
-  // position's noAbsenceDays/restrictedRestDays when set — same precedence
-  // as the server's mergeRestDayRule in restDayRules.js.
+  // position's noAbsenceDays/noAbsenceSeverity when set — same precedence as
+  // the server's mergeRestDayRule in restDayRules.js.
   const noAbsenceDays = emp.noAbsenceDays?.length ? emp.noAbsenceDays : position?.noAbsenceDays ?? [];
   const noAbsenceSeverity = emp.noAbsenceSeverity ?? position?.noAbsenceSeverity;
-  // An explicit ວັນຫ້າມຂາດ severity (ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ) wins when set — it's
-  // the more deliberately configured value, and the only way to reach X1.
+  // An explicit ວັນຫ້າມຂາດ severity wins when set — it's the more
+  // deliberately configured value for this specific day.
   if (noAbsenceDays.includes(dow) && noAbsenceSeverity) return noAbsenceSeverity;
-  const restrictedRestDays = emp.restrictedRestDays?.length ? emp.restrictedRestDays : position?.restrictedRestDays ?? [];
-  return restrictedRestDays.includes(dow) ? 'X3' : 'X2';
+  return emp.ordinaryAbsenceSeverity ?? position?.ordinaryAbsenceSeverity ?? null;
 }
 
 const { RangePicker } = DatePicker;
@@ -549,11 +548,12 @@ const AttendanceSummaryGrid: React.FC = () => {
                 const style = row ? CELL_STYLE[row.status] : undefined;
                 if (style) {
                   const time = timeText(row!);
+                  const severity = row!.status === 'absent' ? absentSeverity(emp, day) : null;
                   const label =
                     row!.status === 'late'
                       ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
                       : row!.status === 'absent'
-                        ? `${style.label} (${absentSeverity(emp, day)})${row!.disciplinaryNote ? ' ⚠' : ''}`
+                        ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
                         : `${style.label}${row!.autoFilledReason ? ' ↺' : ''}`;
                   const cellTitle = row!.disciplinaryNote
                     ? `ລົງໂທດ: ${row!.disciplinaryNote}`

@@ -940,13 +940,30 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
     );
   };
 
-  // Same reasoning as RestDayRuleTable's removeRestriction — clears both
+  // Independent of noAbsenceDays/noAbsenceSeverity above — this is what gets
+  // charged for an absence on any day NOT in that list. Both pages (ປະຫວັດການ
+  // ສະແກນ and ສະຫຼຸບເງິນເດືອນ) read this instead of the hardcoded X2 default
+  // they used to assume.
+  const setOrdinaryAbsenceSeverity = (position: Position, severity: 'X2' | 'X3' | undefined) => {
+    updatePosition(
+      { resource: 'positions', id: position._id, values: { ordinaryAbsenceSeverity: severity ?? null } },
+      {
+        onSuccess: () => {
+          notify?.({ type: 'success', message: `ບັນທຶກລະດັບການຕັດເງິນສຳລັບມື້ທຳມະດາຂອງ "${position.name}" ແລ້ວ` });
+          invalidate({ resource: 'positions', invalidates: ['list'] });
+          refetch();
+        },
+      }
+    );
+  };
+
+  // Same reasoning as RestDayRuleTable's removeRestriction — clears all three
   // fields together so the position drops out of `positions` below and
   // reappears in the "ສ້າງ" picker (and, now, back in RestDayRuleTable's own
   // picker too, since that one excludes positions configured here).
   const removeNoAbsence = (position: Position) => {
     updatePosition(
-      { resource: 'positions', id: position._id, values: { noAbsenceDays: [], noAbsenceSeverity: null } },
+      { resource: 'positions', id: position._id, values: { noAbsenceDays: [], noAbsenceSeverity: null, ordinaryAbsenceSeverity: null } },
       {
         onSuccess: () => {
           notify?.({ type: 'success', message: `ລຶບວັນຫ້າມຂາດຂອງ "${position.name}" ແລ້ວ` });
@@ -1101,6 +1118,20 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
           }
         />
         <Table.Column
+          title="ລະດັບການຕັດເງິນສຳລັບມື້ອື່ນໆ (ມື້ທຳມະດາ)"
+          width={200}
+          render={(_, position: Position) => (
+            <Select
+              allowClear
+              style={{ width: '100%', minWidth: 160 }}
+              placeholder="ບໍ່ມີ — ຂາດມື້ທຳມະດາບໍ່ຕັດເງິນ"
+              options={SEVERITY_OPTIONS}
+              value={position.ordinaryAbsenceSeverity ?? undefined}
+              onChange={(v: 'X2' | 'X3' | undefined) => setOrdinaryAbsenceSeverity(position, v)}
+            />
+          )}
+        />
+        <Table.Column
           title="ຈັດການ"
           width={70}
           align="center"
@@ -1236,7 +1267,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
 
   const hasFilter = !!(search || departmentFilter || positionFilter);
   const employees = useMemo(() => {
-    if (!hasFilter) return allEmployees.filter((e) => (e.noAbsenceDays ?? []).length > 0);
+    if (!hasFilter) return allEmployees.filter((e) => (e.noAbsenceDays ?? []).length > 0 || e.ordinaryAbsenceSeverity);
     return allEmployees.filter((e) => {
       if (search) {
         const q = search.trim().toLowerCase();
@@ -1278,9 +1309,21 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
       }
     );
   };
+  const setOrdinarySeverity = (employee: Employee, severity: 'X2' | 'X3' | undefined) => {
+    updateEmployee(
+      { resource: 'employees', id: employee._id, values: { ordinaryAbsenceSeverity: severity ?? null } },
+      {
+        onSuccess: () => {
+          notify?.({ type: 'success', message: `ບັນທຶກລະດັບການຕັດເງິນສຳລັບມື້ທຳມະດາຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ` });
+          invalidate({ resource: 'employees', invalidates: ['list'] });
+          refetch();
+        },
+      }
+    );
+  };
   const clearOverride = (employee: Employee) => {
     updateEmployee(
-      { resource: 'employees', id: employee._id, values: { noAbsenceDays: [], noAbsenceSeverity: null } },
+      { resource: 'employees', id: employee._id, values: { noAbsenceDays: [], noAbsenceSeverity: null, ordinaryAbsenceSeverity: null } },
       {
         onSuccess: () => {
           notify?.({ type: 'success', message: `ລຶບການຕັ້ງພິເສດຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ — ກັບໄປໃຊ້ຄ່າຈາກຕຳແໜ່ງ` });
@@ -1389,6 +1432,21 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
           )}
         />
         <Table.Column
+          title="ລະດັບການຕັດເງິນສຳລັບມື້ອື່ນໆ (ມື້ທຳມະດາ)"
+          width={200}
+          render={(_, emp: Employee) => (
+            <Select
+              size="small"
+              allowClear
+              style={{ width: '100%', minWidth: 160 }}
+              placeholder="ໃຊ້ຄ່າຈາກຕຳແໜ່ງ"
+              options={NO_ABSENCE_SEVERITY_OPTIONS}
+              value={emp.ordinaryAbsenceSeverity ?? undefined}
+              onChange={(v: 'X2' | 'X3' | undefined) => setOrdinarySeverity(emp, v)}
+            />
+          )}
+        />
+        <Table.Column
           title="ຄ່າທີ່ໃຊ້ຈິງ"
           width={200}
           render={(_, emp: Employee) => {
@@ -1407,7 +1465,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
           width={70}
           align="center"
           render={(_, emp: Employee) =>
-            (emp.noAbsenceDays ?? []).length === 0 && !emp.noAbsenceSeverity ? null : (
+            (emp.noAbsenceDays ?? []).length === 0 && !emp.noAbsenceSeverity && !emp.ordinaryAbsenceSeverity ? null : (
               <Popconfirm
                 title="ລຶບການຕັ້ງພິເສດນີ້?"
                 description={`"${emp.firstName} ${emp.lastName}" ຈະກັບໄປໃຊ້ຄ່າຈາກຕຳແໜ່ງ`}

@@ -37,6 +37,12 @@ const positionSchema = new mongoose.Schema(
     // so noAbsenceDays has no effect yet even with days already picked
     // (same "configured but incomplete" safety as restDayFallback).
     noAbsenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
+    // Deduction tier for an absence on any OTHER day — one NOT in
+    // noAbsenceDays. Independent of noAbsenceDays/noAbsenceSeverity (no
+    // "must set both" pairing — this applies with or without that list
+    // configured at all). null = not set, so an ordinary-day absence still
+    // isn't charged anything here, same as before this field existed.
+    ordinaryAbsenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
   },
   { timestamps: true }
 );
