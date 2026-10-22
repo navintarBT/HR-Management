@@ -145,6 +145,7 @@ export interface ScheduledPositionSwap {
   effectiveDate: string; // YYYY-MM-DD
   status: ScheduledPositionSwapStatus;
   createdBy?: Employee | string;
+  createdByEmail?: string;
   appliedAt?: string;
   movedFromA?: number;
   movedFromB?: number;

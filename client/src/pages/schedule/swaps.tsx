@@ -445,13 +445,23 @@ export const ShiftSwapListPage: React.FC = () => {
               title="ຈຳນວນທີ່ຍ້າຍ"
               align="center"
               render={(_, r: ScheduledPositionSwap) =>
-                r.status === 'applied' ? (r.movedFromA ?? 0) + (r.movedFromB ?? 0) : '-'
+                r.status === 'applied' ? (
+                  (r.movedFromA ?? 0) + (r.movedFromB ?? 0)
+                ) : r.status === 'pending' ? (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    ຮູ້ຕອນສະຫຼັບ
+                  </Typography.Text>
+                ) : (
+                  '-'
+                )
               }
             />
             <Table.Column
               title="ຜູ້ສ້າງ"
               render={(_, r: ScheduledPositionSwap) =>
-                typeof r.createdBy === 'object' && r.createdBy ? `${r.createdBy.firstName} ${r.createdBy.lastName}` : '-'
+                typeof r.createdBy === 'object' && r.createdBy
+                  ? `${r.createdBy.firstName ?? ''} ${r.createdBy.lastName ?? ''}`.trim()
+                  : r.createdByEmail || '-'
               }
             />
             <Table.Column

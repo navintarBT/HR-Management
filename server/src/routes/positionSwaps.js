@@ -35,6 +35,7 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
       positionB,
       effectiveDate,
       createdBy: req.user.employeeId ? req.user.employeeId._id : undefined,
+      createdByEmail: req.user.email,
       status: isImmediate ? 'applied' : 'pending',
       appliedAt: isImmediate ? new Date() : undefined,
     });
