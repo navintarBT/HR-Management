@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useSelect } from '@refinedev/antd';
 import { useList, useCreate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
 import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker } from 'antd';
-import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Department, Employee, Position, Shift } from '../../types';
 
@@ -40,6 +40,19 @@ function hoursBetween(start?: string, end?: string): number {
   return minutes / 60;
 }
 
+const PRINT_TH: CSSProperties = {
+  border: '1px solid #999',
+  padding: '3px 5px',
+  background: '#f0f0f0',
+  textAlign: 'center',
+  fontWeight: 600,
+};
+const PRINT_TD: CSSProperties = {
+  border: '1px solid #ccc',
+  padding: '3px 5px',
+  textAlign: 'center',
+};
+
 // Monthly grid of ການເຮັດແທນ, same month-at-a-time shape as ຕາຕະລາງວັນພັກ: one
 // row per employee covering someone this month, one column per day. Each
 // cell lists that day's covers with who they're covering, the covered
@@ -69,12 +82,13 @@ export const ScheduleCoversGrid: React.FC = () => {
   const [departmentFilter, setDepartmentFilter] = useState<string>();
   const [positionFilter, setPositionFilter] = useState<string>();
 
-  const { selectProps: departmentSelect } = useSelect<Department>({
+  const { selectProps: departmentSelect, query: departmentQuery } = useSelect<Department>({
     resource: 'departments',
     optionLabel: 'name',
     optionValue: '_id',
     pagination: { pageSize: 200, mode: 'server' },
   });
+  const allDepartments = departmentQuery?.data?.data ?? [];
   const { selectProps: positionSelect, query: positionQuery } = useSelect<Position>({
     resource: 'positions',
     optionLabel: 'name',
@@ -120,6 +134,23 @@ export const ScheduleCoversGrid: React.FC = () => {
   }, [covers]);
 
   const totalHours = covers.reduce((sum, s) => sum + hoursBetween(s.startTime, s.endTime), 0);
+
+  // Printed as a flat date-ordered list rather than the on-screen month grid —
+  // 31 day columns of full cover details can't fit legibly across one A4 page.
+  // Reads the same filtered `covers`, so whatever filter is set on screen is
+  // exactly what prints.
+  const printRows = useMemo(
+    () =>
+      [...covers].sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) ||
+          (a.startTime ?? '').localeCompare(b.startTime ?? '') ||
+          codeOf(a.employee as Employee).localeCompare(codeOf(b.employee as Employee))
+      ),
+    [covers]
+  );
+  const departmentFilterName = allDepartments.find((d) => d._id === departmentFilter)?.name;
+  const positionFilterName = allPositions.find((p) => p._id === positionFilter)?.name;
 
   const { mutate: deleteShift } = useDelete();
   const invalidate = useInvalidate();
@@ -277,7 +308,21 @@ export const ScheduleCoversGrid: React.FC = () => {
 
   return (
     <div>
-      <Space wrap style={{ marginBottom: 16 }}>
+      <style>{`
+        .covers-print-only { display: none; }
+        .covers-print-table { display: none; }
+        @media print {
+          @page { size: A4 landscape; margin: 8mm; }
+          .covers-no-print { display: none !important; }
+          .covers-print-only { display: flex !important; }
+          .covers-print-table { display: table !important; }
+          .covers-print-table, .covers-print-table * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          .covers-print-table tr { page-break-inside: avoid; }
+          body:has(.covers-print-table) .ant-layout-header,
+          body:has(.covers-print-table) .ant-page-header-heading { display: none !important; }
+        }
+      `}</style>
+      <Space wrap className="covers-no-print" style={{ marginBottom: 16 }}>
         <Button icon={<LeftOutlined />} onClick={() => setMonthStart(monthStart.subtract(1, 'month'))} />
         <Typography.Text strong>{monthStart.format('MMMM YYYY')}</Typography.Text>
         <Button icon={<RightOutlined />} onClick={() => setMonthStart(dayjs().startOf('month'))}>
@@ -309,9 +354,12 @@ export const ScheduleCoversGrid: React.FC = () => {
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
           ມອບໝາຍການເຮັດແທນ
         </Button>
+        <Button icon={<PrinterOutlined />} onClick={() => window.print()} disabled={covers.length === 0}>
+          ພິມ / PDF
+        </Button>
       </Space>
 
-      <Space size={16} wrap style={{ marginBottom: 16 }}>
+      <Space size={16} wrap className="covers-no-print" style={{ marginBottom: 16 }}>
         <Card size="small">
           <Statistic title={`ຈຳນວນການເຮັດແທນ${periodText}`} value={covers.length} />
         </Card>
@@ -320,7 +368,54 @@ export const ScheduleCoversGrid: React.FC = () => {
         </Card>
       </Space>
 
+      <div className="covers-print-only" style={{ flexDirection: 'column', gap: 2, marginBottom: 8 }}>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>ການເຮັດແທນ — ລາຍລະອຽດ</div>
+        <div style={{ fontSize: 12 }}>
+          ເດືອນ {monthStart.format('MM/YYYY')}
+          {departmentFilterName ? ` · ພະແນກ: ${departmentFilterName}` : ''}
+          {positionFilterName ? ` · ຕຳແໜ່ງ: ${positionFilterName}` : ''}
+        </div>
+        <div style={{ fontSize: 12 }}>
+          ຈຳນວນການເຮັດແທນ: {covers.length} ລາຍການ · ລວມຊົ່ວໂມງ: {totalHours.toFixed(2)} ຊມ.
+        </div>
+      </div>
+      <table className="covers-print-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+        <thead>
+          <tr>
+            <th style={{ ...PRINT_TH, width: 28 }}>#</th>
+            <th style={{ ...PRINT_TH, width: 80 }}>ວັນທີ່</th>
+            <th style={PRINT_TH}>ຜູ້ເຮັດແທນ</th>
+            <th style={PRINT_TH}>ແທນ</th>
+            <th style={PRINT_TH}>ພະແນກ</th>
+            <th style={PRINT_TH}>ຕຳແໜ່ງ</th>
+            <th style={{ ...PRINT_TH, width: 90 }}>ເວລາ</th>
+            <th style={{ ...PRINT_TH, width: 50 }}>ຊມ.</th>
+          </tr>
+        </thead>
+        <tbody>
+          {printRows.map((s, i) => (
+            <tr key={s._id}>
+              <td style={PRINT_TD}>{i + 1}</td>
+              <td style={PRINT_TD}>{dayjs(s.date).format('DD/MM/YYYY')}</td>
+              <td style={{ ...PRINT_TD, textAlign: 'left' }}>
+                {codeOf(s.employee as Employee)} {fullName(s.employee as Employee)}
+              </td>
+              <td style={{ ...PRINT_TD, textAlign: 'left' }}>
+                {codeOf(s.coveringFor as Employee)} {fullName(s.coveringFor as Employee)}
+              </td>
+              <td style={PRINT_TD}>{deptOf(s.coveringFor as Employee)}</td>
+              <td style={PRINT_TD}>{s.position && typeof s.position === 'object' ? s.position.name : '-'}</td>
+              <td style={PRINT_TD}>
+                {s.startTime}-{s.endTime}
+              </td>
+              <td style={PRINT_TD}>{hoursBetween(s.startTime, s.endTime).toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
       <Table
+        className="covers-no-print"
         dataSource={byCoverer}
         rowKey={(row) => row.employee._id}
         loading={isLoading}
