@@ -219,9 +219,36 @@ export const ShiftSwapListPage: React.FC = () => {
 
   const [historySearch, setHistorySearch] = useState('');
   const [historyStatusFilter, setHistoryStatusFilter] = useState<string>();
+  const [historyRange, setHistoryRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [historyDeptFilter, setHistoryDeptFilter] = useState<string>();
+  const [historyPosFilter, setHistoryPosFilter] = useState<string>();
+  const { selectProps: historyDeptSelect } = useSelect<Department>({
+    resource: 'departments',
+    optionLabel: 'name',
+    optionValue: '_id',
+    pagination: { pageSize: 200, mode: 'server' },
+  });
+  const historyPosOptions = useMemo(
+    () =>
+      allPositionsForSwap
+        .filter((p) => !historyDeptFilter || (p.departments ?? []).some((d) => idOf(d) === historyDeptFilter))
+        .map((p) => ({ label: p.name, value: p._id })),
+    [allPositionsForSwap, historyDeptFilter]
+  );
+
+  // A swap always involves two positions — department/position filters match
+  // when EITHER side (A or B) matches, so a row shows up under both of the
+  // departments/positions it touches.
   const filteredSwaps = useMemo(() => {
+    const fromKey = historyRange?.[0].format('YYYY-MM-DD');
+    const toKey = historyRange?.[1].format('YYYY-MM-DD');
+    const inDept = (pos: ScheduledPositionSwap['positionA']) =>
+      !!pos && typeof pos === 'object' && (pos.departments ?? []).some((d) => idOf(d) === historyDeptFilter);
     return scheduledSwaps.filter((s) => {
       if (historyStatusFilter && s.status !== historyStatusFilter) return false;
+      if (fromKey && toKey && (s.effectiveDate < fromKey || s.effectiveDate > toKey)) return false;
+      if (historyDeptFilter && !inDept(s.positionA) && !inDept(s.positionB)) return false;
+      if (historyPosFilter && idOf(s.positionA) !== historyPosFilter && idOf(s.positionB) !== historyPosFilter) return false;
       if (historySearch) {
         const q = historySearch.trim().toLowerCase();
         const nameA = typeof s.positionA === 'object' ? s.positionA.name.toLowerCase() : '';
@@ -230,7 +257,7 @@ export const ShiftSwapListPage: React.FC = () => {
       }
       return true;
     });
-  }, [scheduledSwaps, historySearch, historyStatusFilter]);
+  }, [scheduledSwaps, historySearch, historyStatusFilter, historyRange, historyDeptFilter, historyPosFilter]);
   const pendingCount = scheduledSwaps.filter((s) => s.status === 'pending').length;
 
   return (
@@ -409,6 +436,37 @@ export const ShiftSwapListPage: React.FC = () => {
               prefix={<SearchOutlined />}
               onSearch={(v) => setHistorySearch(v)}
               onChange={(e) => !e.target.value && setHistorySearch('')}
+            />
+            <DatePicker.RangePicker
+              format="DD/MM/YYYY"
+              placeholder={['ວັນທີ່ມີຜົນ ຈາກ', 'ຫາ']}
+              value={historyRange}
+              onChange={(v) => setHistoryRange(v && v[0] && v[1] ? [v[0], v[1]] : null)}
+            />
+            <Select
+              {...historyDeptSelect}
+              placeholder="ກອງຕາມພະແນກ"
+              allowClear
+              style={{ width: 180 }}
+              value={historyDeptFilter}
+              onChange={(v: any) => {
+                setHistoryDeptFilter(v);
+                const stillValid =
+                  !v ||
+                  !historyPosFilter ||
+                  allPositionsForSwap.find((p) => p._id === historyPosFilter)?.departments?.some((d) => idOf(d) === v);
+                if (!stillValid) setHistoryPosFilter(undefined);
+              }}
+            />
+            <Select
+              options={historyPosOptions}
+              showSearch
+              filterOption={filterByLabel}
+              placeholder="ກອງຕາມຕຳແໜ່ງ"
+              allowClear
+              style={{ width: 200 }}
+              value={historyPosFilter}
+              onChange={(v: any) => setHistoryPosFilter(v)}
             />
             <Select
               placeholder="ກອງຕາມສະຖານະ"
