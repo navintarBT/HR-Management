@@ -378,6 +378,34 @@ const PayrollSummaryGrid: React.FC = () => {
     return set;
   }, [absentDailyData?.data]);
 
+  // Today's and last night's outcome usually isn't known yet: an overnight
+  // shift that started yesterday is still running this morning, and the
+  // automatic ຂາດວຽກ sweep only judges a day once its scan window has closed
+  // (markAbsentForMissedScans). So on those two dates, a day with no
+  // AttendanceDaily row at all yet stays blank instead of presumed worked.
+  const todayKey = dayjs().format('YYYY-MM-DD');
+  const yesterdayKey = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
+  const recentFrom = rangeStartKey > yesterdayKey ? rangeStartKey : yesterdayKey;
+  const recentTo = rangeEndKey < todayKey ? rangeEndKey : todayKey;
+  const recentEnabled = recentFrom <= recentTo;
+  const { data: recentDailyData, isLoading: recentLoading } = useList<AttendanceDaily>({
+    resource: 'attendance-daily',
+    filters: [
+      { field: 'date', operator: 'gte', value: recentFrom },
+      { field: 'date', operator: 'lte', value: recentTo },
+    ],
+    pagination: { pageSize: 5000 },
+    queryOptions: { enabled: recentEnabled },
+  });
+  const recentDailySet = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of recentDailyData?.data ?? []) {
+      if (!d.employee) continue;
+      set.add(`${idOf(d.employee)}_${d.date}`);
+    }
+    return set;
+  }, [recentDailyData?.data]);
+
   const scheduledSet = useMemo(() => {
     const set = new Set<string>();
     for (const s of scheduledShiftsData?.data ?? []) {
@@ -460,8 +488,11 @@ const PayrollSummaryGrid: React.FC = () => {
     // already matched above (and are shown as such even when the date is in
     // the future, since those ARE known in advance). Only the "presumably
     // just a plain work day" guess is wrong for a day that hasn't happened
-    // yet — there's nothing to presume, so it stays blank instead.
-    return dayjs(dateKey).isAfter(dayjs(), 'day') ? 'future' : 'work';
+    // yet — there's nothing to presume, so it stays blank instead. Same for
+    // today/last night while nothing has been recorded yet (recentDailySet).
+    if (dayjs(dateKey).isAfter(dayjs(), 'day')) return 'future';
+    if (dateKey >= yesterdayKey && !recentDailySet.has(key)) return 'future';
+    return 'work';
   };
 
   // A day the schedule says was a work day, but ປະຫວັດການສະແກນ's own
@@ -580,7 +611,7 @@ const PayrollSummaryGrid: React.FC = () => {
         otDays,
       };
     });
-  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
   // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
   // column) for whoever maintains payroll to see and address. Fetched in bulk
@@ -716,7 +747,8 @@ const PayrollSummaryGrid: React.FC = () => {
   };
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
-  const loading = employeesLoading || scheduledLoading || restLoading || swappedLoading || absentLoading || leavesLoading || overtimeLoading;
+  const loading =
+    employeesLoading || scheduledLoading || restLoading || swappedLoading || absentLoading || (recentEnabled && recentLoading) || leavesLoading || overtimeLoading;
 
   const handlePrintClick = () => window.print();
 
@@ -1067,7 +1099,7 @@ const PayrollSummaryGrid: React.FC = () => {
       </Table>
       </div>
         ),
-        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, leaves, loading, offsetHeader]
+        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, leaves, loading, offsetHeader]
       )}
 
       <div className="payroll-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
@@ -1191,7 +1223,7 @@ const PayrollSummaryGrid: React.FC = () => {
         </tbody>
       </table>
         ),
-        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, leaves, printTitle, printTotalColumns, printDayColWidth]
+        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
       )}
 
       <div className="payroll-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>
