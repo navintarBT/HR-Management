@@ -1907,7 +1907,7 @@ export const SubstituteRulePage: React.FC = () => {
   const employeesByPosition = useEmployeesByPosition();
 
   return (
-    <List title='ກົດ "ມາບໍ່ປົກກະຕິ"' breadcrumb={false}>
+    <List title='ມາບໍ່ປົກກະຕິ' breadcrumb={false}>
       <Typography.Paragraph type="secondary">
         ຄົນທີ່ເປີດໃຊ້ກົດນີ້ (ຈາກຕຳແໜ່ງ ຫຼື ຕັ້ງພິເສດເປັນລາຍບຸກຄົນ) ຈະບໍ່ຖືກຕັດສິນວ່າມາຊ້າ/ຂາດວຽກຈາກເວລາສະແກນ ແລະ ສາມາດໃຊ້ສະຖານະ
         "ມາແທນ" ໃນຕາຕະລາງ ປະຫວັດການສະແກນ ໄດ້ — ການເປີດໃຊ້ຈະລ້າງເວລາເຂົ້າວຽກປົກກະຕິຂອງຄົນນັ້ນອອກໃຫ້ອັດຕະໂນມັດ
@@ -1957,7 +1957,7 @@ export const NoAbsenceRulePage: React.FC = () => {
     <List title="ວັນຫ້າມຂາດ" breadcrumb={false}>
       <Typography.Title level={5}>ວັນຫ້າມຂາດ (ເຈາະຈົງວັນ)</Typography.Title>
       <Typography.Paragraph type="secondary">
-        ຕຳແໜ່ງທີ່ຕັ້ງໄວ້ນີ້ ຈະຕັດເງິນໃນລະດັບທີ່ກຳນົດ (X1/X2/X3) ຖ້າຄົນໃນຕຳແໜ່ງນັ້ນຂາດວຽກໃນວັນນີ້ — ແຕ່ຈະບໍ່ມີຜົນຖ້າວັນນັ້ນເປັນວັນພັກຂອງເຂົາຢູ່ແລ້ວ
+        ຕຳແໜ່ງທີ່ຕັ້ງໄວ້ນີ້ ຈະຕັດເງິນໃນລະດັບທີ່ກຳນົດ (X2/X3) ຖ້າຄົນໃນຕຳແໜ່ງນັ້ນຂາດວຽກໃນວັນນີ້ — ແຕ່ຈະບໍ່ມີຜົນຖ້າວັນນັ້ນເປັນວັນພັກຂອງເຂົາຢູ່ແລ້ວ
         (ບໍ່ວ່າວັນພັກປະຈຳ ຫຼື ວັນພັກທີ່ຕັ້ງໄວ້)
       </Typography.Paragraph>
       <Typography.Title level={5} style={{ marginTop: 8 }}>

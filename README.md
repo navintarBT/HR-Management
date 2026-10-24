@@ -62,7 +62,7 @@ npm run create-user -- <email> <password> <role>   # role: admin | manager | emp
 
 1. **Auth + ສິດທິ**: login ດ້ວຍ JWT, 3 role (admin/HR, manager, employee)
 2. **ຈັດການພະນັກງານ**: CRUD ເຕັມຮູບແບບ ຄົ້ນຫາ/ກັ່ນຕອງ/ແບ່ງໜ້າ
-3. **ພະແນກ/ຕໍາແໜ່ງງານ**: CRUD ຜ່ານໜ້າ "ພະແນກ / ຕໍາແໜ່ງ"
+3. **ພະແນກ/ຕໍາແໜ່ງວຽກ**: CRUD ຜ່ານໜ້າ "ພະແນກ / ຕໍາແໜ່ງ"
 4. **ລົງເວລາ (Attendance)**:
    - `POST /api/attendance/push` — endpoint ຮັບຂໍ້ມູນຈາກເຄື່ອງສະແກນ (payload ແບບ JSON: `{ deviceId, userId, timestamp }`)
    - ປຸ່ມ **"ຈໍາລອງການສະແກນນິ້ວ"** ຢູ່ໜ້າ UI ສໍາລັບທົດສອບໂດຍບໍ່ຕ້ອງມີເຄື່ອງແທ້

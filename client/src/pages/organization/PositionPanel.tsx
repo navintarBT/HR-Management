@@ -186,7 +186,7 @@ export const PositionPanel: React.FC = () => {
         </Space>
         <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Typography.Text type="secondary">
-            {selectedRowKeys.length > 0 ? `ເລືອກໄວ້ ${selectedRowKeys.length} ຕໍາແໜ່ງ` : 'ຈັດການລາຍຊື່ຕໍາແໜ່ງງານທັງໝົດ'}
+            {selectedRowKeys.length > 0 ? `ເລືອກໄວ້ ${selectedRowKeys.length} ຕໍາແໜ່ງ` : 'ຈັດການລາຍຊື່ຕໍາແໜ່ງວຽກທັງໝົດ'}
           </Typography.Text>
           <Space>
             {isAdmin && selectedRowKeys.length > 0 && (

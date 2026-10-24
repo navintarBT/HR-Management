@@ -668,7 +668,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
     );
   };
 
-  // Only offered on employees/positions flagged for it (see ຕັ້ງຄ່າກົດ "ມາບໍ່ປົກກະຕິ")
+  // Only offered on employees/positions flagged for it (see ຕັ້ງຄ່າມາບໍ່ປົກກະຕິ)
   // — someone else covers the shift instead, so this employee never scans.
   // Triggered here on the schedule since that's where a queued shift already
   // is; the result then just shows up on ປະຫວັດການສະແກນ (attendance) as usual.

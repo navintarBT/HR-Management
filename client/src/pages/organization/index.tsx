@@ -24,7 +24,7 @@ export const OrganizationPage: React.FC = () => {
         tabBarStyle={{ position: 'sticky', top: headingBottom, zIndex: 9, background: 'var(--app-surface-bg)', margin: 0 }}
         items={[
           { key: 'departments', label: `ພະແນກ (${departmentCount})`, children: <DepartmentPanel /> },
-          { key: 'positions', label: `ຕໍາແໜ່ງງານ (${positionCount})`, children: <PositionPanel /> },
+          { key: 'positions', label: `ຕໍາແໜ່ງວຽກ (${positionCount})`, children: <PositionPanel /> },
           { key: 'employment-types', label: `ປະເພດການຈ້າງ (${employmentTypeCount})`, children: <EmploymentTypePanel /> },
         ]}
       />

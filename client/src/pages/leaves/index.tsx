@@ -519,7 +519,7 @@ export const LeaveDetailList: React.FC = () => {
           }}
         />
         <Table.Column
-          title="ເລີ່ມເຮັດວຽກຕັ້ງແຕ່"
+          title="ມື້ເລີ່ມວຽກ"
           width={140}
           render={(_, record: Leave) => {
             const hireDate = typeof record.employee === 'object' ? record.employee?.hireDate : undefined;
@@ -527,7 +527,7 @@ export const LeaveDetailList: React.FC = () => {
           }}
         />
         <Table.Column
-          title="ເຮັດວຽກໄດ້ຈັກມື້ແລ້ວ"
+          title="ອາຍຸການເຮັດວຽກ"
           width={140}
           render={(_, record: Leave) => {
             const hireDate = typeof record.employee === 'object' ? record.employee?.hireDate : undefined;

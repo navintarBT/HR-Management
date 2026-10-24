@@ -211,7 +211,7 @@ function RootLayout() {
           {
             name: 'substitute-rule',
             list: '/schedule/substitute-rule',
-            meta: { label: 'ກົດ "ມາບໍ່ປົກກະຕິ"', icon: <UserSwitchOutlined />, parent: 'position-rules' },
+            meta: { label: 'ມາບໍ່ປົກກະຕິ', icon: <UserSwitchOutlined />, parent: 'position-rules' },
           },
           {
             name: 'rest-day-rule',

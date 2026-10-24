@@ -220,7 +220,7 @@ const MedicineExpenseListPage: React.FC = () => {
           }}
         />
         <Table.Column
-          title="ອາຍຸງານ"
+          title="ອາຍຸການເຮັດວຽກ"
           width={130}
           render={(_, record: MedicineExpense) => {
             const hireDate = typeof record.employee === 'object' ? record.employee?.hireDate : undefined;
