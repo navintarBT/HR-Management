@@ -17,8 +17,10 @@ const CategoryFormItems: React.FC = () => (
     <Form.Item label="ຊື່ໝວດໝູ່ (ບໍ່ບັງຄັບ)" name="name">
       <Input placeholder="ຕົວຢ່າງ: ກະທ່ຽງ" />
     </Form.Item>
+    {/* order={false}: antd's RangePicker re-sorts the two times by default, which
+        silently turned an overnight 20:00-08:00 into 08:00-20:00. */}
     <Form.Item label="ຊ່ວງເວລາ" name="time" rules={[{ required: true, message: 'ກະລຸນາເລືອກຊ່ວງເວລາ' }]}>
-      <TimeRangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} />
+      <TimeRangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} order={false} />
     </Form.Item>
     <Form.Item label="ສີ (ບໍ່ບັງຄັບ)" name="color">
       <ColorPicker format="hex" />

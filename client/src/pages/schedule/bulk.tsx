@@ -347,6 +347,7 @@ export const BulkShiftEditPage: React.FC = () => {
             <TimeRangePicker
               style={{ width: '100%' }}
               format="HH:mm"
+              order={false}
               value={moveTime}
               onChange={(v) => setMoveTime(v as [Dayjs, Dayjs] | null)}
               allowClear

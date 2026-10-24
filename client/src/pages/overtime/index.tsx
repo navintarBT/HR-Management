@@ -507,6 +507,7 @@ export const OvertimeDetailList: React.FC = () => {
                 <TimeRangePicker
                   style={{ width: '100%' }}
                   format="HH:mm"
+                  order={false}
                   onChange={(dates) => {
                     formProps.form?.setFieldsValue({
                       startTime: dates?.[0]?.format('HH:mm'),
@@ -556,6 +557,7 @@ export const OvertimeDetailList: React.FC = () => {
             <TimeRangePicker
               style={{ width: '100%' }}
               format="HH:mm"
+              order={false}
               onChange={(dates) => {
                 editFormProps.form?.setFieldsValue({
                   startTime: dates?.[0]?.format('HH:mm'),

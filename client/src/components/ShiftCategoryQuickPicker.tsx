@@ -91,7 +91,7 @@ export const ShiftCategoryQuickPicker: React.FC<{
             <Input placeholder="ຕົວຢ່າງ: ກະເຊົ້າ" />
           </Form.Item>
           <Form.Item label="ຊ່ວງເວລາ" name="time" rules={[{ required: true, message: 'ກະລຸນາເລືອກຊ່ວງເວລາ' }]}>
-            <TimeRangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} />
+            <TimeRangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} order={false} />
           </Form.Item>
         </Form>
       </Modal>

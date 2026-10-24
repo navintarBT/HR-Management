@@ -250,7 +250,7 @@ export const EmployeeEdit: React.FC = () => {
               name="workTime"
               tooltip={defaultShiftCategoryId ? 'ດຶງມາຈາກໝວດໝູ່ກະທີ່ເລືອກໄວ້ — ລ້າງໝວດໝູ່ກະກ່ອນຖ້າຕ້ອງການຕັ້ງເວລາເອງ' : undefined}
             >
-              <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} disabled={!!defaultShiftCategoryId} />
+              <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} order={false} disabled={!!defaultShiftCategoryId} />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>

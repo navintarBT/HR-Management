@@ -38,7 +38,7 @@ const ShiftFormItems: React.FC<{
       <Select {...categorySelectProps} placeholder="ເລືອກໝວດໝູ່ (ຫຼືຂ້າມໄປຕັ້ງເວລາເອງ)" allowClear onChange={onCategoryChange} />
     </Form.Item>
     <Form.Item label="ເວລາ" name="time" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
-      <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} />
+      <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} order={false} />
     </Form.Item>
     <Form.Item label="ໝາຍເຫດ" name="note">
       <Input placeholder="ບໍ່ບັງຄັບ" />

@@ -17,6 +17,12 @@ function validateLatePolicy(graceMinutes, autoAbsentMinutes, severeLateMinutes) 
   return null;
 }
 
+// The name is optional, so fall back to the time range instead of printing "undefined".
+function duplicateMessage(conflict) {
+  const label = conflict.name || `${conflict.startTime}-${conflict.endTime}`;
+  return `ມີໝວດໝູ່ກະ "${label}" ທີ່ໃຊ້ເວລາດຽວກັນ (${conflict.startTime}-${conflict.endTime}) ຢູ່ແລ້ວ`;
+}
+
 module.exports = crudRouter(ShiftCategory, {
   writeRoles: ['admin', 'manager'],
   readRoles: ['admin', 'manager', 'employee'],
@@ -27,14 +33,14 @@ module.exports = crudRouter(ShiftCategory, {
   beforeCreate: async (body) => {
     if (body.startTime && body.endTime) {
       const conflict = await ShiftCategory.findOne({ startTime: body.startTime, endTime: body.endTime });
-      if (conflict) return `ມີໝວດໝູ່ກະ "${conflict.name}" ທີ່ໃຊ້ເວລາດຽວກັນ (${body.startTime}-${body.endTime}) ຢູ່ແລ້ວ`;
+      if (conflict) return duplicateMessage(conflict);
     }
     return validateLatePolicy(body.graceMinutes, body.autoAbsentMinutes, body.severeLateMinutes);
   },
   beforeUpdate: async (id, body) => {
     if (body.startTime && body.endTime) {
       const conflict = await ShiftCategory.findOne({ startTime: body.startTime, endTime: body.endTime, _id: { $ne: id } });
-      if (conflict) return `ມີໝວດໝູ່ກະ "${conflict.name}" ທີ່ໃຊ້ເວລາດຽວກັນ (${body.startTime}-${body.endTime}) ຢູ່ແລ້ວ`;
+      if (conflict) return duplicateMessage(conflict);
     }
     // Merge with the current record so a partial update (e.g. the "apply to
     // every category" bulk tool, which only sends the late-policy fields)

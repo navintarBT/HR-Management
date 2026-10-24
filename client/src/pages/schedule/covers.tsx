@@ -520,7 +520,7 @@ export const ScheduleCoversGrid: React.FC = () => {
             <Select showSearch optionFilterProp="label" placeholder="ຜູ້ຖືກແທນ" options={createTargetOptions} onChange={fillCoverTime} />
           </Form.Item>
           <Form.Item name="time" label="ເວລາ" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
-            <TimePicker.RangePicker format="HH:mm" minuteStep={15} style={{ width: '100%' }} />
+            <TimePicker.RangePicker format="HH:mm" minuteStep={15} order={false} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>

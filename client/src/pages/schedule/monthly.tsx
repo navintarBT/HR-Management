@@ -1068,7 +1068,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
               {choice === 'time' && (
                 <Form form={timeForm} layout="inline">
                   <Form.Item name="time">
-                    <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
+                    <TimePicker.RangePicker format="HH:mm" minuteStep={15} order={false} />
                   </Form.Item>
                   <Button type="primary" onClick={handleSaveTime} loading={saving}>
                     ບັນທຶກເວລາພິເສດ
@@ -1115,6 +1115,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
                       <TimePicker.RangePicker
                         format="HH:mm"
                         minuteStep={15}
+                        order={false}
                         style={{ width: '100%', marginBottom: 8 }}
                         value={newCategoryTime}
                         onChange={(v) => setNewCategoryTime(v as [Dayjs, Dayjs] | null)}
@@ -1179,7 +1180,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
                       />
                     </Form.Item>
                     <Form.Item name="time" rules={[{ required: true, message: 'ເລືອກເວລາ' }]}>
-                      <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
+                      <TimePicker.RangePicker format="HH:mm" minuteStep={15} order={false} />
                     </Form.Item>
                     <Button type="primary" htmlType="submit" loading={creating}>
                       ບັນທຶກການໄປເຮັດແທນ
@@ -1191,7 +1192,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
               {choice === 'editCover' && editingOverride && (
                 <Form form={editCoverForm} layout="inline" onFinish={handleEditCover}>
                   <Form.Item name="time" rules={[{ required: true, message: 'ເລືອກເວລາ' }]}>
-                    <TimePicker.RangePicker format="HH:mm" minuteStep={15} />
+                    <TimePicker.RangePicker format="HH:mm" minuteStep={15} order={false} />
                   </Form.Item>
                   <Button type="primary" htmlType="submit" loading={updating}>
                     ບັນທຶກເວລາໃໝ່
