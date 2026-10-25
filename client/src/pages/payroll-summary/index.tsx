@@ -87,9 +87,14 @@ interface SummaryRow {
   totalDays: number;
   otHours: number;
   otDays: number;
+  // No scanner code — ມາເຮັດວຽກ / ຂາດວຽກ can't be known and are shown blank.
+  untracked: boolean;
 }
 
-type DayStatus = 'work' | 'rest' | 'leave' | 'future' | 'absent';
+// ມາເຮັດວຽກ / ຂາດວຽກ value as displayed (blank for someone with no scanner code).
+const trackedCount = (r: SummaryRow, value: number) => (r.untracked ? '' : value);
+
+type DayStatus = 'work' | 'rest' | 'leave' | 'future' | 'absent' | 'blank';
 
 // One-letter day-cell scheme, shared by the on-screen grid and the print
 // table, with 'leave' split out by which deduction tier the covering Leave
@@ -109,6 +114,7 @@ type PrintDayState =
   | 'future'
   | 'out'
   | 'notStarted'
+  | 'blank'
   | 'absent';
 type SummaryTone = 'work' | 'rest' | 'x1' | 'x2' | 'x3' | 'grace' | 'absent';
 
@@ -148,6 +154,7 @@ const PRINT_DAY_STYLE: Record<PrintDayState, { bg: string; text: string; label: 
   absent: { bg: SUMMARY_TONE.absent.bg, text: SUMMARY_TONE.absent.text, label: 'ຂ' },
   future: { bg: '#fafafa', text: '#bfbfbf', label: '-' },
   notStarted: { bg: '#f0f0f0', text: '#8c8c8c', label: '-' },
+  blank: { bg: '#ffffff', text: '#bfbfbf', label: '' },
 };
 const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
   work: 'ມາເຮັດວຽກ',
@@ -162,6 +169,7 @@ const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
   absent: 'ຂາດວຽກ',
   future: 'ຍັງບໍ່ເຖິງວັນ',
   notStarted: 'ຍັງບໍ່ເລີ່ມວຽກ',
+  blank: 'ບໍ່ມີລະຫັດເຄື່ອງສະແກນ',
 };
 
 // Plain, undistorted borders for the print-only table — a real <table> with
@@ -527,8 +535,12 @@ const PayrollSummaryGrid: React.FC = () => {
   // schedule itself already resolves to rest/leave/future is left alone —
   // there's no AttendanceDaily 'absent' row for those anyway (leave stamps
   // 'leave' directly, a rest day is never swept for absence).
+  // No scanner code means the system can't know whether they came, so a day
+  // that would read as ມາ or ຂາດ stays blank (rest days and leave are known
+  // either way).
   const classifyDay = (emp: Employee, dateKey: string, dow: number): DayStatus => {
     const scheduled = classifyScheduledDay(emp, dateKey, dow);
+    if (scheduled === 'work' && !emp.deviceUserId) return 'blank';
     if (scheduled === 'work' && absentSet.has(`${emp._id}_${dateKey}`)) return 'absent';
     return scheduled;
   };
@@ -580,6 +592,7 @@ const PayrollSummaryGrid: React.FC = () => {
       let absentDays = 0;
       let leaveDays = 0;
       let futureDays = 0;
+      let blankDays = 0;
       // Declared before the day loop (not after, like empLeaves below) because
       // an absence on a ວັນຫ້າມຂາດ day feeds these same totals too — see
       // noAbsenceSeverityFor.
@@ -600,6 +613,7 @@ const PayrollSummaryGrid: React.FC = () => {
           if (severity === 'X2') x2 += 1;
           else if (severity === 'X3') x3 += 1;
         } else if (status === 'future') futureDays += 1;
+        else if (status === 'blank') blankDays += 1;
         else leaveDays += 1;
       }
 
@@ -632,9 +646,10 @@ const PayrollSummaryGrid: React.FC = () => {
         x2,
         x3,
         grace,
-        totalDays: workDays + restDays + absentDays + leaveDays + futureDays,
+        totalDays: workDays + restDays + absentDays + leaveDays + futureDays + blankDays,
         otHours,
         otDays,
+        untracked: !emp.deviceUserId,
       };
     });
   }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
@@ -748,9 +763,9 @@ const PayrollSummaryGrid: React.FC = () => {
       return [
         r.employee.employeeCode ?? '',
         name,
-        r.workDays,
+        trackedCount(r, r.workDays),
         r.restDays,
-        r.absentDays,
+        trackedCount(r, r.absentDays),
         r.x1,
         r.x2,
         r.x3,
@@ -1035,7 +1050,7 @@ const PayrollSummaryGrid: React.FC = () => {
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.workDays, 'work') })}
           onHeaderCell={() => ({ style: toneColors('work') })}
           render={(_, r: SummaryRow) =>
-            withComment(r.workDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('workDays'), 'ມາເຮັດວຽກ (ມື້)')
+            withComment(trackedCount(r, r.workDays), r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('workDays'), 'ມາເຮັດວຽກ (ມື້)')
           }
         />
         <Table.Column
@@ -1055,7 +1070,7 @@ const PayrollSummaryGrid: React.FC = () => {
           onCell={(r: SummaryRow) => ({ style: toneStyle(r.absentDays, 'absent') })}
           onHeaderCell={() => ({ style: toneColors('absent') })}
           render={(_, r: SummaryRow) =>
-            withComment(r.absentDays, r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('absentDays'), 'ຂາດວຽກ (ມື້)')
+            withComment(trackedCount(r, r.absentDays), r.employee._id, `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`, summaryCommentColumn('absentDays'), 'ຂາດວຽກ (ມື້)')
           }
         />
         <Table.Column
@@ -1234,9 +1249,9 @@ const PayrollSummaryGrid: React.FC = () => {
                   </td>
                 );
               })}
-              <td style={{ ...PRINT_TD, ...toneStyle(r.workDays, 'work') }}>{r.workDays}</td>
+              <td style={{ ...PRINT_TD, ...toneStyle(r.workDays, 'work') }}>{trackedCount(r, r.workDays)}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.restDays, 'rest') }}>{r.restDays}</td>
-              <td style={{ ...PRINT_TD, ...toneStyle(r.absentDays, 'absent') }}>{r.absentDays}</td>
+              <td style={{ ...PRINT_TD, ...toneStyle(r.absentDays, 'absent') }}>{trackedCount(r, r.absentDays)}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.x1, 'x1') }}>{r.x1}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.x2, 'x2') }}>{r.x2}</td>
               <td style={{ ...PRINT_TD, ...toneStyle(r.x3, 'x3') }}>{r.x3}</td>

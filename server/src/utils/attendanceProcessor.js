@@ -434,7 +434,7 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
     const toFill = [];
     for (const employee of employees) {
       const empId = String(employee._id);
-      if (hasDaily.has(empId) || onLeave.has(empId) || beforeStartDate(employee, dateKey, new Date())) {
+      if (hasDaily.has(empId) || onLeave.has(empId) || beforeStartDate(employee, dateKey, new Date()) || !employee.deviceUserId) {
         skipped.push({ employee: empId, date: dateKey });
         continue;
       }
@@ -502,6 +502,7 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
 //    'substituted' mark, or an earlier absent-sweep already handled it),
 //  - an approved Leave covers it,
 //  - it's before the employee's hireDate (not employed yet),
+//  - the employee has no scanner code (deviceUserId) — they can't scan at all,
 //  - a Shift override marks it 'rest' or 'swapped', or no override exists but
 //    it's the employee's recurring defaultRestDay,
 //  - there's no resolvable expected shift at all that day (nothing to be
@@ -512,7 +513,7 @@ const ABSENT_SWEEP_DAYS_BACK = 4;
 
 async function markAbsentForMissedScans() {
   const now = new Date();
-  const employees = await Employee.find({ status: 'active' }, '_id defaultRestDay hireDate');
+  const employees = await Employee.find({ status: 'active' }, '_id defaultRestDay hireDate deviceUserId');
   const marked = [];
 
   for (let daysAgo = 1; daysAgo <= ABSENT_SWEEP_DAYS_BACK; daysAgo += 1) {
@@ -537,6 +538,8 @@ async function markAbsentForMissedScans() {
       if (hasDaily.has(empId) || onLeave.has(empId)) continue;
       // Not employed yet that day — nothing to be absent from.
       if (beforeStartDate(employee, dateKey, now)) continue;
+      // No scanner code: they can't scan at all, so a missing scan says nothing.
+      if (!employee.deviceUserId) continue;
 
       const overrideStatus = overrideStatusByEmployee.get(empId);
       if (overrideStatus === 'rest' || overrideStatus === 'swapped') continue;
