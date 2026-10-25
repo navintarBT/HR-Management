@@ -6,6 +6,7 @@ import { UserOutlined, IdcardOutlined, PrinterOutlined } from '@ant-design/icons
 import dayjs from 'dayjs';
 import type { Employee, Shift } from '../../types';
 import { EmployeeStatusTag } from '../../components/StatusTags';
+import { EmployeeScannerStatusSection } from '../../components/EmployeeScannerStatus';
 import { EmployeeBadge, EMPLOYEE_BADGE_WIDTH_MM, EMPLOYEE_BADGE_HEIGHT_MM } from '../../components/EmployeeBadge';
 import { palette } from '../../theme/palette';
 import { resolvePhotoUrl } from '../../providers/axios';
@@ -125,6 +126,9 @@ export const EmployeeShow: React.FC = () => {
         <Descriptions.Item label="ເງິນເດືອນ">{record?.salary != null ? record.salary.toLocaleString() : '-'}</Descriptions.Item>
         <Descriptions.Item label="ພັກປະຈຳປີ (ມື້)">{record?.annualLeaveDays ?? '-'}</Descriptions.Item>
       </Descriptions>
+
+      <Divider orientation="left">ເຄື່ອງສະແກນ</Divider>
+      <EmployeeScannerStatusSection employee={record} />
 
       <Modal
         title="ປ້າຍພະນັກງານ"

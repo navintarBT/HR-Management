@@ -159,7 +159,55 @@ export interface OrphanedDeviceUser {
   id: string;
   serialNumber: string;
   pin: string;
+  name?: string;
   lastSeenAt: string;
+}
+
+// What a scanner reports about itself (server: utils/zkProtocol.js parseDeviceOptions).
+export interface ScannerDeviceInfo {
+  deviceName?: string;
+  firmware?: string;
+  pushVersion?: string;
+  platform?: string;
+  ipAddress?: string;
+  fpVersion?: number;
+  faceVersion?: number;
+  multiBioDataSupport?: string;
+  userCount?: number;
+  maxUsers?: number;
+  fingerprintCount?: number;
+  maxFingerprints?: number;
+  faceCount?: number;
+  maxFaces?: number;
+  attLogCount?: number;
+  maxAttLogs?: number;
+}
+
+export interface ScannerDevice {
+  serialNumber: string;
+  info: ScannerDeviceInfo;
+  infoUpdatedAt?: string;
+  syncEnabled: boolean;
+  lastSeenAt?: string;
+  lastGetRequestAt?: string;
+  lastUnknownRequest: { method: string; path: string; receivedAt: string } | null;
+  commands: { pending: number; sent: number; acked: number; failed: number };
+  storedTemplates: { fingerprint: number; face: number };
+  enrolledPins: number;
+}
+
+export interface EmployeeScannerStatus {
+  pin: string | null;
+  devices: {
+    serialNumber: string;
+    deviceName?: string;
+    syncEnabled: boolean;
+    enrolled: boolean;
+    nameOnDevice?: string;
+    reportedAt?: string;
+  }[];
+  templates: { type: number; no: number; majorVer?: number; sourceSerial?: string; updatedAt: string }[];
+  pendingCommands: number;
 }
 
 export type ScheduledShiftChangeStatus = 'pending' | 'applied' | 'cancelled';

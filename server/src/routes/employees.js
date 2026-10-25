@@ -11,6 +11,18 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
 const { resolveRestDayForEmployee } = require('../utils/restDayRules');
 const { queueDeleteUserCommand } = require('../utils/deviceCommands');
+const { pushEmployeeToDevices, removeStoredTemplates, moveStoredTemplates } = require('../utils/deviceSync');
+
+// Queuing for the scanners happens after the employee change itself is saved,
+// so a problem there is logged rather than failing a save that already
+// happened — the scanner page's "ສົ່ງໄປເຄື່ອງສະແກນ" can retry it.
+async function syncToScanners(label, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[device-sync] ${label} failed`, err);
+  }
+}
 
 // Same "configured but incomplete" guards as positions.js's
 // validateRestDayFallback/validateNoAbsenceSeverity, applied to this one
@@ -348,6 +360,10 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
       });
     }
 
+    // Onto every sync-enabled scanner right away, so the new person only has
+    // to enroll a face/finger there.
+    await syncToScanners('push new employee', () => pushEmployeeToDevices(employee));
+
     const populated = await employee.populate(POPULATE);
     res.status(201).json(populated);
   } catch (err) {
@@ -427,6 +443,23 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       await User.updateMany({ employeeId: item._id }, { isActive: false });
     }
 
+    // Scanner side: a changed PIN comes off the scanners under the old number
+    // (keeping the person's stored templates for the new one), and a new PIN,
+    // a new name or a return to active is pushed to the sync-enabled ones.
+    const oldPin = current.deviceUserId || null;
+    const newPin = item.deviceUserId || null;
+    const pinChanged = oldPin !== newPin;
+    const nameChanged = current.firstName !== item.firstName || current.lastName !== item.lastName;
+    const becameActive = current.status !== 'active' && item.status === 'active';
+    await syncToScanners('update employee', async () => {
+      if (pinChanged && oldPin) {
+        await queueDeleteUserCommand({ _id: current._id, deviceUserId: oldPin });
+        if (newPin) await moveStoredTemplates(oldPin, newPin);
+        else await removeStoredTemplates(oldPin);
+      }
+      if (newPin && (pinChanged || nameChanged || becameActive)) await pushEmployeeToDevices(item);
+    });
+
     res.json(item);
   } catch (err) {
     next(err);
@@ -447,6 +480,7 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res, next)
       return res.status(400).json({ message: 'ລຶບໄດ້ສະເພາະພະນັກງານທີ່ສະຖານະ "ບໍ່ໃຊ້ງານ" (inactive) ເທົ່ານັ້ນ' });
     }
     await queueDeleteUserCommand(existing);
+    await removeStoredTemplates(existing.deviceUserId);
     const item = await Employee.findByIdAndDelete(req.params.id);
     await User.updateMany({ employeeId: item._id }, { isActive: false });
     res.json({ id: req.params.id });
@@ -470,6 +504,7 @@ router.post('/:id/clear-device', authenticate, requireRole('admin'), async (req,
       return res.status(400).json({ message: 'ພະນັກງານຄົນນີ້ບໍ່ມີລະຫັດເຄື່ອງສະແກນຢູ່ແລ້ວ' });
     }
     const queued = await queueDeleteUserCommand(existing);
+    await removeStoredTemplates(existing.deviceUserId);
     await Employee.updateOne({ _id: existing._id }, { deviceUserId: null });
     res.json({ id: existing._id, queuedCommands: queued.length });
   } catch (err) {

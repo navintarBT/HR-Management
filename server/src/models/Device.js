@@ -34,6 +34,41 @@ const deviceSchema = new mongoose.Schema(
       body: { type: String },
       receivedAt: { type: Date },
     },
+    // What the terminal reports about itself in its "options" upload (see
+    // utils/zkProtocol.js parseDeviceOptions): model, firmware, algorithm
+    // versions and how full it is. Empty until the first such upload.
+    info: {
+      deviceName: { type: String, trim: true },
+      firmware: { type: String, trim: true },
+      pushVersion: { type: String, trim: true },
+      platform: { type: String, trim: true },
+      ipAddress: { type: String, trim: true },
+      fpVersion: { type: Number },
+      faceVersion: { type: Number },
+      multiBioDataSupport: { type: String, trim: true },
+      userCount: { type: Number },
+      maxUsers: { type: Number },
+      fingerprintCount: { type: Number },
+      maxFingerprints: { type: Number },
+      faceCount: { type: Number },
+      maxFaces: { type: Number },
+      attLogCount: { type: Number },
+      maxAttLogs: { type: Number },
+    },
+    infoUpdatedAt: { type: Date },
+    // Opt-in per terminal: only these receive employees and templates pushed
+    // from this system (utils/deviceSync.js). Off by default so a terminal
+    // that's nearly full, or one being retired, never gets filled up by it.
+    syncEnabled: { type: Boolean, default: false },
+    // The last /iclock/* request nothing here recognized — e.g. a terminal
+    // still in access-control push mode — kept so the scanner page can show
+    // it instead of it only ever reaching the server log.
+    lastUnknownRequest: {
+      method: { type: String, trim: true },
+      path: { type: String, trim: true },
+      body: { type: String },
+      receivedAt: { type: Date },
+    },
   },
   { timestamps: true }
 );

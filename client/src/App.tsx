@@ -32,6 +32,7 @@ import {
   IdcardOutlined,
   PauseCircleOutlined,
   StopOutlined,
+  ScanOutlined,
 } from '@ant-design/icons';
 
 import { dataProvider } from './providers/dataProvider';
@@ -62,6 +63,7 @@ import { HolidayListPage } from './pages/schedule/holidays';
 import { SubstituteRulePage, RestDayRulePage, NoAbsenceRulePage } from './pages/schedule/substituteRule';
 import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
 import { DeviceUsersPage } from './pages/schedule/deviceUsers';
+import { ScannerDevicesPage } from './pages/schedule/devices';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
@@ -169,6 +171,11 @@ function RootLayout() {
             name: 'rest-day-history',
             list: '/schedule/rest-day-history',
             meta: { label: 'ປະຫວັດປ່ຽນວັນພັກ', icon: <HistoryOutlined />, parent: 'schedule' },
+          },
+          {
+            name: 'scanner-devices',
+            list: '/schedule/devices',
+            meta: { label: 'ເຄື່ອງສະແກນ', icon: <ScanOutlined />, parent: 'schedule' },
           },
           {
             name: 'device-users',
@@ -295,6 +302,7 @@ export const appRoutes = (
         <Route path="rest-day-rule" element={<RestDayRulePage />} />
         <Route path="no-absence-rule" element={<NoAbsenceRulePage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
+        <Route path="devices" element={<ScannerDevicesPage />} />
         <Route path="device-users" element={<DeviceUsersPage />} />
       </Route>
 

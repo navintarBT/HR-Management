@@ -90,6 +90,7 @@ export const DeviceUsersPage: React.FC = () => {
           render={(sn: string) => <Tag>{sn}</Tag>}
         />
         <Table.Column title="PIN" dataIndex="pin" render={(pin: string) => <Typography.Text strong>{pin}</Typography.Text>} />
+        <Table.Column title="ຊື່ໃນເຄື່ອງ" dataIndex="name" render={(name?: string) => name || '-'} />
         <Table.Column
           title="ພົບລ່າສຸດ"
           dataIndex="lastSeenAt"

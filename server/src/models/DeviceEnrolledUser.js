@@ -11,6 +11,7 @@ const deviceEnrolledUserSchema = new mongoose.Schema(
   {
     serialNumber: { type: String, required: true, trim: true },
     pin: { type: String, required: true, trim: true },
+    name: { type: String, trim: true }, // as stored on the terminal, when its upload included one
     lastSeenAt: { type: Date, required: true },
   },
   { timestamps: true }

@@ -15,6 +15,9 @@ const deviceCommandSchema = new mongoose.Schema(
     // own count, so it stays correct even if commands are deleted/pruned later.
     cmdId: { type: Number, required: true },
     command: { type: String, required: true, trim: true }, // e.g. "DATA DELETE USERINFO PIN=00212"
+    // sha1 of `command` — template pushes are kilobytes long, so an identical
+    // command already waiting is found by this instead of the full text.
+    commandHash: { type: String },
     status: { type: String, enum: ['pending', 'sent', 'acked', 'failed'], default: 'pending' },
     returnCode: { type: String, trim: true },
     sentAt: { type: Date },
@@ -28,5 +31,6 @@ const deviceCommandSchema = new mongoose.Schema(
 );
 
 deviceCommandSchema.index({ serialNumber: 1, status: 1 });
+deviceCommandSchema.index({ serialNumber: 1, commandHash: 1, status: 1 });
 
 module.exports = mongoose.model('DeviceCommand', deviceCommandSchema);
