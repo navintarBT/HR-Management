@@ -89,6 +89,17 @@ app.use('/api/device-users', deviceUserRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
+// Self-hosted install (deploy/windows): the same process also serves the built
+// web app, so the whole system is one address on the shop network. Off unless
+// CLIENT_DIST points at a client build (relative to the server folder, e.g.
+// ../client/dist) — the Render deploy never sets it.
+if (process.env.CLIENT_DIST) {
+  const clientDist = path.resolve(__dirname, '..', process.env.CLIENT_DIST);
+  app.use(express.static(clientDist));
+  // Any other page path is the single-page app's own route.
+  app.get(/^\/(?!api\/|iclock\/).*/, (req, res) => res.sendFile(path.join(clientDist, 'index.html')));
+}
+
 app.use((req, res) => res.status(404).json({ message: 'Not found' }));
 
 // eslint-disable-next-line no-unused-vars

@@ -15,6 +15,7 @@
 ```
 /server              Express API + Mongoose models
 /client              React + Vite + Refine + Ant Design
+/deploy/windows      ຕິດຕັ້ງທັງລະບົບໃນເຄື່ອງ server Windows ທີ່ຮ້ານ (ເບິ່ງ deploy/windows/README.md)
 ```
 
 ## ວິທີແລ່ນ
