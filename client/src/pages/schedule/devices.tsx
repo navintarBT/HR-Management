@@ -69,9 +69,11 @@ export const ScannerDevicesPage: React.FC = () => {
     }
   };
 
+  // The hook (not static Modal.confirm) so the dialog picks up the app theme.
+  const [modal, modalContext] = Modal.useModal();
   const [busySerial, setBusySerial] = useState<string | null>(null);
   const setSync = (device: ScannerDevice, enabled: boolean) => {
-    Modal.confirm({
+    modal.confirm({
       title: enabled ? `ເປີດຊິງຂໍ້ມູນໃຫ້ເຄື່ອງ ${device.serialNumber}?` : `ປິດຊິງຂໍ້ມູນຂອງເຄື່ອງ ${device.serialNumber}?`,
       content: enabled
         ? 'ລະບົບຈະສົ່ງພະນັກງານທີ່ໃຊ້ງານທັງໝົດ ແລະ ໃບໜ້າ/ນິ້ວມືທີ່ເຄື່ອງນີ້ໃຊ້ໄດ້ ໄປໃສ່ເຄື່ອງນີ້ — ຕໍ່ໄປເມື່ອເພີ່ມພະນັກງານ ຫຼື ມີຄົນລົງໃບໜ້າ/ນິ້ວມືຢູ່ເຄື່ອງອື່ນ ກໍ່ຈະສົ່ງມາເຄື່ອງນີ້ເອງ'
@@ -141,6 +143,7 @@ export const ScannerDevicesPage: React.FC = () => {
 
   return (
     <List title="ເຄື່ອງສະແກນ" breadcrumb={false}>
+      {modalContext}
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space wrap style={{ marginBottom: 12 }}>
           <Button type="primary" icon={<CloudDownloadOutlined />} loading={pulling} onClick={pullAll}>
@@ -156,7 +159,15 @@ export const ScannerDevicesPage: React.FC = () => {
         </Typography.Paragraph>
       </div>
 
-      <Table dataSource={devices} rowKey="serialNumber" loading={isLoading} pagination={false} sticky={{ offsetHeader }} size="small">
+      <Table
+        dataSource={devices}
+        rowKey="serialNumber"
+        loading={isLoading}
+        pagination={false}
+        sticky={{ offsetHeader }}
+        scroll={{ x: 'max-content' }}
+        size="small"
+      >
         <Table.Column
           title="ເຄື່ອງ"
           render={(_, d: ScannerDevice) => (
@@ -260,9 +271,11 @@ export const ScannerDevicesPage: React.FC = () => {
           render={(_, d: ScannerDevice) => (
             <Space direction="vertical" size={4}>
               {isAdmin && d.syncEnabled && (
-                <Button size="small" icon={<SyncOutlined />} loading={busySerial === d.serialNumber} onClick={() => provision(d)}>
-                  ສົ່ງພະນັກງານທັງໝົດອີກຄັ້ງ
-                </Button>
+                <Tooltip title="ສົ່ງພະນັກງານທີ່ໃຊ້ງານທັງໝົດ ແລະ ໃບໜ້າ/ນິ້ວມືທີ່ໃຊ້ໄດ້ ໄປເຄື່ອງນີ້ອີກຄັ້ງ">
+                  <Button size="small" icon={<SyncOutlined />} loading={busySerial === d.serialNumber} onClick={() => provision(d)}>
+                    ສົ່ງພະນັກງານອີກຄັ້ງ
+                  </Button>
+                </Tooltip>
               )}
               <Button size="small" icon={<HistoryOutlined />} onClick={() => setAttDevice(d)}>
                 ດຶງການສະແກນຍ້ອນຫຼັງ
