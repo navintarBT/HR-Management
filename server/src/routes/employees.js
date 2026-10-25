@@ -12,15 +12,17 @@ const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule')
 const { resolveRestDayForEmployee } = require('../utils/restDayRules');
 const { queueDeleteUserCommand } = require('../utils/deviceCommands');
 const { pushEmployeeToDevices, removeStoredTemplates, moveStoredTemplates } = require('../utils/deviceSync');
+const { shiftFieldsDiffer, recordShiftChange } = require('../utils/shiftHistory');
+const { toDateKey } = require('../utils/attendanceProcessor');
 
-// Queuing for the scanners happens after the employee change itself is saved,
-// so a problem there is logged rather than failing a save that already
-// happened — the scanner page's "ສົ່ງໄປເຄື່ອງສະແກນ" can retry it.
-async function syncToScanners(label, fn) {
+// Follow-up work that runs after the employee change itself is saved (queuing
+// for the scanners, recording a shift change) — a problem there is logged
+// rather than failing a save that already happened.
+async function runAfterSave(label, fn) {
   try {
     await fn();
   } catch (err) {
-    console.error(`[device-sync] ${label} failed`, err);
+    console.error(`[employees] ${label} failed`, err);
   }
 }
 
@@ -362,7 +364,7 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
 
     // Onto every sync-enabled scanner right away, so the new person only has
     // to enroll a face/finger there.
-    await syncToScanners('push new employee', () => pushEmployeeToDevices(employee));
+    await runAfterSave('push new employee to scanners', () => pushEmployeeToDevices(employee));
 
     const populated = await employee.populate(POPULATE);
     res.status(201).json(populated);
@@ -443,6 +445,15 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       await User.updateMany({ employeeId: item._id }, { isActive: false });
     }
 
+    // A changed regular shift applies from today on ("ມີຜົນນັບແຕ່ນີ້ໄປ", as
+    // the bulk-move page puts it) — recorded so earlier days keep being judged
+    // by the shift they had then (models/ShiftChangeLog.js).
+    if (shiftFieldsDiffer(current, item)) {
+      await runAfterSave('record shift change', () =>
+        recordShiftChange(current._id, current, item, toDateKey(new Date()), 'employee-edit')
+      );
+    }
+
     // Scanner side: a changed PIN comes off the scanners under the old number
     // (keeping the person's stored templates for the new one), and a new PIN,
     // a new name or a return to active is pushed to the sync-enabled ones.
@@ -451,7 +462,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     const pinChanged = oldPin !== newPin;
     const nameChanged = current.firstName !== item.firstName || current.lastName !== item.lastName;
     const becameActive = current.status !== 'active' && item.status === 'active';
-    await syncToScanners('update employee', async () => {
+    await runAfterSave('update employee on scanners', async () => {
       if (pinChanged && oldPin) {
         await queueDeleteUserCommand({ _id: current._id, deviceUserId: oldPin });
         if (newPin) await moveStoredTemplates(oldPin, newPin);

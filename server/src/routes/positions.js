@@ -4,6 +4,8 @@ const Department = require('../models/Department');
 const Employee = require('../models/Employee');
 const { checkHeadConflict } = require('../utils/headConflicts');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
+const { recordShiftChange } = require('../utils/shiftHistory');
+const { toDateKey } = require('../utils/attendanceProcessor');
 
 // A position with forbidden rest days but no fallback is exactly the gap
 // this whole feature exists to close (a chosen/carried-over rest day would
@@ -109,7 +111,10 @@ module.exports = crudRouter(Position, {
       const inheritingEmployees = await Employee.find({ position: position._id, allowsSubstituteStatus: null });
       for (const emp of inheritingEmployees) {
         const transition = computeSubstituteTransitionUpdate(emp, wasEnabled, willBeEnabled);
-        if (transition) await Employee.updateOne({ _id: emp._id }, transition);
+        if (transition) {
+          await Employee.updateOne({ _id: emp._id }, transition);
+          await recordShiftChange(emp._id, emp, { ...emp.toObject(), ...transition }, toDateKey(new Date()), 'substitute-rule');
+        }
       }
     }
   },

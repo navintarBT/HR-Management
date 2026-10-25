@@ -3,6 +3,7 @@ const ShiftCategory = require('../models/ShiftCategory');
 const Shift = require('../models/Shift');
 const ScheduledShiftChange = require('../models/ScheduledShiftChange');
 const { toDateKey } = require('./attendanceProcessor');
+const { recordShiftChange } = require('./shiftHistory');
 
 // Tags the Shift row this creates so a later cancel can find and remove
 // exactly that row (and nothing an admin set by hand), same idea as
@@ -41,12 +42,18 @@ async function unpinScheduleForEffectiveDate(employeeId, effectiveDate) {
 }
 
 // Flips the employee's own standing default — only days AFTER effectiveDate
-// read this live (effectiveDate itself is already covered by the pin above).
+// read this live (effectiveDate itself is already covered by the pin above),
+// and the change is recorded so days BEFORE it keep being judged by the old
+// shift (the last night's morning scan-out stays on that night).
 async function applyScheduledShiftChange(change) {
+  const before = await Employee.findById(change.employee, 'defaultShiftCategory defaultShiftStart defaultShiftEnd');
   await Employee.updateOne(
     { _id: change.employee },
     { defaultShiftCategory: change.newShiftCategory, defaultShiftStart: null, defaultShiftEnd: null }
   );
+  if (before) {
+    await recordShiftChange(change.employee, before, { defaultShiftCategory: change.newShiftCategory }, change.effectiveDate, 'scheduled-change');
+  }
 }
 
 // Same catch-up-on-restart + periodic-recheck shape as runDueScheduledSwaps.

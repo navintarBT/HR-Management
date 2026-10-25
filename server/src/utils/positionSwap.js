@@ -5,6 +5,7 @@ const RestDayHistory = require('../models/RestDayHistory');
 const Shift = require('../models/Shift');
 const ShiftCategory = require('../models/ShiftCategory');
 const { toDateKey } = require('./attendanceProcessor');
+const { recordShiftChange } = require('./shiftHistory');
 const { resolveRestDayForPosition, mergeRestDayRule } = require('./restDayRules');
 
 // Attendance (recomputeDay/resolveExpectedShift) always reads an employee's
@@ -281,6 +282,18 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
     ),
     Position.updateOne({ _id: positionAId }, { head: positionB?.head || null }),
     Position.updateOne({ _id: positionBId }, { head: positionA?.head || null }),
+  ]);
+
+  // Recorded as of the swap date, so every day before it keeps being judged
+  // by each mover's old shift — without this, the night group's last night
+  // would be re-read as a day shift and its morning scan-out would land on
+  // the swap day instead (see models/ShiftChangeLog.js).
+  const historyDate = effectiveDate || toDateKey(new Date());
+  const toB = { defaultShiftCategory: canonicalB.categoryId, defaultShiftStart: canonicalB.start, defaultShiftEnd: canonicalB.end };
+  const toA = { defaultShiftCategory: canonicalA.categoryId, defaultShiftStart: canonicalA.start, defaultShiftEnd: canonicalA.end };
+  await Promise.all([
+    ...empListA.map((e) => recordShiftChange(e._id, e, toB, historyDate, 'position-swap')),
+    ...empListB.map((e) => recordShiftChange(e._id, e, toA, historyDate, 'position-swap')),
   ]);
 
   return { movedFromA: empListA.length, movedFromB: empListB.length };

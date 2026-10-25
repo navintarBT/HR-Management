@@ -3,6 +3,9 @@ const AttendanceDaily = require('../models/AttendanceDaily');
 const Shift = require('../models/Shift');
 const Employee = require('../models/Employee');
 const Leave = require('../models/Leave');
+const ShiftCategory = require('../models/ShiftCategory');
+const ShiftChangeLog = require('../models/ShiftChangeLog');
+const { shiftOnDate, shiftLogsFor } = require('./shiftHistory');
 
 const GRACE_MINUTES = 15;
 const SEVERE_LATE_MINUTES = 60;
@@ -75,10 +78,29 @@ async function resolveExpectedShift(employeeId, dateKey) {
       autoAbsentMinutes: shift.category?.autoAbsentMinutes ?? null,
       severeLateMinutes: shift.category?.severeLateMinutes ?? SEVERE_LATE_MINUTES,
       // Marks that this came from a day-specific override rather than the
-      // employee's live default — resolveShiftWindow uses this to know the
-      // day is self-contained and doesn't need the "was yesterday overnight"
-      // inference (see there for why that inference alone isn't safe here).
+      // employee's regular shift — resolveShiftWindow uses this to keep a
+      // back-to-back day's own check-in inside its window (see there).
       fromOverride: true,
+    };
+  }
+
+  // A day before the latest change to their regular shift is judged by the
+  // regular shift they had on that day, not today's — see
+  // models/ShiftChangeLog.js.
+  const historical = shiftOnDate(await shiftLogsFor(employeeId), dateKey);
+  if (historical) {
+    if (!historical.startTime || !historical.endTime) return null;
+    const category = historical.category ? await ShiftCategory.findById(historical.category) : null;
+    const [startHour, startMinute] = historical.startTime.split(':').map(Number);
+    const [endHour, endMinute] = historical.endTime.split(':').map(Number);
+    return {
+      startHour,
+      startMinute,
+      endHour,
+      endMinute,
+      graceMinutes: category?.graceMinutes ?? GRACE_MINUTES,
+      autoAbsentMinutes: category?.autoAbsentMinutes ?? null,
+      severeLateMinutes: category?.severeLateMinutes ?? SEVERE_LATE_MINUTES,
     };
   }
 
@@ -106,6 +128,29 @@ async function resolveExpectedShift(employeeId, dateKey) {
   return null;
 }
 
+// Called only for a day with no 'scheduled'/'swapped' Shift row of its own.
+async function isRestDay(employeeId, dateKey) {
+  if (await Shift.exists({ employee: employeeId, date: dateKey, status: 'rest' })) return true;
+  const employee = await Employee.findById(employeeId, 'defaultRestDay').lean();
+  return (employee?.defaultRestDay ?? []).includes(new Date(`${dateKey}T00:00:00`).getDay());
+}
+
+// A rest day only behaves like their regular overnight shift if they actually
+// came in for it that evening — people do work rest days without a planner
+// entry (about 1 scanned day in 11), so it can't simply count as "no shift".
+// Left unworked, it has no night to run past midnight, and the next morning's
+// scans belong to the next day (e.g. the first day shift after a night→day
+// move with a rest day in between).
+async function isUnworkedRestNight(employeeId, dateKey, shift) {
+  if (!isOvernightShift(shift) || shift.fromOverride) return false;
+  if (!(await isRestDay(employeeId, dateKey))) return false;
+  const start = new Date(`${dateKey}T00:00:00`);
+  start.setHours(shift.startHour, shift.startMinute, 0, 0);
+  const evening = new Date(start.getTime() - OVERNIGHT_BUFFER_HOURS * 3600000);
+  const midnight = new Date(`${dateKey}T23:59:59.999`);
+  return !(await AttendanceLog.exists({ employee: employeeId, timestamp: { $gte: evening, $lte: midnight } }));
+}
+
 // The actual scan window for shift-day `dateKey` — widened past plain
 // calendar-day midnight-to-midnight on both ends when needed:
 //  - end: if `dateKey`'s own shift is overnight, extended to catch its
@@ -118,7 +163,8 @@ async function resolveExpectedShift(employeeId, dateKey) {
 // schedule positions keep the exact plain calendar-day behavior this system
 // always had, since there's no schedule to reason about the overlap with.
 async function resolveShiftWindow(employeeId, dateKey) {
-  const expected = await resolveExpectedShift(employeeId, dateKey);
+  let expected = await resolveExpectedShift(employeeId, dateKey);
+  if (await isUnworkedRestNight(employeeId, dateKey, expected)) expected = null;
   const overnight = isOvernightShift(expected);
 
   let windowStart = new Date(`${dateKey}T00:00:00`);
@@ -131,21 +177,26 @@ async function resolveShiftWindow(employeeId, dateKey) {
     windowEnd = new Date(windowEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
   }
 
-  // Skipped when today has its own day-specific override: that override
-  // already fully defines today's window on its own terms, and inferring
-  // "yesterday" here would mean re-reading the employee's CURRENT live
-  // default as if it already applied yesterday too — wrong the moment that
-  // default just changed (e.g. a position swap effective today flips it to
-  // an overnight category), which would falsely push today's start hours
-  // later and swallow a legitimate early check-in (see positionSwap.js).
-  if (!expected?.fromOverride) {
-    const yesterdayShift = await resolveExpectedShift(employeeId, addDays(dateKey, -1));
-    if (isOvernightShift(yesterdayShift)) {
-      const yesterdayExpectedEnd = new Date(`${dateKey}T00:00:00`);
-      yesterdayExpectedEnd.setHours(yesterdayShift.endHour, yesterdayShift.endMinute, 0, 0);
-      const yesterdayCutoff = new Date(yesterdayExpectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
-      if (yesterdayCutoff > windowStart) windowStart = yesterdayCutoff;
+  // "Yesterday" is resolved as the shift it really was (a Shift row, or the
+  // regular shift in force then — utils/shiftHistory.js), so this holds even
+  // on the day a schedule changes. A day with its own Shift row can follow a
+  // night back to back (standing in for someone, the first day of a new
+  // schedule) — its window then never starts later than 3 hours before its
+  // own start, so that morning's check-in isn't swallowed by last night.
+  const yesterdayKey = addDays(dateKey, -1);
+  let yesterdayShift = await resolveExpectedShift(employeeId, yesterdayKey);
+  if (await isUnworkedRestNight(employeeId, yesterdayKey, yesterdayShift)) yesterdayShift = null;
+  if (isOvernightShift(yesterdayShift)) {
+    const yesterdayExpectedEnd = new Date(`${dateKey}T00:00:00`);
+    yesterdayExpectedEnd.setHours(yesterdayShift.endHour, yesterdayShift.endMinute, 0, 0);
+    let yesterdayCutoff = new Date(yesterdayExpectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+    if (expected?.fromOverride) {
+      const todayStart = new Date(`${dateKey}T00:00:00`);
+      todayStart.setHours(expected.startHour, expected.startMinute, 0, 0);
+      const latestStart = new Date(todayStart.getTime() - OVERNIGHT_BUFFER_HOURS * 3600000);
+      if (latestStart < yesterdayCutoff) yesterdayCutoff = latestStart;
     }
+    if (yesterdayCutoff > windowStart) windowStart = yesterdayCutoff;
   }
 
   return { windowStart, windowEnd, expected, overnight };
@@ -326,6 +377,15 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
   const employees = await Employee.find({ status: 'active' }).populate('defaultShiftCategory');
   const filled = [];
   const skipped = [];
+  // Same "regular shift in force on that day" rule resolveExpectedShift
+  // applies, from one batched read instead of one per employee.
+  const logsByEmployee = new Map();
+  const logs = await ShiftChangeLog.find({ employee: { $in: employees.map((e) => e._id) } }, 'employee effectiveDate previous next').lean();
+  for (const log of logs) {
+    const key = String(log.employee);
+    if (!logsByEmployee.has(key)) logsByEmployee.set(key, []);
+    logsByEmployee.get(key).push(log);
+  }
 
   let dateKey = startDateKey;
   while (dateKey <= endDateKey) {
@@ -384,8 +444,14 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
         start = timeStringToHM(shift.startTime);
         end = timeStringToHM(shift.endTime);
       } else {
+        const historical = shiftOnDate(logsByEmployee.get(empId), dateKey);
         const category = employee.defaultShiftCategory;
-        if (category && typeof category === 'object' && category.startTime && category.endTime) {
+        if (historical) {
+          if (historical.startTime && historical.endTime) {
+            start = timeStringToHM(historical.startTime);
+            end = timeStringToHM(historical.endTime);
+          }
+        } else if (category && typeof category === 'object' && category.startTime && category.endTime) {
           start = timeStringToHM(category.startTime);
           end = timeStringToHM(category.endTime);
         } else if (employee.defaultShiftStart && employee.defaultShiftEnd) {
