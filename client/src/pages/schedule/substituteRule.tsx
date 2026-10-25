@@ -943,10 +943,9 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
   };
 
   // Clears both fields together so the position drops out of `positions`
-  // below and reappears in the "ສ້າງ" picker (and, now, back in
-  // RestDayRuleTable's own picker too, since that one excludes positions
-  // configured here). Leaves ordinaryAbsenceSeverity alone — that's a fully
-  // separate rule managed by OrdinaryAbsenceRuleTable below.
+  // below and reappears in the "ສ້າງ" picker. Leaves ordinaryAbsenceSeverity
+  // alone — that's a fully separate rule managed by OrdinaryAbsenceRuleTable
+  // below.
   const removeNoAbsence = (position: Position) => {
     updatePosition(
       { resource: 'positions', id: position._id, values: { noAbsenceDays: [], noAbsenceSeverity: null } },
@@ -969,16 +968,15 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
   // to open this modal in the first place.
   const [createDeptFilter, setCreateDeptFilter] = useState<string>();
 
-  // Also excludes any position already configured in ຂໍ້ຈຳກັດວັນພັກ
-  // (restrictedRestDays) — that's a separate rule type (blocks CHOOSING a rest
-  // day on certain weekdays, vs. this one penalizing an ACTUAL absence), and
-  // a position already under it shouldn't be offered here too.
+  // A position in ຂໍ້ຈຳກັດວັນພັກ (restrictedRestDays) is offered here too: that
+  // rule only blocks CHOOSING a rest day on its weekdays, while this one sets
+  // what an ACTUAL absence costs — so a position can need both (e.g. its
+  // forbidden rest days charged X3 when someone doesn't turn up anyway).
   const uncreatedPositions = useMemo(
     () =>
       allPositions.filter(
         (p) =>
           (p.noAbsenceDays ?? []).length === 0 &&
-          (p.restrictedRestDays ?? []).length === 0 &&
           (!createDeptFilter || (p.departments ?? []).some((d) => idOf(d) === createDeptFilter))
       ),
     [allPositions, createDeptFilter]
