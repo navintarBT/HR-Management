@@ -786,17 +786,12 @@ const PayrollSummaryGrid: React.FC = () => {
   // of that and the textbox would visibly lag/freeze.
   //
   // A cell that already has a thread gets this as a reply (server side), and
-  // any new message reopens it for review unless sent with resolve.
-  const submitComment = (text: string, resolve: boolean) => {
+  // any new message reopens it for review.
+  const submitComment = (text: string) => {
     if (!commentCell) return;
     createComment(
-      { resource: 'payroll-comments', values: { employee: commentCell.employeeId, column: commentCell.column, text, resolve } },
-      {
-        onSuccess: () => {
-          refetchComments();
-          if (resolve) closeComments();
-        },
-      }
+      { resource: 'payroll-comments', values: { employee: commentCell.employeeId, column: commentCell.column, text } },
+      { onSuccess: () => refetchComments() }
     );
   };
 
@@ -840,7 +835,10 @@ const PayrollSummaryGrid: React.FC = () => {
   // review hides just because the page shows a different range; an entry
   // opens its thread directly, no matching cell needed. The badge is the open
   // count, so it drops as threads are confirmed. Confirmed threads are listed
-  // on the second tab, most recently confirmed first.
+  // on the second tab, most recently confirmed first. No ຢືນຢັນ button on the
+  // entries themselves: a button at the right of each row looked like the
+  // table's action buttons and got pressed by mistake — confirming happens
+  // inside the thread, after reading it.
   const { openThreads, resolvedThreads } = useMemo(() => {
     const all = [...threadsByKey.values()];
     return {
@@ -1045,36 +1043,21 @@ const PayrollSummaryGrid: React.FC = () => {
                           setNotifOpen(false);
                           openComments(t.employeeId, t.employeeName, t.column, label, true);
                         }}
-                        style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 4px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+                        style={{ padding: '8px 4px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
                       >
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600 }}>
-                            {t.employeeCode ? `${t.employeeCode} ` : ''}{t.employeeName} · {label}
-                          </div>
-                          <div style={{ ...oneLine, color: '#595959' }}>{first.text}</div>
-                          {t.messages.length > 1 && (
-                            <div style={{ ...oneLine, color: '#8c8c8c' }}>↳ {last.authorName}: {last.text}</div>
-                          )}
-                          <div style={{ fontSize: 11, color: '#bfbfbf' }}>
-                            {t.status === 'open'
-                              ? `${last.authorName} · ${dayjs(t.lastActivity).format('DD/MM HH:mm')}`
-                              : `✓ ${t.resolvedByName ?? ''} · ${dayjs(t.resolvedAt).format('DD/MM HH:mm')}`}
-                            {t.messages.length > 1 && ` · ${t.messages.length} ຂໍ້ຄວາມ`}
-                          </div>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>
+                          {t.employeeCode ? `${t.employeeCode} ` : ''}{t.employeeName} · {label}
                         </div>
-                        {t.status === 'open' && (
-                          <Button
-                            size="small"
-                            icon={<CheckOutlined />}
-                            disabled={savingCommentStatus}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setThreadStatus(t.employeeId, t.column, 'resolved');
-                            }}
-                          >
-                            ຢືນຢັນ
-                          </Button>
+                        <div style={{ ...oneLine, color: '#595959' }}>{first.text}</div>
+                        {t.messages.length > 1 && (
+                          <div style={{ ...oneLine, color: '#8c8c8c' }}>↳ {last.authorName}: {last.text}</div>
                         )}
+                        <div style={{ fontSize: 11, color: '#bfbfbf' }}>
+                          {t.status === 'open'
+                            ? `${last.authorName} · ${dayjs(t.lastActivity).format('DD/MM HH:mm')}`
+                            : `✓ ${t.resolvedByName ?? ''} · ${dayjs(t.resolvedAt).format('DD/MM HH:mm')}`}
+                          {t.messages.length > 1 && ` · ${t.messages.length} ຂໍ້ຄວາມ`}
+                        </div>
                       </div>
                     );
                   })}
@@ -1458,6 +1441,9 @@ const PayrollSummaryGrid: React.FC = () => {
 //
 // Anyone with page access may ຢືນຢັນ, the author included — staff sometimes
 // share one login, so "someone else must confirm" can't be enforced anyway.
+// ຢືນຢັນ sits up by the status tag, away from ສົ່ງ in the bottom-right corner:
+// that corner is where people press after typing (and where the table's own
+// action buttons sit), so a confirm button there got pressed by habit.
 function CommentThreadModal({
   cell,
   thread,
@@ -1472,20 +1458,18 @@ function CommentThreadModal({
   posting: boolean;
   savingStatus: boolean;
   onClose: () => void;
-  onSubmit: (text: string, resolve: boolean) => void;
+  onSubmit: (text: string) => void;
   onSetStatus: (status: 'open' | 'resolved') => void;
 }) {
   const [draft, setDraft] = useState('');
   const text = draft.trim();
   const isOpen = thread?.status === 'open';
 
-  const send = (resolve: boolean) => {
+  const send = () => {
     if (!text) return;
-    onSubmit(text, resolve);
+    onSubmit(text);
     setDraft('');
   };
-  // With a draft, post it and confirm in one step; without, just confirm.
-  const confirm = () => (text ? send(true) : onSetStatus('resolved'));
 
   return (
     <Modal
@@ -1499,15 +1483,27 @@ function CommentThreadModal({
       {cell && (
         <div>
           {thread && (
-            <div style={{ marginBottom: 4 }}>
+            <Space size={8} style={{ marginBottom: 4 }}>
               {isOpen ? (
-                <Tag color="orange">ລໍຖ້າຢືນຢັນ</Tag>
+                <>
+                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                    ລໍຖ້າຢືນຢັນ
+                  </Tag>
+                  <Button size="small" icon={<CheckOutlined />} loading={savingStatus} onClick={() => onSetStatus('resolved')}>
+                    ຢືນຢັນ
+                  </Button>
+                </>
               ) : (
-                <Tag color="green">
-                  ✓ ຢືນຢັນແລ້ວ · {thread.resolvedByName} · {dayjs(thread.resolvedAt).format('DD/MM/YYYY HH:mm')}
-                </Tag>
+                <>
+                  <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                    ✓ ຢືນຢັນແລ້ວ · {thread.resolvedByName} · {dayjs(thread.resolvedAt).format('DD/MM/YYYY HH:mm')}
+                  </Tag>
+                  <Button size="small" type="link" loading={savingStatus} onClick={() => onSetStatus('open')}>
+                    ເປີດຄືນ
+                  </Button>
+                </>
               )}
-            </div>
+            </Space>
           )}
           <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
             {!thread && <Typography.Text type="secondary">ຍັງບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
@@ -1536,7 +1532,7 @@ function CommentThreadModal({
             onPressEnter={(e) => {
               if (!e.shiftKey) {
                 e.preventDefault();
-                send(false);
+                send();
               }
             }}
           />
@@ -1546,21 +1542,9 @@ function CommentThreadModal({
             </Typography.Text>
           )}
           <div style={{ textAlign: 'right', marginTop: 8 }}>
-            <Space>
-              {thread && !isOpen && (
-                <Button loading={savingStatus} onClick={() => onSetStatus('open')}>
-                  ເປີດຄືນ
-                </Button>
-              )}
-              <Button type={isOpen ? 'default' : 'primary'} loading={posting} disabled={!text} onClick={() => send(false)}>
-                ສົ່ງ
-              </Button>
-              {isOpen && (
-                <Button type="primary" icon={<CheckOutlined />} loading={posting || savingStatus} onClick={confirm}>
-                  {text ? 'ສົ່ງ ແລະ ຢືນຢັນ' : 'ຢືນຢັນ'}
-                </Button>
-              )}
-            </Space>
+            <Button type="primary" loading={posting} disabled={!text} onClick={send}>
+              ສົ່ງ
+            </Button>
           </div>
         </div>
       )}

@@ -59,11 +59,11 @@ router.get('/', authenticate, requireRole('admin', 'manager'), async (req, res, 
 });
 
 // Posting on a cell that already has a thread adds a reply to it instead of
-// starting a second one. Any new message reopens the thread for review unless
-// it's sent with `resolve: true` (ສົ່ງ ແລະ ຢືນຢັນ).
+// starting a second one. Any new message reopens the thread for review —
+// confirming is always its own step (PATCH /status).
 router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const { employee, column, resolve } = req.body;
+    const { employee, column } = req.body;
     const text = typeof req.body.text === 'string' ? req.body.text.trim() : '';
     if (!employee || !column || !text) {
       return res.status(400).json({ message: 'ກະລຸນາປ້ອນຂໍ້ຄວາມ' });
@@ -74,7 +74,7 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
     } else {
       thread = await PayrollComment.create({ employee, column, text, ...currentAuthor(req) });
     }
-    await PayrollComment.updateMany({ employee, column }, statusUpdate(req, resolve === true ? 'resolved' : 'open'));
+    await PayrollComment.updateMany({ employee, column }, statusUpdate(req, 'open'));
     const populated = await PayrollComment.findById(thread._id).populate(POPULATE);
     res.status(201).json(populated);
   } catch (err) {
