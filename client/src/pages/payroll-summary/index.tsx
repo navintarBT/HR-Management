@@ -169,7 +169,7 @@ const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
   absent: 'ຂາດວຽກ',
   future: 'ຍັງບໍ່ເຖິງວັນ',
   notStarted: 'ຍັງບໍ່ເລີ່ມວຽກ',
-  blank: 'ບໍ່ມີລະຫັດເຄື່ອງສະແກນ',
+  blank: 'ບໍ່ມີຂໍ້ມູນສະແກນ',
 };
 
 // Plain, undistorted borders for the print-only table — a real <table> with
@@ -430,6 +430,18 @@ const PayrollSummaryGrid: React.FC = () => {
     [scannedBeforeHireData?.data]
   );
 
+  // Days the DJs (ມາແທນ positions) actually scanned or were marked ມາແທນ —
+  // see classifyDay.
+  const { data: substituteDaysData, isLoading: substituteDaysLoading } = useCustom<{ employee: string; date: string }[]>({
+    url: `${API_URL}/attendance-daily/substitute-position-days`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
+  });
+  const substituteDaySet = useMemo(
+    () => new Set((substituteDaysData?.data ?? []).map((r) => `${r.employee}_${r.date}`)),
+    [substituteDaysData?.data]
+  );
+
   const scheduledSet = useMemo(() => {
     const set = new Set<string>();
     for (const s of scheduledShiftsData?.data ?? []) {
@@ -535,14 +547,25 @@ const PayrollSummaryGrid: React.FC = () => {
   // schedule itself already resolves to rest/leave/future is left alone —
   // there's no AttendanceDaily 'absent' row for those anyway (leave stamps
   // 'leave' directly, a rest day is never swept for absence).
-  // No scanner code means the system can't know whether they came, so a day
-  // that would read as ມາ or ຂາດ stays blank (rest days and leave are known
-  // either way).
+  // A DJ — someone in a ມາແທນ position (unless switched off for them) — has
+  // no fixed shift, so the absence sweep never judges their days.
+  const inSubstitutePosition = (emp: Employee) => {
+    const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
+    return emp.allowsSubstituteStatus !== false && position?.allowsSubstituteStatus === true;
+  };
+
+  // A day that would read as ມາ or ຂາດ stays blank when the system can't
+  // know: no scanner code at all, or a DJ day with no scan and no ມາແທນ
+  // mark (a deliberate ຂາດ still shows). Rest days and leave are known
+  // either way.
   const classifyDay = (emp: Employee, dateKey: string, dow: number): DayStatus => {
     const scheduled = classifyScheduledDay(emp, dateKey, dow);
-    if (scheduled === 'work' && !emp.deviceUserId) return 'blank';
-    if (scheduled === 'work' && absentSet.has(`${emp._id}_${dateKey}`)) return 'absent';
-    return scheduled;
+    if (scheduled !== 'work') return scheduled;
+    const key = `${emp._id}_${dateKey}`;
+    if (!emp.deviceUserId) return 'blank';
+    if (absentSet.has(key)) return 'absent';
+    if (inSubstitutePosition(emp) && !substituteDaySet.has(key)) return 'blank';
+    return 'work';
   };
 
   // ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ's "ວັນຫ້າມຂາດ" — an absence on one of these weekdays
@@ -652,7 +675,7 @@ const PayrollSummaryGrid: React.FC = () => {
         untracked: !emp.deviceUserId,
       };
     });
-  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
   // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
   // column) for whoever maintains payroll to see and address. Fetched in bulk
@@ -789,7 +812,7 @@ const PayrollSummaryGrid: React.FC = () => {
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
   const loading =
-    employeesLoading || scheduledLoading || restLoading || swappedLoading || absentLoading || (recentEnabled && recentLoading) || scannedBeforeHireLoading || leavesLoading || overtimeLoading;
+    employeesLoading || scheduledLoading || restLoading || swappedLoading || absentLoading || (recentEnabled && recentLoading) || scannedBeforeHireLoading || substituteDaysLoading || leavesLoading || overtimeLoading;
 
   const handlePrintClick = () => window.print();
 
@@ -1140,7 +1163,7 @@ const PayrollSummaryGrid: React.FC = () => {
       </Table>
       </div>
         ),
-        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, todayKey, leaves, loading, offsetHeader]
+        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, loading, offsetHeader]
       )}
 
       <div className="payroll-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
@@ -1264,7 +1287,7 @@ const PayrollSummaryGrid: React.FC = () => {
         </tbody>
       </table>
         ),
-        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
+        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
       )}
 
       <div className="payroll-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>
