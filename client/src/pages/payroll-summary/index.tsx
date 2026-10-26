@@ -118,14 +118,15 @@ type PrintDayState =
   | 'absent';
 type SummaryTone = 'work' | 'rest' | 'x1' | 'x2' | 'x3' | 'grace' | 'absent';
 
-// work and x3 are deliberately muted: staff found the saturated green that
-// fills most of the grid, and the deep red, glaring. x3 stays darker than x2
-// so the x1 → x2 → x3 severity order still reads at a glance.
+// work, x2 and x3 are deliberately muted: staff found the saturated green
+// that fills most of the grid, and the vivid reds, glaring. Each red tier
+// stays darker than the one before so the x1 → x2 → x3 severity order still
+// reads at a glance.
 const SUMMARY_TONE: Record<SummaryTone, { bg: string; text: string }> = {
   work: { bg: '#b7eb8f', text: '#237804' },
   rest: { bg: '#d9d9d9', text: '#434343' },
   x1: { bg: '#ffccc7', text: '#a8071a' },
-  x2: { bg: '#ff7875', text: '#ffffff' },
+  x2: { bg: '#e88b8b', text: '#ffffff' },
   x3: { bg: '#c75b5b', text: '#ffffff' },
   grace: { bg: '#e6f4ff', text: '#1677ff' },
   // Same red ປະຫວັດການສະແກນ uses for ຂາດວຽກ (see attendance/logs.tsx
