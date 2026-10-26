@@ -336,6 +336,21 @@ export interface PayrollComment {
   author?: Employee | string;
   authorEmail?: string;
   createdAt: string;
+  // Later messages on the same cell — one thread per cell.
+  replies?: PayrollCommentReply[];
+  // 'open' = ລໍຖ້າຢືນຢັນ (counted on the bell); 'resolved' = ຢືນຢັນແລ້ວ.
+  status?: 'open' | 'resolved';
+  resolvedAt?: string;
+  resolvedBy?: Employee | string;
+  resolvedByEmail?: string;
+}
+
+export interface PayrollCommentReply {
+  _id: string;
+  text: string;
+  author?: Employee | string;
+  authorEmail?: string;
+  createdAt: string;
 }
 
 export interface DashboardSummary {

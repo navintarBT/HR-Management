@@ -1,9 +1,9 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
-import { useList, useCreate, useCustom } from '@refinedev/core';
-import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, message } from 'antd';
-import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined } from '@ant-design/icons';
+import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/core';
+import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, Segmented, Tag, message } from 'antd';
+import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined, CheckOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
@@ -21,8 +21,8 @@ const LAO_WEEKDAYS_SHORT = ['ອາ', 'ຈ', 'ອັງ', 'ພຸ', 'ພະ', '�
 const MAX_RANGE_DAYS = 31;
 
 // The 10 summary cells a comment can attach to, in the same order they're
-// rendered — used to both enumerate valid comment keys for the current range
-// and to resolve a stored column key back to the Lao label for display.
+// rendered — used to resolve a stored column key back to the Lao label for
+// display.
 const SUMMARY_COLUMN_LABELS: Record<string, string> = {
   workDays: 'ມາເຮັດວຽກ (ມື້)',
   restDays: 'ພັກ (ມື້)',
@@ -35,17 +35,45 @@ const SUMMARY_COLUMN_LABELS: Record<string, string> = {
   otHours: 'ຊ/ມ x3',
   otDays: 'ມື້ x2',
 };
-const SUMMARY_COLUMN_KEYS = Object.keys(SUMMARY_COLUMN_LABELS);
 
 function labelForColumn(column: string): string {
   if (column.startsWith('day:')) return dayjs(column.slice(4)).format('DD/MM/YYYY');
-  const [col] = column.split(':');
-  return SUMMARY_COLUMN_LABELS[col] ?? col;
+  const [col, range] = column.split(':');
+  const label = SUMMARY_COLUMN_LABELS[col] ?? col;
+  // The bell lists threads from every month, so a summary cell carries its
+  // range — "x2" alone wouldn't say which month's number it's about.
+  const [from, to] = (range ?? '').split('_');
+  return from && to ? `${label} (${dayjs(from).format('DD/MM')}–${dayjs(to).format('DD/MM/YYYY')})` : label;
 }
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
+
+function personName(person: unknown, fallback?: string) {
+  const p = person && typeof person === 'object' ? (person as { firstName?: string; lastName?: string }) : null;
+  const name = p ? `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() : '';
+  return name || fallback || 'ບໍ່ຮູ້ຈັກ';
+}
+
+// One cell's comment thread as the page shows it: every message on that cell
+// in time order. Cells commented before threads existed can hold several
+// PayrollComment documents — they're merged here into one thread, and the
+// thread counts as open while any of them is.
+interface CommentThread {
+  key: string;
+  employeeId: string;
+  employeeCode?: string;
+  employeeName: string;
+  column: string;
+  messages: { id: string; text: string; authorName: string; createdAt: string }[];
+  status: 'open' | 'resolved';
+  resolvedAt?: string;
+  resolvedByName?: string;
+  lastActivity: string;
+}
+
+const RESOLVED_LIST_LIMIT = 50;
 
 // Leave.startDate/endDate are Mongoose Dates, so the API serializes them as
 // full ISO datetimes ("2026-09-23T00:00:00.000Z") — comparing that directly
@@ -682,21 +710,47 @@ const PayrollSummaryGrid: React.FC = () => {
   }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
   // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
-  // column) for whoever maintains payroll to see and address. Fetched in bulk
-  // like every other data source on this page, then grouped by a flat
-  // employee+column key — see the PayrollComment type for what that key looks
-  // like for each cell kind.
+  // column) for whoever maintains payroll to see, answer and confirm. One
+  // thread per cell: fetched in bulk like every other data source on this
+  // page, then grouped by a flat employee+column key — see the PayrollComment
+  // type for what that key looks like for each cell kind.
   const { data: commentsData, refetch: refetchComments } = useList<PayrollComment>({
     resource: 'payroll-comments',
     pagination: { pageSize: 5000 },
   });
-  const commentsByKey = useMemo(() => {
-    const map = new Map<string, PayrollComment[]>();
+  const threadsByKey = useMemo(() => {
+    const docsByKey = new Map<string, PayrollComment[]>();
     for (const c of commentsData?.data ?? []) {
-      const key = `${idOf(c.employee)}::${c.column}`;
-      const list = map.get(key) ?? [];
+      const employeeId = idOf(c.employee);
+      if (!employeeId) continue;
+      const key = `${employeeId}::${c.column}`;
+      const list = docsByKey.get(key) ?? [];
       list.push(c);
-      map.set(key, list);
+      docsByKey.set(key, list);
+    }
+    const map = new Map<string, CommentThread>();
+    for (const [key, docs] of docsByKey) {
+      const messages = docs
+        .flatMap((d) => [
+          { id: d._id, text: d.text, authorName: personName(d.author, d.authorEmail), createdAt: d.createdAt },
+          ...(d.replies ?? []).map((r) => ({ id: r._id, text: r.text, authorName: personName(r.author, r.authorEmail), createdAt: r.createdAt })),
+        ])
+        .sort((a, b) => dayjs(a.createdAt).valueOf() - dayjs(b.createdAt).valueOf());
+      const open = docs.some((d) => d.status !== 'resolved');
+      const lastResolved = open ? undefined : docs.reduce((a, b) => (dayjs(b.resolvedAt).isAfter(a.resolvedAt) ? b : a));
+      const employee = typeof docs[0].employee === 'object' ? docs[0].employee : undefined;
+      map.set(key, {
+        key,
+        employeeId: idOf(docs[0].employee) as string,
+        employeeCode: employee?.employeeCode,
+        employeeName: personName(employee, '-'),
+        column: docs[0].column,
+        messages,
+        status: open ? 'open' : 'resolved',
+        resolvedAt: lastResolved?.resolvedAt,
+        resolvedByName: lastResolved ? personName(lastResolved.resolvedBy, lastResolved.resolvedByEmail) : undefined,
+        lastActivity: messages[messages.length - 1].createdAt,
+      });
     }
     return map;
   }, [commentsData?.data]);
@@ -704,13 +758,25 @@ const PayrollSummaryGrid: React.FC = () => {
   const dayCommentColumn = (dateKey: string) => `day:${dateKey}`;
   const summaryCommentColumn = (col: string) => `${col}:${rangeStartKey}_${rangeEndKey}`;
 
-  const [commentCell, setCommentCell] = useState<{ employeeId: string; employeeName: string; column: string; label: string } | null>(
-    null
-  );
+  // fromBell: opened from the bell list — on close, scroll to that cell (when
+  // it's in the current view) so the reader lands on what they just checked.
+  const [commentCell, setCommentCell] = useState<{
+    employeeId: string;
+    employeeName: string;
+    column: string;
+    label: string;
+    fromBell?: boolean;
+  } | null>(null);
   const { mutate: createComment, isLoading: postingComment } = useCreate();
+  const { mutate: patchCommentStatus, isLoading: savingCommentStatus } = useCustomMutation();
 
-  const openComments = (employeeId: string, employeeName: string, column: string, label: string) => {
-    setCommentCell({ employeeId, employeeName, column, label });
+  const openComments = (employeeId: string, employeeName: string, column: string, label: string, fromBell = false) => {
+    setCommentCell({ employeeId, employeeName, column, label, fromBell });
+  };
+
+  const closeComments = () => {
+    if (commentCell?.fromBell) focusComment(commentCell.employeeId, commentCell.column);
+    setCommentCell(null);
   };
 
   // Typing a draft lives inside CommentThreadModal itself (its own local
@@ -718,64 +784,86 @@ const PayrollSummaryGrid: React.FC = () => {
   // (every employee × every day, twice over for the print copy), so if the
   // draft were state on THIS component every keystroke would re-render all
   // of that and the textbox would visibly lag/freeze.
-  const submitComment = (text: string) => {
+  //
+  // A cell that already has a thread gets this as a reply (server side), and
+  // any new message reopens it for review unless sent with resolve.
+  const submitComment = (text: string, resolve: boolean) => {
     if (!commentCell) return;
     createComment(
-      { resource: 'payroll-comments', values: { employee: commentCell.employeeId, column: commentCell.column, text } },
-      { onSuccess: () => refetchComments() }
+      { resource: 'payroll-comments', values: { employee: commentCell.employeeId, column: commentCell.column, text, resolve } },
+      {
+        onSuccess: () => {
+          refetchComments();
+          if (resolve) closeComments();
+        },
+      }
     );
   };
 
-  // Small clickable marker in a cell's corner — orange dot when the cell
-  // already has comments, faint when it doesn't, so a reviewer scanning the
-  // grid can spot flagged cells without opening anything. A pure-CSS ::after
-  // dot (see the .payroll-comment-cell rules below) instead of a rendered
-  // icon component — with up to ~250 employees × ~41 columns, an antd icon
-  // (several real DOM nodes: span > svg > path) on every single cell was
-  // enough extra DOM weight to make the whole table noticeably sluggish;
-  // a CSS pseudo-element costs nothing in the DOM at all.
+  // ຢືນຢັນ / ເປີດຄືນ without posting a message.
+  const setThreadStatus = (employeeId: string, column: string, status: 'open' | 'resolved', onDone?: () => void) => {
+    patchCommentStatus(
+      { url: `${API_URL}/payroll-comments/status`, method: 'patch', values: { employee: employeeId, column, status } },
+      {
+        onSuccess: () => {
+          refetchComments();
+          onDone?.();
+        },
+      }
+    );
+  };
+
+  // Small clickable marker in a cell's corner — orange dot while the cell's
+  // thread waits for ຢືນຢັນ, green once confirmed, faint when there's none,
+  // so a reviewer scanning the grid can spot flagged cells without opening
+  // anything. A pure-CSS ::after dot (see the .payroll-comment-cell rules
+  // below) instead of a rendered icon component — with up to ~250 employees
+  // × ~41 columns, an antd icon (several real DOM nodes: span > svg > path)
+  // on every single cell was enough extra DOM weight to make the whole table
+  // noticeably sluggish; a CSS pseudo-element costs nothing in the DOM at all.
   const withComment = (content: React.ReactNode, employeeId: string, employeeName: string, column: string, label: string) => {
-    const list = commentsByKey.get(`${employeeId}::${column}`) ?? [];
+    const thread = threadsByKey.get(`${employeeId}::${column}`);
+    const marker = thread ? (thread.status === 'open' ? ' has-comment' : ' is-resolved') : '';
     return (
       <div
         id={`comment-${employeeId}::${column}`}
-        className={`payroll-comment-cell${list.length ? ' has-comment' : ''}`}
+        className={`payroll-comment-cell${marker}`}
         onClick={() => openComments(employeeId, employeeName, column, label)}
-        title={list.length ? `${list.length} ຄອມເມັ້ນ` : 'ເພີ່ມຄອມເມັ້ນ'}
+        title={thread ? `${thread.messages.length} ຂໍ້ຄວາມ · ${thread.status === 'open' ? 'ລໍຖ້າຢືນຢັນ' : 'ຢືນຢັນແລ້ວ'}` : 'ເພີ່ມຄອມເມັ້ນ'}
       >
         {content}
       </div>
     );
   };
 
-  // Notification list — every comment that belongs to a cell actually shown
-  // in the CURRENT view (this employee list, this date range). A comment from
-  // a different month or a filtered-out employee has no matching cell to
-  // scroll to, so it's left out rather than shown as a dead link.
-  const validDayColumns = useMemo(() => new Set(days.map((d) => dayCommentColumn(d.format('YYYY-MM-DD')))), [days]);
-  const validSummaryColumns = useMemo(
-    () => new Set(SUMMARY_COLUMN_KEYS.map(summaryCommentColumn)),
-    [rangeStartKey, rangeEndKey]
-  );
-  const employeeById = useMemo(() => new Map(rows.map((r) => [r.employee._id, r.employee])), [rows]);
-  const visibleComments = useMemo(() => {
-    return (commentsData?.data ?? [])
-      .filter((c) => employeeById.has(idOf(c.employee) ?? '') && (validDayColumns.has(c.column) || validSummaryColumns.has(c.column)))
-      .slice()
-      .sort((a, b) => dayjs(b.createdAt).valueOf() - dayjs(a.createdAt).valueOf());
-  }, [commentsData?.data, employeeById, validDayColumns, validSummaryColumns]);
+  // Bell — every OPEN thread from any month or filter, so nothing waiting for
+  // review hides just because the page shows a different range; an entry
+  // opens its thread directly, no matching cell needed. The badge is the open
+  // count, so it drops as threads are confirmed. Confirmed threads are listed
+  // on the second tab, most recently confirmed first.
+  const { openThreads, resolvedThreads } = useMemo(() => {
+    const all = [...threadsByKey.values()];
+    return {
+      openThreads: all
+        .filter((t) => t.status === 'open')
+        .sort((a, b) => dayjs(b.lastActivity).valueOf() - dayjs(a.lastActivity).valueOf()),
+      resolvedThreads: all
+        .filter((t) => t.status === 'resolved')
+        .sort((a, b) => dayjs(b.resolvedAt).valueOf() - dayjs(a.resolvedAt).valueOf()),
+    };
+  }, [threadsByKey]);
 
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifTab, setNotifTab] = useState<'open' | 'resolved'>('open');
+  const shownThreads = notifTab === 'open' ? openThreads : resolvedThreads.slice(0, RESOLVED_LIST_LIMIT);
 
   // Imperative, not React state — scrolling/flashing a cell must NOT trigger
   // a re-render of the whole table (same reasoning as the comment draft
-  // living in its own component instead of state up here).
+  // living in its own component instead of state up here). A cell outside
+  // the current view simply isn't there to scroll to.
   const focusComment = (employeeId: string, column: string) => {
     const el = document.getElementById(`comment-${employeeId}::${column}`);
-    if (!el) {
-      message.info('ຊ່ອງນີ້ບໍ່ໄດ້ສະແດງຢູ່ໃນມຸມມອງປັດຈຸບັນ');
-      return;
-    }
+    if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     el.classList.remove('payroll-comment-flash');
     void el.offsetWidth;
@@ -839,6 +927,7 @@ const PayrollSummaryGrid: React.FC = () => {
           background: rgba(0, 0, 0, 0.12);
         }
         .payroll-comment-cell.has-comment::after { background: #fa8c16; width: 6px; height: 6px; }
+        .payroll-comment-cell.is-resolved::after { background: #52c41a; width: 6px; height: 6px; }
         .payroll-comment-flash { animation: payrollCommentFlash 1.6s ease-out 2; border-radius: 4px; }
         @keyframes payrollCommentFlash {
           0% { box-shadow: 0 0 0 0 rgba(250, 140, 22, 0.65); }
@@ -928,34 +1017,76 @@ const PayrollSummaryGrid: React.FC = () => {
               open={notifOpen}
               onOpenChange={setNotifOpen}
               placement="bottomRight"
-              title={`ລາຍການຄອມເມັ້ນ (${visibleComments.length})`}
+              title={
+                <Segmented
+                  size="small"
+                  value={notifTab}
+                  onChange={(v) => setNotifTab(v as 'open' | 'resolved')}
+                  options={[
+                    { value: 'open', label: `ລໍຖ້າຢືນຢັນ (${openThreads.length})` },
+                    { value: 'resolved', label: `ຢືນຢັນແລ້ວ (${resolvedThreads.length})` },
+                  ]}
+                />
+              }
               content={
-                <div style={{ width: 340, maxHeight: 420, overflowY: 'auto' }}>
-                  {visibleComments.length === 0 && <Typography.Text type="secondary">ບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
-                  {visibleComments.map((c) => {
-                    const emp = employeeById.get(idOf(c.employee) ?? '');
-                    const empName = emp ? `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim() : '-';
-                    const author = typeof c.author === 'object' ? c.author : null;
-                    const authorName = author ? `${author.firstName ?? ''} ${author.lastName ?? ''}`.trim() : c.authorEmail || 'ບໍ່ຮູ້ຈັກ';
+                <div style={{ width: 380, maxHeight: 440, overflowY: 'auto' }}>
+                  {shownThreads.length === 0 && (
+                    <Typography.Text type="secondary">{notifTab === 'open' ? 'ບໍ່ມີຄອມເມັ້ນລໍຖ້າຢືນຢັນ' : 'ຍັງບໍ່ມີຄອມເມັ້ນທີ່ຢືນຢັນແລ້ວ'}</Typography.Text>
+                  )}
+                  {shownThreads.map((t) => {
+                    const label = labelForColumn(t.column);
+                    const first = t.messages[0];
+                    const last = t.messages[t.messages.length - 1];
+                    const oneLine: CSSProperties = { fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
                     return (
                       <div
-                        key={c._id}
+                        key={t.key}
                         onClick={() => {
                           setNotifOpen(false);
-                          focusComment(idOf(c.employee) ?? '', c.column);
+                          openComments(t.employeeId, t.employeeName, t.column, label, true);
                         }}
-                        style={{ padding: '8px 4px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+                        style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 4px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
                       >
-                        <div style={{ fontSize: 12, fontWeight: 600 }}>{empName} · {labelForColumn(c.column)}</div>
-                        <div style={{ fontSize: 12, color: '#595959', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.text}</div>
-                        <div style={{ fontSize: 11, color: '#bfbfbf' }}>{authorName} · {dayjs(c.createdAt).format('DD/MM HH:mm')}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>
+                            {t.employeeCode ? `${t.employeeCode} ` : ''}{t.employeeName} · {label}
+                          </div>
+                          <div style={{ ...oneLine, color: '#595959' }}>{first.text}</div>
+                          {t.messages.length > 1 && (
+                            <div style={{ ...oneLine, color: '#8c8c8c' }}>↳ {last.authorName}: {last.text}</div>
+                          )}
+                          <div style={{ fontSize: 11, color: '#bfbfbf' }}>
+                            {t.status === 'open'
+                              ? `${last.authorName} · ${dayjs(t.lastActivity).format('DD/MM HH:mm')}`
+                              : `✓ ${t.resolvedByName ?? ''} · ${dayjs(t.resolvedAt).format('DD/MM HH:mm')}`}
+                            {t.messages.length > 1 && ` · ${t.messages.length} ຂໍ້ຄວາມ`}
+                          </div>
+                        </div>
+                        {t.status === 'open' && (
+                          <Button
+                            size="small"
+                            icon={<CheckOutlined />}
+                            disabled={savingCommentStatus}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setThreadStatus(t.employeeId, t.column, 'resolved');
+                            }}
+                          >
+                            ຢືນຢັນ
+                          </Button>
+                        )}
                       </div>
                     );
                   })}
+                  {notifTab === 'resolved' && resolvedThreads.length > RESOLVED_LIST_LIMIT && (
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      ສະແດງ {RESOLVED_LIST_LIMIT} ລາຍການລ່າສຸດ
+                    </Typography.Text>
+                  )}
                 </div>
               }
             >
-              <Badge count={visibleComments.length} size="small" offset={[-4, 4]}>
+              <Badge count={openThreads.length} size="small" offset={[-4, 4]}>
                 <Button icon={<BellOutlined />} />
               </Badge>
             </Popover>
@@ -1167,7 +1298,7 @@ const PayrollSummaryGrid: React.FC = () => {
       </Table>
       </div>
         ),
-        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, loading, offsetHeader]
+        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, loading, offsetHeader]
       )}
 
       <div className="payroll-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
@@ -1291,7 +1422,7 @@ const PayrollSummaryGrid: React.FC = () => {
         </tbody>
       </table>
         ),
-        [rows, days, commentsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
+        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
       )}
 
       <div className="payroll-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>
@@ -1306,10 +1437,15 @@ const PayrollSummaryGrid: React.FC = () => {
 
       <CommentThreadModal
         cell={commentCell}
-        comments={commentCell ? commentsByKey.get(`${commentCell.employeeId}::${commentCell.column}`) ?? [] : []}
+        thread={commentCell ? threadsByKey.get(`${commentCell.employeeId}::${commentCell.column}`) : undefined}
         posting={postingComment}
-        onClose={() => setCommentCell(null)}
+        savingStatus={savingCommentStatus}
+        onClose={closeComments}
         onSubmit={submitComment}
+        onSetStatus={(status) => {
+          if (!commentCell) return;
+          setThreadStatus(commentCell.employeeId, commentCell.column, status, status === 'resolved' ? closeComments : undefined);
+        }}
       />
     </div>
   );
@@ -1319,27 +1455,37 @@ const PayrollSummaryGrid: React.FC = () => {
 // not PayrollSummaryGrid's full table (every employee × every day, twice
 // over for the print copy) — co-locating the draft as state up there made
 // typing visibly freeze.
+//
+// Anyone with page access may ຢືນຢັນ, the author included — staff sometimes
+// share one login, so "someone else must confirm" can't be enforced anyway.
 function CommentThreadModal({
   cell,
-  comments,
+  thread,
   posting,
+  savingStatus,
   onClose,
   onSubmit,
+  onSetStatus,
 }: {
   cell: { employeeId: string; employeeName: string; column: string; label: string } | null;
-  comments: PayrollComment[];
+  thread: CommentThread | undefined;
   posting: boolean;
+  savingStatus: boolean;
   onClose: () => void;
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, resolve: boolean) => void;
+  onSetStatus: (status: 'open' | 'resolved') => void;
 }) {
   const [draft, setDraft] = useState('');
+  const text = draft.trim();
+  const isOpen = thread?.status === 'open';
 
-  const submit = () => {
-    const text = draft.trim();
+  const send = (resolve: boolean) => {
     if (!text) return;
-    onSubmit(text);
+    onSubmit(text, resolve);
     setDraft('');
   };
+  // With a draft, post it and confirm in one step; without, just confirm.
+  const confirm = () => (text ? send(true) : onSetStatus('resolved'));
 
   return (
     <Modal
@@ -1352,37 +1498,69 @@ function CommentThreadModal({
     >
       {cell && (
         <div>
+          {thread && (
+            <div style={{ marginBottom: 4 }}>
+              {isOpen ? (
+                <Tag color="orange">ລໍຖ້າຢືນຢັນ</Tag>
+              ) : (
+                <Tag color="green">
+                  ✓ ຢືນຢັນແລ້ວ · {thread.resolvedByName} · {dayjs(thread.resolvedAt).format('DD/MM/YYYY HH:mm')}
+                </Tag>
+              )}
+            </div>
+          )}
           <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
-            {comments.length === 0 && <Typography.Text type="secondary">ຍັງບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
-            {comments.map((c) => {
-              const author = typeof c.author === 'object' ? c.author : null;
-              const authorName = author ? `${author.firstName ?? ''} ${author.lastName ?? ''}`.trim() : c.authorEmail || 'ບໍ່ຮູ້ຈັກ';
-              return (
-                <div key={c._id} style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
-                  <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>
-                    {authorName} · {dayjs(c.createdAt).format('DD/MM/YYYY HH:mm')}
-                  </div>
-                  <div>{c.text}</div>
+            {!thread && <Typography.Text type="secondary">ຍັງບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
+            {thread?.messages.map((m, i) => (
+              <div
+                key={m.id}
+                style={{
+                  padding: '8px 0',
+                  borderBottom: '1px solid #f0f0f0',
+                  ...(i > 0 && { marginLeft: 16, paddingLeft: 10, borderLeft: '2px solid #f0f0f0' }),
+                }}
+              >
+                <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>
+                  {i > 0 && '↳ '}
+                  {m.authorName} · {dayjs(m.createdAt).format('DD/MM/YYYY HH:mm')}
                 </div>
-              );
-            })}
+                <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+              </div>
+            ))}
           </div>
           <Input.TextArea
             rows={2}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="ພິມຄອມເມັ້ນ..."
+            placeholder={thread ? 'ພິມຕອບ...' : 'ພິມຄອມເມັ້ນ...'}
             onPressEnter={(e) => {
               if (!e.shiftKey) {
                 e.preventDefault();
-                submit();
+                send(false);
               }
             }}
           />
+          {thread && !isOpen && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              ຖ້າຕອບ, ຄອມເມັ້ນນີ້ຈະກັບໄປ ລໍຖ້າຢືນຢັນ ອີກ
+            </Typography.Text>
+          )}
           <div style={{ textAlign: 'right', marginTop: 8 }}>
-            <Button type="primary" loading={posting} disabled={!draft.trim()} onClick={submit}>
-              ສົ່ງ
-            </Button>
+            <Space>
+              {thread && !isOpen && (
+                <Button loading={savingStatus} onClick={() => onSetStatus('open')}>
+                  ເປີດຄືນ
+                </Button>
+              )}
+              <Button type={isOpen ? 'default' : 'primary'} loading={posting} disabled={!text} onClick={() => send(false)}>
+                ສົ່ງ
+              </Button>
+              {isOpen && (
+                <Button type="primary" icon={<CheckOutlined />} loading={posting || savingStatus} onClick={confirm}>
+                  {text ? 'ສົ່ງ ແລະ ຢືນຢັນ' : 'ຢືນຢັນ'}
+                </Button>
+              )}
+            </Space>
           </div>
         </div>
       )}
