@@ -1,4 +1,35 @@
-import type { RestDayScheduleRow } from '../types';
+import type { Dayjs } from 'dayjs';
+import type { Employee, RestDayScheduleRow } from '../types';
+
+// An employee's own restrictedRestDays (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces
+// the position's when non-empty — same precedence as the server's
+// mergeRestDayRule in restDayRules.js.
+export function effectiveRestrictedRestDays(employee?: Employee | null): number[] {
+  if (employee?.restrictedRestDays?.length) return employee.restrictedRestDays;
+  const position = employee && typeof employee.position === 'object' ? employee.position : undefined;
+  return position?.restrictedRestDays ?? [];
+}
+
+// Mirrors firstMondayOfMonthAfter in server/src/utils/restDaySchedule.js —
+// the first Monday after today that opens a month (falls on its 1st–7th),
+// where HR's plan for that month's rest days starts.
+export function firstMondayOfMonthAfter(today: Dayjs): Dayjs {
+  const day = today.startOf('day');
+  let monday = day.subtract((day.day() + 6) % 7, 'day').add(7, 'day');
+  while (monday.date() > 7) monday = monday.add(7, 'day');
+  return monday;
+}
+
+// The Mondays a rest-day change can start on: each one after today, `weeks`
+// of them — every Monday-to-Sunday week then rests on one pattern.
+export function upcomingMondays(today: Dayjs, weeks = 17): Dayjs[] {
+  const day = today.startOf('day');
+  const next = day.subtract((day.day() + 6) % 7, 'day').add(7, 'day');
+  return Array.from({ length: weeks }, (_, i) => next.add(i * 7, 'day'));
+}
+
+export const mondayOptionLabel = (monday: Dayjs) =>
+  `${monday.format('dddd DD/MM/YYYY')}${monday.date() <= 7 ? ` — ຈັນທຳອິດຂອງເດືອນ${monday.format('MMMM')}` : ''}`;
 
 // Same value as FROM_THE_START in server/src/utils/restDaySchedule.js — the
 // effectiveDate of a row that set someone's rest day up before changes had

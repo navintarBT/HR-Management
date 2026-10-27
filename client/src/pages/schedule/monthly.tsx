@@ -1,6 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
-import { useList, useCustom, useGetIdentity, useCreate, useUpdate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
+import {
+  useList,
+  useCustom,
+  useGetIdentity,
+  useCreate,
+  useUpdate,
+  useDelete,
+  useInvalidate,
+  useNotification,
+  useNavigation,
+} from '@refinedev/core';
 import { Table, Typography, Space, Button, Modal, Form, TimePicker, DatePicker, Select, Input, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, CalendarOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
@@ -26,7 +36,14 @@ import { ScheduleCoversGrid } from './covers';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { preferredOverride } from '../../utils/dayOverride';
 import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
-import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
+import {
+  groupRestRowsByEmployee,
+  restDaysOn,
+  firstMondayOfMonthAfter,
+  upcomingMondays,
+  mondayOptionLabel,
+  effectiveRestrictedRestDays,
+} from '../../utils/restDays';
 
 // One action in the cell menu — a full-width button with a title and a one-line hint.
 const ChoiceButton: React.FC<{ title: string; description: string; onClick: () => void; disabled?: boolean }> = ({
@@ -60,25 +77,19 @@ function categoryLabel(category: ShiftCategory | string | undefined | null): str
   return category.name ? `${category.name} (${category.startTime}-${category.endTime})` : `${category.startTime}-${category.endTime}`;
 }
 
-// An employee's own restrictedRestDays (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces
-// the position's when non-empty — same precedence as the server's
-// mergeRestDayRule in restDayRules.js.
-function effectiveRestrictedRestDays(employee?: Employee | null): number[] {
-  if (employee?.restrictedRestDays?.length) return employee.restrictedRestDays;
-  const position = employee && typeof employee.position === 'object' ? employee.position : undefined;
-  return position?.restrictedRestDays ?? [];
-}
+// The start-date choice for someone with no rest day yet: as soon as the
+// week allows, worked out by the server from the days picked.
+const SOONEST = 'soonest';
 
-// Why a recurring rest-day change starts when it does (restDaySchedule.js
+// Why the soonest day is the day it is (restDaySchedule.js
 // effectiveDateForChange): from tomorrow while this week's rest is still
-// ahead, otherwise from next Monday.
-const REST_CHANGE_REASON: Record<RestDayChangePlan['reason'], string> = {
+// ahead, otherwise from next Monday. A Monday picked needs no reason.
+const REST_CHANGE_REASON: Partial<Record<RestDayChangePlan['reason'], string>> = {
   thisWeek: 'ອາທິດນີ້ຍັງບໍ່ທັນໄດ້ພັກ ຈຶ່ງເລີ່ມໄດ້ແຕ່ມື້ອື່ນ',
   restedThisWeek: 'ອາທິດນີ້ພັກແລ້ວ ຈຶ່ງເລີ່ມອາທິດໜ້າ',
   newDayPassed: 'ອາທິດນີ້ບໍ່ເຫຼືອວັນພັກໃໝ່ໃຫ້ພັກແລ້ວ ຈຶ່ງເລີ່ມອາທິດໜ້າ',
 };
-const restChangeReason = (plan: RestDayChangePlan) =>
-  !plan.restDays.length && plan.reason === 'newDayPassed' ? 'ອາທິດນີ້ຍັງພັກຕາມເດີມ ຈຶ່ງເລີ່ມອາທິດໜ້າ' : REST_CHANGE_REASON[plan.reason];
+const restChangeReason = (plan: RestDayChangePlan) => REST_CHANGE_REASON[plan.reason];
 
 const sameDays = (a: number[], b: number[]) => a.length === b.length && a.every((d) => b.includes(d));
 
@@ -421,29 +432,46 @@ export const MonthlyScheduleGrid: React.FC = () => {
 
   // A recurring weekly rest day — set once here and it applies to every
   // matching weekday automatically, with no per-day clicking and no Shift
-  // rows. A change never rewrites days already past: it takes effect from
-  // tomorrow when that still leaves this week one rest day, else from next
-  // Monday. The server works that out (routes/restDayHistory.js), and the
-  // dialog shows it, with any change still waiting to take effect, before
-  // anything is saved.
+  // rows. A change never rewrites days already past: it starts on the Monday
+  // picked (by default the first Monday of the next month, as HR plans each
+  // month ahead), so every week rests on one pattern — or, for someone with
+  // no rest day yet, as soon as the week allows. The server checks that
+  // (routes/restDayHistory.js), and the dialog shows it, with any change
+  // still waiting to take effect, before anything is saved.
   const [recurringRestFor, setRecurringRestFor] = useState<Employee | null>(null);
   // Changes not in effect yet, earliest first; null while loading.
   const [waitingRestChanges, setWaitingRestChanges] = useState<RestDayChangePlan['pending'] | null>(null);
+  // No recurring rest day today — offered the soonest day besides Mondays.
+  const [restSetup, setRestSetup] = useState(false);
+  // The Monday it starts (YYYY-MM-DD), or SOONEST; null until loaded.
+  const [restStart, setRestStart] = useState<string | null>(null);
   // The days picked in the dialog; null until the waiting changes are in.
   const [recurringRestDay, setRecurringRestDay] = useState<number[] | null>(null);
-  const [restPlan, setRestPlan] = useState<{ days: number[]; plan?: RestDayChangePlan; error?: string } | null>(null);
+  // Once days are picked by hand, moving the start date keeps them.
+  const [restDaysTouched, setRestDaysTouched] = useState(false);
+  const [restPlan, setRestPlan] = useState<{ days: number[]; start: string; plan?: RestDayChangePlan; error?: string } | null>(null);
   const [restReload, setRestReload] = useState(0);
   const [savingRestDay, setSavingRestDay] = useState(false);
 
-  // What they rest on once every waiting change is in. The picker starts
+  // What's set for the start date picked: the waiting change on or before it
+  // (for SOONEST, the first one waiting — someone with no rest day yet has
+  // only their setup to correct), else what applies today. The picker starts
   // there, so nothing changes until a day is actually picked.
-  const plannedRestDays = useMemo(() => {
-    const last = waitingRestChanges?.[waitingRestChanges.length - 1];
-    return last ? last.newRestDay : recurringRestFor?.defaultRestDay ?? [];
-  }, [recurringRestFor, waitingRestChanges]);
+  const restDaysSetFor = (start: string | null, waiting = waitingRestChanges) => {
+    const from = !start ? todayKey : start === SOONEST ? waiting?.[0]?.effectiveDate ?? todayKey : start;
+    const inForce = (waiting ?? []).filter((c) => c.effectiveDate <= from);
+    return inForce.length ? inForce[inForce.length - 1].newRestDay : recurringRestFor?.defaultRestDay ?? [];
+  };
+  const plannedRestDays = useMemo(() => restDaysSetFor(restStart), [recurringRestFor, waitingRestChanges, restStart]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Whose dialog the last load was for — a reload after cancelling a waiting
+  // change keeps the date picked; opening the dialog starts afresh.
+  const restLoadedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!recurringRestFor) return;
+    if (!recurringRestFor) {
+      restLoadedFor.current = null;
+      return;
+    }
     let stale = false;
     setWaitingRestChanges(null);
     setRecurringRestDay(null);
@@ -455,12 +483,21 @@ export const MonthlyScheduleGrid: React.FC = () => {
       .then(({ data }) => {
         if (stale) return;
         const waiting = [...data.replaces, ...data.pending].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+        // Fresh, it starts from HR's usual Monday (or the soonest day, for a setup).
+        const reloading = restLoadedFor.current === recurringRestFor._id && restStart;
+        restLoadedFor.current = recurringRestFor._id;
+        const start = reloading ? restStart : data.setup ? SOONEST : data.defaultStart;
         setWaitingRestChanges(waiting);
-        setRecurringRestDay(waiting.length ? waiting[waiting.length - 1].newRestDay : recurringRestFor.defaultRestDay ?? []);
+        setRestSetup(data.setup);
+        setRestStart(start);
+        setRestDaysTouched(false);
+        setRecurringRestDay(restDaysSetFor(start, waiting));
       })
       .catch((err) => {
         if (stale) return;
         setWaitingRestChanges([]);
+        setRestSetup(false);
+        setRestStart(firstMondayOfMonthAfter(dayjs()).format('YYYY-MM-DD'));
         setRecurringRestDay(recurringRestFor.defaultRestDay ?? []);
         notify?.({ type: 'error', message: err?.response?.data?.message || 'ໂຫຼດການປ່ຽນວັນພັກບໍ່ສຳເລັດ' });
       });
@@ -470,33 +507,57 @@ export const MonthlyScheduleGrid: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recurringRestFor, restReload]);
 
-  // What saving the picked days would do, asked again whenever they change.
+  const pickRestStart = (start: string) => {
+    setRestStart(start);
+    if (!restDaysTouched) setRecurringRestDay(restDaysSetFor(start));
+  };
+  const pickRestDays = (days: number[]) => {
+    setRestDaysTouched(true);
+    setRecurringRestDay(days);
+  };
+
+  // What saving the picked days from the picked date would do, asked again
+  // whenever either changes.
   useEffect(() => {
-    if (!recurringRestFor || !recurringRestDay || sameDays(recurringRestDay, plannedRestDays)) return;
+    if (!recurringRestFor || !recurringRestDay || !restStart || sameDays(recurringRestDay, plannedRestDays)) return;
     let stale = false;
     const days = recurringRestDay;
+    const start = restStart;
     axiosInstance
-      .post<RestDayChangePlan>(`${API_URL}/rest-day-history/preview`, { employee: recurringRestFor._id, restDays: days })
+      .post<RestDayChangePlan>(`${API_URL}/rest-day-history/preview`, {
+        employee: recurringRestFor._id,
+        restDays: days,
+        effectiveDate: start === SOONEST ? undefined : start,
+      })
       .then(({ data }) => {
-        if (!stale) setRestPlan({ days, plan: data });
+        if (!stale) setRestPlan({ days, start, plan: data });
       })
       .catch((err) => {
-        if (!stale) setRestPlan({ days, error: err?.response?.data?.message || 'ກວດການປ່ຽນວັນພັກບໍ່ສຳເລັດ' });
+        if (!stale) setRestPlan({ days, start, error: err?.response?.data?.message || 'ກວດການປ່ຽນວັນພັກບໍ່ສຳເລັດ' });
       });
     return () => {
       stale = true;
     };
-  }, [recurringRestFor, recurringRestDay, plannedRestDays]);
+  }, [recurringRestFor, recurringRestDay, restStart, plannedRestDays]);
 
   const restDayChanged = !!recurringRestDay && !sameDays(recurringRestDay, plannedRestDays);
-  // Only the answer for the days picked right now — an older one is still
-  // on its way out while the next is asked.
-  const currentRestPlan = restDayChanged && restPlan && sameDays(restPlan.days, recurringRestDay!) ? restPlan : null;
+  // Only the answer for the days and date picked right now — an older one is
+  // still on its way out while the next is asked.
+  const currentRestPlan =
+    restDayChanged && restPlan && restPlan.start === restStart && sameDays(restPlan.days, recurringRestDay!) ? restPlan : null;
   // A pick that lands on what's already in force that day only cancels the
   // waiting change(s) it replaces — with none, there's nothing to save.
   const canSaveRestDay = !!currentRestPlan?.plan && !(currentRestPlan.plan.unchanged && !currentRestPlan.plan.replaces.length);
   const shownRestPlan = currentRestPlan?.plan;
   const clearingRestDay = restDayChanged && recurringRestDay!.length === 0;
+
+  const restStartOptions = useMemo(
+    () => [
+      ...(restSetup ? [{ value: SOONEST, label: 'ໄວທີ່ສຸດ — ຍັງບໍ່ມີວັນພັກປະຈຳ' }] : []),
+      ...upcomingMondays(dayjs()).map((monday) => ({ value: monday.format('YYYY-MM-DD'), label: mondayOptionLabel(monday) })),
+    ],
+    [restSetup]
+  );
 
   const restrictedDaysForRecurring = effectiveRestrictedRestDays(recurringRestFor);
   const weekdayOptionsForRecurringRest = useMemo(
@@ -513,12 +574,13 @@ export const MonthlyScheduleGrid: React.FC = () => {
   // Queued shifts on a new rest day are listed in the dialog itself
   // (plan.conflicts), so saving needs no second confirm.
   const saveRecurringRest = async () => {
-    if (!recurringRestFor || !recurringRestDay || !canSaveRestDay) return;
+    if (!recurringRestFor || !recurringRestDay || !restStart || !canSaveRestDay) return;
     setSavingRestDay(true);
     try {
       const { data } = await axiosInstance.post<RestDayChangePlan>(`${API_URL}/rest-day-history`, {
         employee: recurringRestFor._id,
         restDays: recurringRestDay,
+        effectiveDate: restStart === SOONEST ? undefined : restStart,
       });
       notify?.({
         type: 'success',
@@ -1412,15 +1474,32 @@ export const MonthlyScheduleGrid: React.FC = () => {
             ))}
           </div>
         )}
+        <div style={{ marginBottom: 12 }}>
+          <Typography.Text>ເລີ່ມມີຜົນແຕ່</Typography.Text>
+          <Select
+            style={{ width: '100%', marginTop: 4 }}
+            options={restStartOptions}
+            loading={!restStart}
+            disabled={!restStart}
+            value={restStart ?? undefined}
+            onChange={(v: string) => pickRestStart(v)}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {restSetup
+              ? 'ຍັງບໍ່ມີວັນພັກປະຈຳ ຈຶ່ງເລີ່ມໄດ້ໄວທີ່ສຸດ ຫຼື ວັນຈັນທີ່ເລືອກ'
+              : 'ເລີ່ມວັນຈັນ — ແຕ່ລະອາທິດຈຶ່ງພັກຕາມແບບດຽວກັນທັງອາທິດ ບໍ່ມີອາທິດທີ່ພັກ 2 ເທື່ອ'}
+          </Typography.Text>
+        </div>
+        <Typography.Text>ວັນພັກ</Typography.Text>
         <Select
           mode="multiple"
-          style={{ width: '100%' }}
+          style={{ width: '100%', marginTop: 4 }}
           options={weekdayOptionsForRecurringRest}
           placeholder="ບໍ່ມີວັນພັກປະຈຳ"
           loading={!recurringRestDay}
           disabled={!recurringRestDay}
           value={recurringRestDay ?? []}
-          onChange={(v) => setRecurringRestDay(v)}
+          onChange={(v) => pickRestDays(v)}
         />
         {restrictedDaysForRecurring.length > 0 && (
           <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }}>
@@ -1444,9 +1523,11 @@ export const MonthlyScheduleGrid: React.FC = () => {
                     <div>
                       {shownRestPlan.restDays.length ? `ພັກ ${restDaysLabel(shownRestPlan.restDays)}` : 'ຍົກເລີກວັນພັກປະຈຳ'} ມີຜົນແຕ່{' '}
                       <Typography.Text strong>{dayjs(shownRestPlan.effectiveDate).format('dddd DD/MM/YYYY')}</Typography.Text>
-                      <div>
-                        <Typography.Text type="secondary">{restChangeReason(shownRestPlan)}</Typography.Text>
-                      </div>
+                      {restChangeReason(shownRestPlan) && (
+                        <div>
+                          <Typography.Text type="secondary">{restChangeReason(shownRestPlan)}</Typography.Text>
+                        </div>
+                      )}
                     </div>
                     {shownRestPlan.redirected && (
                       <Typography.Text type="warning">
@@ -1489,7 +1570,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
         {/* Clearing the picker by hand works too — this is the findable way,
             and either way saving asks again with a red button. */}
         {plannedRestDays.length > 0 && !!recurringRestDay?.length && (
-          <Button danger style={{ marginTop: 12 }} onClick={() => setRecurringRestDay([])}>
+          <Button danger style={{ marginTop: 12 }} onClick={() => pickRestDays([])}>
             ຍົກເລີກວັນພັກປະຈຳ
           </Button>
         )}
@@ -1519,13 +1600,23 @@ export const MonthlySchedulePage: React.FC = () => {
     setView(v);
     if (v === 'covers') setCoversMounted(true);
   };
+  const { data: identity } = useGetIdentity<Identity>();
+  const canPlanRestDays = identity?.role === 'admin' || identity?.role === 'manager';
+  const { list: goToList } = useNavigation();
 
   return (
     <List
       title={view === 'monthly' ? 'ຕາຕະລາງວັນພັກ' : 'ການເຮັດແທນ — ລາຍລະອຽດ'}
       breadcrumb={false}
       headerButtons={
-        <Select value={view} onChange={handleViewChange} options={SCHEDULE_VIEW_OPTIONS} style={{ minWidth: 220 }} />
+        <Space>
+          {canPlanRestDays && view === 'monthly' && (
+            <Button icon={<CalendarOutlined />} onClick={() => goToList('rest-day-plan')}>
+              ວາງແຜນວັນພັກ
+            </Button>
+          )}
+          <Select value={view} onChange={handleViewChange} options={SCHEDULE_VIEW_OPTIONS} style={{ minWidth: 220 }} />
+        </Space>
       }
     >
       <div style={{ display: view === 'monthly' ? 'block' : 'none' }}>

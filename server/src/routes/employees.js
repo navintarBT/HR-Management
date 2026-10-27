@@ -7,7 +7,7 @@ const Employee = require('../models/Employee');
 const User = require('../models/User');
 const Position = require('../models/Position');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { effectiveDateForChange, supersededChanges, cancelRestDayChange, recordRestDayChange } = require('../utils/restDaySchedule');
+const { startOfChange, recordRestDayChange } = require('../utils/restDaySchedule');
 const { recomputeLeavesAfterRestChange } = require('../utils/leaveDeduction');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
 const { resolveRestDayForEmployee } = require('../utils/restDayRules');
@@ -405,7 +405,8 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
 
     // A recurring rest day isn't overwritten here — that re-read every earlier
     // day as the new rest day. It's scheduled like ຕາຕະລາງວັນພັກ does
-    // (routes/restDayHistory.js): from tomorrow or next Monday, never the past.
+    // (routes/restDayHistory.js), from startOfChange's default day: the first
+    // Monday of the next month (sooner for someone with no rest day yet).
     // 'defaultRestDay' in employeePayload (rather than a truthy check) also
     // catches deliberately clearing it back to none — cleanEmployeePayload
     // already strips the key entirely when the field wasn't touched at all.
@@ -426,15 +427,9 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     }).populate(POPULATE);
 
     if (requestedRestDay) {
-      // Same as routes/restDayHistory.js: replaces a change still waiting to
-      // take effect by next Monday.
-      const replaced = await supersededChanges(item._id);
-      for (const waiting of replaced) {
-        // eslint-disable-next-line no-await-in-loop
-        await cancelRestDayChange(waiting);
-      }
-      const { effectiveDate } = await effectiveDateForChange(item, requestedRestDay);
-      const recalcFrom = [effectiveDate, ...replaced.map((r) => r.effectiveDate)].sort()[0];
+      // Same as routes/restDayHistory.js: replaces a change already waiting
+      // on that day.
+      const { effectiveDate } = await startOfChange(item, requestedRestDay);
       await recordRestDayChange({
         employeeId: item._id,
         newRestDay: requestedRestDay,
@@ -443,7 +438,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
         changedBy: req.user.employeeId ? req.user.employeeId._id : undefined,
         changedByEmail: req.user.email,
       });
-      await runAfterSave('recompute leaves after a rest-day change', () => recomputeLeavesAfterRestChange(item._id, recalcFrom));
+      await runAfterSave('recompute leaves after a rest-day change', () => recomputeLeavesAfterRestChange(item._id, effectiveDate));
     }
 
     if (['inactive', 'resigned', 'suspended'].includes(item.status)) {

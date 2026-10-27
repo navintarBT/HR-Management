@@ -7,9 +7,11 @@ const mongoose = require('mongoose');
 // this, the field was simply overwritten and every earlier day — months
 // already paid included — was re-read as the new rest day.
 //
-// A change made by hand never takes effect in the past: from tomorrow when
-// that still leaves exactly one rest day this week, else from next Monday
-// (restDaySchedule.js effectiveDateForChange). One not yet in effect can be
+// A change made by hand starts on a Monday after today — by default the
+// first Monday of the next month, as HR plans each month's rest days ahead —
+// so every Monday-to-Sunday week rests on one pattern; someone with no rest
+// day yet may start sooner (restDaySchedule.js startOfChange). Several can
+// be waiting at once, one per date, and any not yet in effect can be
 // cancelled. Employee.defaultRestDay holds whichever applies today.
 const restDayHistorySchema = new mongoose.Schema(
   {
@@ -20,8 +22,9 @@ const restDayHistorySchema = new mongoose.Schema(
     // existed got the (local) day they were made, except the ones that first
     // set someone's rest day up: FROM_THE_START (restDaySchedule.js).
     effectiveDate: { type: String, trim: true },
-    // 'manual' (ຕາຕະລາງວັນພັກ / the employee record), 'position-swap', or
-    // 'migration' for rows recorded before effectiveDate existed.
+    // 'manual' (ຕາຕະລາງວັນພັກ / the employee record), 'plan' (ວາງແຜນວັນພັກ),
+    // 'position-swap', or 'migration' for rows recorded before
+    // effectiveDate existed.
     source: { type: String, trim: true },
     // When Employee.defaultRestDay was switched to newRestDay — null while
     // the change is still waiting for its effectiveDate.

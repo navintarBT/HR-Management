@@ -53,13 +53,48 @@ export interface RestDayChangePlan {
   restDays: number[];
   redirected: boolean;
   effectiveDate: string;
-  reason: 'thisWeek' | 'restedThisWeek' | 'newDayPassed';
+  // 'chosen': the Monday asked for; 'monthStart': none asked, so the first
+  // Monday of the next month; the rest: the soonest day for someone with no
+  // rest day yet, and why (server/src/utils/restDaySchedule.js).
+  reason: 'chosen' | 'monthStart' | 'thisWeek' | 'restedThisWeek' | 'newDayPassed';
+  setup: boolean; // no recurring rest day today, so it may start before a Monday
+  defaultStart: string; // the first Monday of the next month
+  before: number[]; // what they rest on the day before effectiveDate
   unchanged: boolean;
-  replaces: { _id: string; effectiveDate: string; newRestDay: number[] }[];
-  pending: { _id: string; effectiveDate: string; newRestDay: number[] }[];
+  replaces: { _id: string; effectiveDate: string; newRestDay: number[] }[]; // the change already waiting on effectiveDate
+  pending: { _id: string; effectiveDate: string; newRestDay: number[] }[]; // waiting changes on other days
   conflicts: { date: string; startTime?: string; endTime?: string }[];
   leavesAffected: number;
   leavesRecalculated?: number;
+}
+
+// ວາງແຜນວັນພັກ (POST /rest-day-history/bulk/preview): what saving each
+// person's row would do, or why it can't be saved.
+export interface RestDayPlanRow {
+  employee: string;
+  employeeCode?: string;
+  name?: string;
+  restDays?: number[];
+  redirected?: boolean;
+  before?: number[];
+  planned?: number[];
+  action: 'change' | 'replace' | 'cancel' | 'none';
+  conflicts?: { date: string; startTime?: string; endTime?: string }[];
+  leavesAffected?: number;
+  error?: string;
+}
+
+export interface RestDayPlanPreview {
+  effectiveDate: string;
+  rows: RestDayPlanRow[];
+  errors: RestDayPlanRow[];
+}
+
+export interface RestDayPlanResult {
+  effectiveDate: string;
+  changed: number;
+  cancelled: number;
+  leavesRecalculated: number;
 }
 
 export interface Employee {

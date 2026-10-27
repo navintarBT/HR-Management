@@ -29,6 +29,22 @@ function mondayOf(dateKey) {
   const dow = weekdayOf(dateKey);
   return addDays(dateKey, dow === 0 ? -6 : 1 - dow);
 }
+const isDateKey = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+// The first Monday after today that opens a month (falls on its 1st–7th) —
+// where HR's plan for that month's rest days starts. Mirrored in
+// client/src/utils/restDays.ts.
+function firstMondayOfMonthAfter(today) {
+  let monday = addDays(mondayOf(today), 7);
+  while (Number(monday.slice(8)) > 7) monday = addDays(monday, 7);
+  return monday;
+}
+
+function badRequest(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
 
 function sameRestDays(a, b) {
   const x = [...(a ?? [])].sort();
@@ -106,17 +122,15 @@ async function restDaysOnFor(employeeId, dateKey) {
   return restDaysOn(schedules.get(String(employeeId)), employee?.defaultRestDay, dateKey);
 }
 
-// When a change made by hand starts: tomorrow, if they haven't had their
-// rest day yet this week and one of the new rest days is still ahead in it;
+// The soonest a change can start: tomorrow, if they haven't had their rest
+// day yet this week and one of the new rest days is still ahead in it;
 // otherwise next Monday — so the week it changes in still gets exactly one
-// rest day (e.g. resting Sunday, moved to Monday on a Tuesday: a change from
-// tomorrow would leave that week with none). Never today or earlier: a rest
-// day isn't changed after the fact. "Rested" counts their recurring rest day
-// (as it stood on each day) or a personal one-off ພັກ — not a day a queued
-// shift brought them in on, and not a company holiday.
-// `ignoreIds`: pending changes this one replaces (supersededChanges below),
-// judged as if already gone.
-async function effectiveDateForChange(employee, newRestDays, now = new Date(), ignoreIds = new Set()) {
+// rest day. Never today or earlier: a rest day isn't changed after the fact.
+// "Rested" counts their recurring rest day (as it stood on each day) or a
+// personal one-off ພັກ — not a day a queued shift brought them in on, and
+// not a company holiday. Only someone with no recurring rest day yet starts
+// this soon (startOfChange below).
+async function effectiveDateForChange(employee, newRestDays, now = new Date()) {
   const today = toDateKey(now);
   const weekStart = mondayOf(today);
   const weekEnd = addDays(weekStart, 6);
@@ -127,7 +141,7 @@ async function effectiveDateForChange(employee, newRestDays, now = new Date(), i
     loadRestDaySchedules([employee._id], weekStart, weekEnd),
     Shift.find({ employee: employee._id, date: { $gte: weekStart, $lte: weekEnd }, status: { $in: ['scheduled', 'rest', 'swapped'] } }, 'date status holiday').lean(),
   ]);
-  const rows = (schedules.get(String(employee._id)) ?? []).filter((row) => !ignoreIds.has(String(row._id)));
+  const rows = schedules.get(String(employee._id)) ?? [];
   const workingDates = new Set(overrides.filter((o) => o.status === 'scheduled').map((o) => o.date));
   const personalRestDates = new Set(overrides.filter((o) => o.status === 'rest' && !o.holiday).map((o) => o.date));
 
@@ -145,14 +159,27 @@ async function effectiveDateForChange(employee, newRestDays, now = new Date(), i
   return { effectiveDate: nextMonday, reason: restedThisWeek ? 'restedThisWeek' : 'newDayPassed' };
 }
 
-// Changes still waiting to take effect by next Monday — the latest any new
-// change by hand can start — are replaced by a new one: picking Wednesday
-// and then correcting it to Tuesday must not leave the Wednesday change
-// still due tomorrow. Changes planned further ahead stay.
-async function supersededChanges(employeeId, now = new Date()) {
+// When a change made by hand starts: on a Monday after today — the one asked
+// for, else the first Monday of the next month to begin, where HR's monthly
+// plan starts — so every Monday-to-Sunday week rests on one pattern from
+// start to end, and none gets two rest days or none. Someone with no
+// recurring rest day today has nothing to rest on twice: unless a date is
+// asked for, theirs starts as soon as effectiveDateForChange allows, and
+// that day may be asked for too. `reason` says which: 'chosen', 'monthStart',
+// or effectiveDateForChange's own.
+async function startOfChange(employee, newRestDays, requestedDate, now = new Date()) {
   const today = toDateKey(now);
-  const nextMonday = addDays(mondayOf(today), 7);
-  return RestDayHistory.find({ employee: employeeId, effectiveDate: { $gt: today, $lte: nextMonday } }).sort({ effectiveDate: 1 });
+  const schedules = await loadRestDaySchedules([employee._id], today, today);
+  const setup = !restDaysOn(schedules.get(String(employee._id)), employee.defaultRestDay, today).length;
+  const soonest = setup ? await effectiveDateForChange(employee, newRestDays, now) : null;
+  if (!requestedDate) {
+    return soonest
+      ? { effectiveDate: soonest.effectiveDate, setup, reason: soonest.reason }
+      : { effectiveDate: firstMondayOfMonthAfter(today), setup, reason: 'monthStart' };
+  }
+  if (!isDateKey(requestedDate) || requestedDate <= today) throw badRequest('ວັນທີ່ມີຜົນຕ້ອງເປັນມື້ອື່ນ ຫຼື ຫຼັງຈາກນັ້ນ');
+  if (weekdayOf(requestedDate) !== 1 && requestedDate !== soonest?.effectiveDate) throw badRequest('ວັນພັກໃໝ່ຕ້ອງເລີ່ມວັນຈັນ');
+  return { effectiveDate: requestedDate, setup, reason: 'chosen' };
 }
 
 // Records "from effectiveDate on, `employeeId` rests on newRestDay" — the
@@ -287,11 +314,16 @@ module.exports = {
   loadRestDaySchedules,
   restDaysOnFor,
   effectiveDateForChange,
-  supersededChanges,
+  startOfChange,
+  firstMondayOfMonthAfter,
   recordRestDayChange,
   cancelRestDayChange,
   applyDueRestDayChanges,
   migrateRestDayHistory,
   sameRestDays,
+  addDays,
+  weekdayOf,
+  isDateKey,
+  badRequest,
   FROM_THE_START,
 };

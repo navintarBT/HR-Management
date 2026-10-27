@@ -1,5 +1,6 @@
 const Employee = require('../models/Employee');
 const Position = require('../models/Position');
+const RestDayHistory = require('../models/RestDayHistory');
 const ScheduledPositionSwap = require('../models/ScheduledPositionSwap');
 const Shift = require('../models/Shift');
 const ShiftCategory = require('../models/ShiftCategory');
@@ -144,31 +145,44 @@ async function pinBlankScheduleForSwapDay(employee, effectiveDate) {
 // forbids it, in which case it's redirected to that position's configured
 // fallback right here — the same rule employees.js/shifts.js apply when
 // someone picks a rest day by hand, just applied automatically since nobody
-// is sitting at a form during a swap. Returns the resolved day (only when it
-// actually changed) so the caller can fold it into the same Employee.updateOne
-// The change is recorded as of the swap date (restDaySchedule.js), so days
-// before it keep the old rest day. Returns whether it changed; false too when
-// the day IS forbidden but the position has no fallback configured — that's
-// left as-is, same gap as before this existed, since there's no admin to ask
-// mid-swap.
+// is sitting at a form during a swap. The change is recorded as of the swap
+// date (restDaySchedule.js), so days before it keep the old rest day. A
+// change already planned for after the swap (ວາງແຜນວັນພັກ) was checked
+// against the old position, so it's checked again against the new one the
+// same way. A day that IS forbidden but has no fallback configured is left
+// as-is, same gap as before this existed, since there's no admin to ask
+// mid-swap. Returns whether anything changed.
 async function resolveMoverRestDay(employee, newPosition, effectiveDate) {
+  const rule = mergeRestDayRule(employee, newPosition);
+  const allowed = (days) => {
+    try {
+      return resolveRestDayForPosition(rule, days);
+    } catch {
+      return days;
+    }
+  };
+  const record = (newRestDay, date) =>
+    recordRestDayChange({
+      employeeId: employee._id,
+      newRestDay,
+      effectiveDate: date,
+      source: 'position-swap',
+      changedByEmail: 'ລະບົບ (ສະຫຼັບຕຳແໜ່ງອັດຕະໂນມັດ)',
+    });
+  let changed = false;
   const current = await restDaysOnFor(employee._id, effectiveDate);
-  if (!current.length) return false;
-  let resolved;
-  try {
-    resolved = resolveRestDayForPosition(mergeRestDayRule(employee, newPosition), current);
-  } catch {
-    return false;
+  if (current.length && !sameRestDays(allowed(current), current)) {
+    await record(allowed(current), effectiveDate);
+    changed = true;
   }
-  if (sameRestDays(resolved, current)) return false;
-  await recordRestDayChange({
-    employeeId: employee._id,
-    newRestDay: resolved,
-    effectiveDate,
-    source: 'position-swap',
-    changedByEmail: 'ລະບົບ (ສະຫຼັບຕຳແໜ່ງອັດຕະໂນມັດ)',
-  });
-  return true;
+  const planned = await RestDayHistory.find({ employee: employee._id, effectiveDate: { $gt: effectiveDate } }).sort({ effectiveDate: 1 }).lean();
+  for (const row of planned) {
+    if (sameRestDays(allowed(row.newRestDay), row.newRestDay)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await record(allowed(row.newRestDay), row.effectiveDate);
+    changed = true;
+  }
+  return changed;
 }
 
 // Whoever currently holds a position all shares one working time (see the

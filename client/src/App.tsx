@@ -62,6 +62,7 @@ import { ShiftCategoryListPage } from './pages/schedule/categories';
 import { HolidayListPage } from './pages/schedule/holidays';
 import { SubstituteRulePage, RestDayRulePage, NoAbsenceRulePage } from './pages/schedule/substituteRule';
 import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
+import { RestDayPlanPage } from './pages/schedule/restDayPlan';
 import { DeviceUsersPage } from './pages/schedule/deviceUsers';
 import { ScannerDevicesPage } from './pages/schedule/devices';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
@@ -166,6 +167,11 @@ function RootLayout() {
             name: 'schedule-monthly',
             list: '/schedule/monthly',
             meta: { label: 'ຕັ້ງຄ່າແຜນວຽກ', icon: <CoffeeOutlined />, parent: 'schedule' },
+          },
+          {
+            name: 'rest-day-plan',
+            list: '/schedule/rest-day-plan',
+            meta: { label: 'ວາງແຜນວັນພັກ', icon: <CalendarOutlined />, parent: 'schedule' },
           },
           {
             name: 'rest-day-history',
@@ -301,6 +307,7 @@ export const appRoutes = (
         <Route path="substitute-rule" element={<SubstituteRulePage />} />
         <Route path="rest-day-rule" element={<RestDayRulePage />} />
         <Route path="no-absence-rule" element={<NoAbsenceRulePage />} />
+        <Route path="rest-day-plan" element={<RestDayPlanPage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
         <Route path="devices" element={<ScannerDevicesPage />} />
         <Route path="device-users" element={<DeviceUsersPage />} />
