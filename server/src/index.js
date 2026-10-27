@@ -41,6 +41,7 @@ const { runDueScheduledShiftChanges } = require('./utils/scheduledShiftChange');
 const { markAbsentForMissedScans } = require('./utils/attendanceProcessor');
 const { deactivateEndedResignations } = require('./utils/employeeStatus');
 const { lockUnlockedAbsences } = require('./utils/absenceSeverity');
+const { migrateRestDayHistory, applyDueRestDayChanges } = require('./utils/restDaySchedule');
 
 const app = express();
 
@@ -114,17 +115,31 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 
 connectDB()
-  .then(() => {
+  .then(async () => {
     app.listen(PORT, () => console.log(`[server] listening on http://localhost:${PORT}`));
     console.log(`[server] timezone ${Intl.DateTimeFormat().resolvedOptions().timeZone}, now ${new Date().toString()}`);
-    // Catches any position swap scheduled for a date that's already arrived
-    // (including while the server was down), then re-checks periodically so
-    // one left running overnight still fires without anyone's browser open.
+    // Rest-day changes recorded before they carried their own effective date
+    // get dated (the day each was made; someone's first setup applies from
+    // the start) before anything reads them — the absence sweep below judges
+    // each day by the rest day in force then. A no-op once done.
+    await migrateRestDayHistory()
+      .then((n) => n && console.log(`[rest-days] dated ${n} earlier rest-day changes`))
+      .catch((err) => console.error('[rest-days] dating earlier changes failed', err));
     // Absences recorded before tiers were stored on them get locked at the
     // tier the pages already showed — a no-op once that's done.
     lockUnlockedAbsences()
       .then((n) => n && console.log(`[attendance] locked the deduction tier on ${n} earlier absences`))
       .catch((err) => console.error('[attendance] locking absence tiers failed', err));
+    // A rest-day change whose day has come switches Employee.defaultRestDay
+    // (what "today" shows) — same catch-up-on-restart + periodic recheck as
+    // the jobs below.
+    applyDueRestDayChanges().catch((err) => console.error('[rest-days] startup check failed', err));
+    setInterval(() => {
+      applyDueRestDayChanges().catch((err) => console.error('[rest-days] scheduled check failed', err));
+    }, 15 * 60 * 1000);
+    // Catches any position swap scheduled for a date that's already arrived
+    // (including while the server was down), then re-checks periodically so
+    // one left running overnight still fires without anyone's browser open.
     runDueScheduledSwaps().catch((err) => console.error('[position-swaps] startup check failed', err));
     setInterval(() => {
       runDueScheduledSwaps().catch((err) => console.error('[position-swaps] scheduled check failed', err));

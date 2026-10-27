@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
-import { useList } from '@refinedev/core';
-import { Table, Select, Input, Space, Typography } from 'antd';
+import { useList, useNotification } from '@refinedev/core';
+import { Table, Select, Input, Space, Typography, Tag, Button, Popconfirm } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Department, Position, RestDayHistory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
+import { REST_DAY_FROM_THE_START } from '../../utils/restDays';
+import { API_URL, axiosInstance } from '../../providers/axios';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -17,10 +19,18 @@ function weekdayLabels(days: number[] | null | undefined) {
   return days.map((day) => WEEKDAY_OPTIONS.find((o) => o.value === day)?.label ?? '-').join(', ');
 }
 
-// Read-only audit trail — rows are written server-side only, whenever
-// Employee.defaultRestDay actually changes (see routes/employees.js). There's
-// no history before this feature existed, since nothing was tracking it yet.
+// The audit trail of recurring rest-day changes — rows are written
+// server-side only (routes/restDayHistory.js, employees.js, a position swap).
+// Each takes effect on its effectiveDate, never earlier; one still waiting
+// for it can be cancelled here. There's no history before this feature
+// existed, since nothing was tracking it yet.
+// A row from before effective dates existed took effect the day it was made —
+// or, when it first set the rest day up, from the start.
+const effectiveDateOf = (r: RestDayHistory) => r.effectiveDate ?? dayjs(r.createdAt).format('YYYY-MM-DD');
+
 export const RestDayHistoryPage: React.FC = () => {
+  const todayKey = dayjs().format('YYYY-MM-DD');
+  const { open: notify } = useNotification();
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>();
   const [positionFilter, setPositionFilter] = useState<string>();
@@ -45,7 +55,7 @@ export const RestDayHistoryPage: React.FC = () => {
       .map((p) => ({ label: p.name, value: p._id }));
   }, [allPositions, departmentFilter]);
 
-  const { data, isLoading } = useList<RestDayHistory>({
+  const { data, isLoading, refetch } = useList<RestDayHistory>({
     resource: 'rest-day-history',
     pagination: { pageSize: 2000, mode: 'server' },
     sorters: [{ field: 'createdAt', order: 'desc' }],
@@ -71,6 +81,16 @@ export const RestDayHistoryPage: React.FC = () => {
   );
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
+
+  const cancelChange = async (id: string) => {
+    try {
+      await axiosInstance.delete(`${API_URL}/rest-day-history/${id}`);
+      notify?.({ type: 'success', message: 'ຍົກເລີກການປ່ຽນວັນພັກທີ່ລໍຖ້າແລ້ວ' });
+      refetch();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
+    }
+  };
 
   return (
     <List title="ປະຫວັດປ່ຽນວັນພັກ" breadcrumb={false}>
@@ -117,7 +137,21 @@ export const RestDayHistoryPage: React.FC = () => {
         sticky={{ offsetHeader }}
         locale={{ emptyText: 'ຍັງບໍ່ມີການປ່ຽນວັນພັກປະຈຳ' }}
       >
-        <Table.Column title="ວັນທີ່ປ່ຽນ" width={150} render={(_, r: RestDayHistory) => dayjs(r.createdAt).format('DD/MM/YYYY HH:mm')} />
+        <Table.Column title="ວັນທີ່ບັນທຶກ" width={150} render={(_, r: RestDayHistory) => dayjs(r.createdAt).format('DD/MM/YYYY HH:mm')} />
+        <Table.Column
+          title="ມີຜົນແຕ່"
+          width={150}
+          render={(_, r: RestDayHistory) => (
+            <Space size={6}>
+              {effectiveDateOf(r) === REST_DAY_FROM_THE_START ? (
+                <span title="ຕັ້ງວັນພັກຄັ້ງທຳອິດ — ໃຊ້ກັບທຸກມື້ກ່ອນໜ້ານັ້ນນຳ">ຕັ້ງແຕ່ເລີ່ມຕົ້ນ</span>
+              ) : (
+                <span>{dayjs(effectiveDateOf(r)).format('DD/MM/YYYY')}</span>
+              )}
+              {effectiveDateOf(r) > todayKey ? <Tag color="orange">ລໍຖ້າມີຜົນ</Tag> : <Tag color="green">ມີຜົນແລ້ວ</Tag>}
+            </Space>
+          )}
+        />
         <Table.Column
           title="ລະຫັດ"
           width={90}
@@ -163,6 +197,19 @@ export const RestDayHistoryPage: React.FC = () => {
             if (changer) return `${changer.firstName ?? ''} ${changer.lastName ?? ''}`;
             return r.changedByEmail || '-';
           }}
+        />
+        <Table.Column
+          title=""
+          width={90}
+          render={(_, r: RestDayHistory) =>
+            effectiveDateOf(r) > todayKey ? (
+              <Popconfirm title="ຍົກເລີກການປ່ຽນນີ້?" okText="ຍົກເລີກການປ່ຽນ" cancelText="ບໍ່" onConfirm={() => cancelChange(r._id)}>
+                <Button size="small" danger>
+                  ຍົກເລີກ
+                </Button>
+              </Popconfirm>
+            ) : null
+          }
         />
       </Table>
     </List>

@@ -49,6 +49,10 @@ const leaveSchema = new mongoose.Schema(
     // null/unset for an ordinary, unsplit leave.
     splitGroupId: { type: mongoose.Schema.Types.ObjectId, default: null },
     splitPart: { type: String, enum: ['before', 'after'], default: null },
+    // Set when billableDays/x1/ປ were worked out again because the employee's
+    // rest day changed over this leave's dates (utils/leaveDeduction.js
+    // recomputeLeavesAfterRestChange) — what changed and when, for ໃບລາ.
+    recalcNote: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );

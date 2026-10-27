@@ -4,11 +4,22 @@ import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/
 import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm, message } from 'antd';
 import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { AttendanceDaily, Department, Employee, Identity, Position, Shift, ScheduledPositionSwap, ShiftChangeLogEntry } from '../../types';
+import type {
+  AttendanceDaily,
+  Department,
+  Employee,
+  Identity,
+  Position,
+  Shift,
+  ScheduledPositionSwap,
+  ShiftChangeLogEntry,
+  RestDayScheduleRow,
+} from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import { lateLabel } from '../../utils/lateSeverity';
 import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
+import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 function idOf(value: unknown) {
@@ -161,6 +172,17 @@ const AttendanceSummaryGrid: React.FC = () => {
   });
   const shiftLogsByEmployee = useMemo(() => groupLogsByEmployee(shiftLogsData?.data), [shiftLogsData?.data]);
 
+  // Each person's recurring rest day as it stood on every day in range — a
+  // changed rest day applies from its own date on (utils/restDays.ts).
+  const { data: restScheduleData } = useCustom<RestDayScheduleRow[]>({
+    url: `${API_URL}/rest-day-history/schedule`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
+  });
+  const restRowsByEmployee = useMemo(() => groupRestRowsByEmployee(restScheduleData?.data), [restScheduleData?.data]);
+  const isRecurringRestDay = (emp: Employee, dateKey: string, day: Dayjs) =>
+    restDaysOn(restRowsByEmployee.get(emp._id), emp.defaultRestDay, dateKey).includes(day.day());
+
   const byEmpDate = useMemo(() => {
     const map: Record<string, AttendanceDaily> = {};
     for (const d of dailyRows) {
@@ -271,7 +293,7 @@ const AttendanceSummaryGrid: React.FC = () => {
     if (scheduledByEmpDate[`${emp._id}_${dateKey}`]) return false;
     if (restByEmpDate[`${emp._id}_${dateKey}`]) return true;
     const row = byEmpDate[`${emp._id}_${dateKey}`];
-    return !row && (emp.defaultRestDay ?? []).includes(day.day());
+    return !row && isRecurringRestDay(emp, dateKey, day);
   };
 
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
@@ -644,7 +666,7 @@ const AttendanceSummaryGrid: React.FC = () => {
                     </div>
                   );
                 }
-                if ((emp.defaultRestDay ?? []).includes(day.day())) {
+                if (isRecurringRestDay(emp, dateKey, day)) {
                   const rest = CELL_STYLE.rest;
                   return (
                     <div style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>

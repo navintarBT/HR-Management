@@ -61,6 +61,7 @@ import type {
 } from '../../types';
 import { palette, categorical, tint } from '../../theme/palette';
 import { AttendanceStatusTag, LeaveTypeTag, employeeStatusMap } from '../../components/StatusTags';
+import { REST_DAY_FROM_THE_START } from '../../utils/restDays';
 
 const CARD_RADIUS = 12;
 const CARD_BODY_PADDING = 20;
@@ -709,11 +710,21 @@ export const DashboardPage: React.FC = () => {
                       recentRestDayChanges.map((h) => {
                         const emp = typeof h.employee === 'object' ? h.employee : undefined;
                         const empName = emp ? `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim() : '-';
+                        // The day it takes effect, not the day it was entered —
+                        // a change never starts before tomorrow.
+                        const effective = h.effectiveDate ?? dayjs(h.createdAt).format('YYYY-MM-DD');
                         return (
                           <div key={h._id}>
                             <Typography.Text>{empName}</Typography.Text>{' '}
                             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                              ({dayjs(h.createdAt).format('DD MMM')})
+                              {effective === REST_DAY_FROM_THE_START ? (
+                                '(ຕັ້ງວັນພັກຄັ້ງທຳອິດ)'
+                              ) : (
+                                <>
+                                  (ມີຜົນ {dayjs(effective).format('DD MMM')}
+                                  {effective > todayKey ? ' · ລໍຖ້າ' : ''})
+                                </>
+                              )}
                             </Typography.Text>
                           </div>
                         );

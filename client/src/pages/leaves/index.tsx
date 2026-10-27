@@ -650,7 +650,7 @@ export const LeaveDetailList: React.FC = () => {
           width={220}
           ellipsis
           render={(_, record: Leave) => {
-            const parts = [formatRestDayOverlaps(record.restDayOverlaps), record.deductNote].filter(Boolean);
+            const parts = [formatRestDayOverlaps(record.restDayOverlaps), record.deductNote, record.recalcNote].filter(Boolean);
             return parts.length ? parts.join(' — ') : '-';
           }}
         />

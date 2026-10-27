@@ -29,9 +29,37 @@ export interface RestDayHistory {
   employee: Employee | string;
   previousRestDay: number[]; // 0 = Sunday .. 6 = Saturday, [] = had none set before
   newRestDay: number[]; // [] = cleared to none
+  effectiveDate?: string; // YYYY-MM-DD — first day newRestDay applies
+  source?: string; // 'manual' | 'position-swap' | 'migration'
+  appliedAt?: string | null; // null while still waiting for effectiveDate
   changedBy?: Employee | string;
   changedByEmail?: string; // fallback identity when changedBy has no linked Employee (e.g. a pure admin account)
   createdAt: string;
+}
+
+// The rest-day changes a page needs for a date range (GET /rest-day-history/schedule).
+export interface RestDayScheduleRow {
+  _id: string;
+  employee: string;
+  effectiveDate: string;
+  previousRestDay: number[];
+  newRestDay: number[];
+  createdAt: string;
+}
+
+// What saving a recurring rest day would do (POST /rest-day-history/preview) —
+// and, from the save itself, what it did.
+export interface RestDayChangePlan {
+  restDays: number[];
+  redirected: boolean;
+  effectiveDate: string;
+  reason: 'thisWeek' | 'restedThisWeek' | 'newDayPassed';
+  unchanged: boolean;
+  replaces: { _id: string; effectiveDate: string; newRestDay: number[] }[];
+  pending: { _id: string; effectiveDate: string; newRestDay: number[] }[];
+  conflicts: { date: string; startTime?: string; endTime?: string }[];
+  leavesAffected: number;
+  leavesRecalculated?: number;
 }
 
 export interface Employee {
@@ -144,6 +172,9 @@ export interface Leave {
   deductAmount?: 'X0' | 'X1' | 'X2' | 'X3' | null;
   deductAmountTotal?: number | null;
   deductNote?: string | null;
+  // Set when a rest-day change made the server work the days out again
+  // (server/src/utils/leaveDeduction.js) — what changed, and when.
+  recalcNote?: string | null;
   restDayOverlaps?: { date: string; type: 'personal' | 'holiday'; holidayName?: string }[];
   // Set only when this request's dates crossed the employee's own 1-year
   // tenure anniversary — the server splits it into two linked records

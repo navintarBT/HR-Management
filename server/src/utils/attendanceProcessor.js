@@ -7,6 +7,7 @@ const ShiftCategory = require('../models/ShiftCategory');
 const ShiftChangeLog = require('../models/ShiftChangeLog');
 const { shiftOnDate, shiftLogsFor } = require('./shiftHistory');
 const { severityFieldsForAbsence, CLEARED_SEVERITY } = require('./absenceSeverity');
+const { restDaysOn, restDaysOnFor, loadRestDaySchedules } = require('./restDaySchedule');
 
 const GRACE_MINUTES = 15;
 const SEVERE_LATE_MINUTES = 60;
@@ -156,10 +157,11 @@ function groupByEmployee(rows) {
 }
 
 // Called only for a day with no 'scheduled'/'swapped' Shift row of its own.
+// The recurring rest day is the one in force on dateKey (restDaySchedule.js),
+// not today's.
 async function isRestDay(employeeId, dateKey) {
   if (await Shift.exists({ employee: employeeId, date: dateKey, status: 'rest' })) return true;
-  const employee = await Employee.findById(employeeId, 'defaultRestDay').lean();
-  return (employee?.defaultRestDay ?? []).includes(new Date(`${dateKey}T00:00:00`).getDay());
+  return (await restDaysOnFor(employeeId, dateKey)).includes(new Date(`${dateKey}T00:00:00`).getDay());
 }
 
 // A rest day only behaves like their regular overnight shift if they actually
@@ -432,6 +434,8 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
     if (!logsByEmployee.has(key)) logsByEmployee.set(key, []);
     logsByEmployee.get(key).push(log);
   }
+  // Same for the recurring rest day — the one in force on each day filled.
+  const restSchedules = await loadRestDaySchedules(employees.map((e) => e._id), startDateKey, endDateKey);
 
   let dateKey = startDateKey;
   while (dateKey <= endDateKey) {
@@ -475,7 +479,7 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
         skipped.push({ employee: empId, date: dateKey });
         continue;
       }
-      if (!shift && (employee.defaultRestDay ?? []).includes(dow)) {
+      if (!shift && restDaysOn(restSchedules.get(empId), employee.defaultRestDay, dateKey).includes(dow)) {
         skipped.push({ employee: empId, date: dateKey });
         continue;
       }
@@ -536,7 +540,7 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
 //  - it's before the employee's hireDate (not employed yet),
 //  - the employee has no scanner code (deviceUserId) — they can't scan at all,
 //  - a Shift override marks it 'rest' or 'swapped', or no override exists but
-//    it's the employee's recurring defaultRestDay,
+//    it's the recurring rest day in force for them that day,
 //  - there's no resolvable expected shift at all that day (nothing to be
 //    absent FROM — e.g. a ມາບໍ່ປົກກະຕິ position with no fixed schedule),
 //  - its scan-capture window (resolveShiftWindow, overnight-aware) hasn't
@@ -547,6 +551,14 @@ async function markAbsentForMissedScans() {
   const now = new Date();
   const employees = await Employee.find({ status: 'active' }, '_id defaultRestDay hireDate deviceUserId');
   const marked = [];
+  // The recurring rest day in force on each swept day — reading today's
+  // (Employee.defaultRestDay) turned someone's old rest day into a "missed"
+  // work day the moment it was changed.
+  const restSchedules = await loadRestDaySchedules(
+    employees.map((e) => e._id),
+    addDays(toDateKey(now), -ABSENT_SWEEP_DAYS_BACK),
+    addDays(toDateKey(now), -1)
+  );
 
   for (let daysAgo = 1; daysAgo <= ABSENT_SWEEP_DAYS_BACK; daysAgo += 1) {
     const dateKey = addDays(toDateKey(now), -daysAgo);
@@ -578,7 +590,7 @@ async function markAbsentForMissedScans() {
       // look like it had an override, so it was judged as a work day.
       const overrideStatus = pickDayOverride(overridesByEmployee.get(empId))?.status;
       if (overrideStatus === 'rest' || overrideStatus === 'swapped') continue;
-      if (!overrideStatus && (employee.defaultRestDay ?? []).includes(dow)) continue;
+      if (!overrideStatus && restDaysOn(restSchedules.get(empId), employee.defaultRestDay, dateKey).includes(dow)) continue;
 
       // eslint-disable-next-line no-await-in-loop
       const { windowEnd, expected } = await resolveShiftWindow(employee._id, dateKey);

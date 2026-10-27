@@ -5,10 +5,11 @@ import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/cor
 import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, Segmented, Tag, message } from 'antd';
 import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined, CheckOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment } from '../../types';
+import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment, RestDayScheduleRow } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL } from '../../providers/axios';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 
 const { RangePicker } = DatePicker;
 
@@ -221,6 +222,22 @@ const PRINT_DAY_LEGEND_TEXT: Record<PrintDayState, string> = {
   blank: 'ບໍ່ມີຂໍ້ມູນສະແກນ',
 };
 
+// A rest day with something recorded against it anyway. It still counts as
+// ພ either way — a scan doesn't turn a rest day into a work day, and a rest
+// day is never charged as an absence — the bar is only there so the mismatch
+// gets checked instead of passing unnoticed. A bar along the bottom edge, not
+// a dot: the top-right corner belongs to the comment marker.
+type RestDayFlag = 'workedOnRest' | 'absentOnRest';
+const REST_DAY_FLAG: Record<RestDayFlag, { color: string; title: string; legend: string }> = {
+  workedOnRest: { color: '#389e0d', title: 'ມີການສະແກນໃນມື້ພັກ — ຍັງນັບເປັນ ພ', legend: 'ມາເຮັດວຽກມື້ພັກ (ນັບເປັນ ພ)' },
+  absentOnRest: {
+    color: '#cf1322',
+    title: 'ມີບັນທຶກຂາດວຽກໃນມື້ພັກ — ໜ້ານີ້ນັບເປັນ ພ, ກະລຸນາກວດເບິ່ງ',
+    legend: 'ມີ ຂ ໃນມື້ພັກ (ນັບເປັນ ພ)',
+  },
+};
+const REST_DAY_FLAG_BAR: CSSProperties = { position: 'absolute', left: 2, right: 2, bottom: 0, height: 3, borderRadius: 2 };
+
 // Plain, undistorted borders for the print-only table — a real <table> with
 // real per-cell borders instead of AntD's Table (which, once forced through
 // a CSS transform to fit the page width, warped the glyphs and lost its
@@ -260,7 +277,7 @@ const PRINT_MIN_DAY_COL_WIDTH_PX = 6;
 // Sends a per-employee attendance/leave rollup to ການເງິນ for payroll. Day-by-day
 // bucketing mirrors AttendanceLogsPage's isRestDay precedence (a queued 'scheduled'
 // override always wins, then 'rest'/'swapped' overrides, then the recurring
-// defaultRestDay) so this page never disagrees with what ປະຫວັດການສະແກນ shows for
+// rest day in force that day) so this page never disagrees with what ປະຫວັດການສະແກນ shows for
 // the same date. x1/x2/x3/ป read straight off ການລາ's own deduction-tier fields
 // (deductDaysX1 grouped by which deductAmount tier the request carries, deductDaysX2
 // for the free-grace bucket) rather than recomputing anything — a leave that
@@ -419,59 +436,43 @@ const PayrollSummaryGrid: React.FC = () => {
   });
   const overtimeRecords = overtimeData?.data ?? [];
 
-  // ขาดงาน — the one place this page reads the actual recorded attendance
-  // outcome rather than just what was scheduled. Without this, a day the
-  // employee was scheduled to work but never scanned for (a real no-show, or
-  // a disciplinary override — see attendanceActions.js mark-absent) still
-  // counted as a worked day here even while ປະຫວັດການສະແກນ correctly showed
-  // it as ຂາດວຽກ.
-  const { data: absentDailyData, isLoading: absentLoading } = useList<AttendanceDaily>({
-    resource: 'attendance-daily',
-    filters: [
-      { field: 'date', operator: 'gte', value: rangeStartKey },
-      { field: 'date', operator: 'lte', value: rangeEndKey },
-      { field: 'status', operator: 'eq', value: 'absent' },
-    ],
-    pagination: { pageSize: RANGE_ROW_LIMIT },
-  });
-  // Keyed `${employeeId}_${date}` — the record itself is kept because it
-  // carries the absence's locked tier (see noAbsenceSeverityFor).
-  const absentSet = useMemo(() => {
-    const map = new Map<string, AttendanceDaily>();
-    for (const a of absentDailyData?.data ?? []) {
-      if (!a.employee) continue;
-      map.set(`${idOf(a.employee)}_${a.date}`, a);
-    }
-    return map;
-  }, [absentDailyData?.data]);
-
-  // Today's and last night's outcome usually isn't known yet: an overnight
-  // shift that started yesterday is still running this morning, and the
-  // automatic ຂາດວຽກ sweep only judges a day once its scan window has closed
-  // (markAbsentForMissedScans). So on those two dates, a day with no
-  // AttendanceDaily row at all yet stays blank instead of presumed worked.
+  // The recorded attendance outcome for every day in range — the one place
+  // this page reads what actually happened rather than just what was
+  // scheduled (all of it, from /attendance-daily/range, keyed
+  // `${employeeId}_${date}`):
+  //  - absentSet: ຂາດວຽກ (a real no-show, or a disciplinary override — see
+  //    attendanceActions.js mark-absent). Without it, a day the employee was
+  //    scheduled to work but never scanned for still counted as worked here
+  //    while ປະຫວັດການສະແກນ showed ຂາດວຽກ. The record itself is kept because
+  //    it carries the absence's locked tier (see noAbsenceSeverityFor).
+  //  - recentDailySet: any record at all — today's and last night's outcome
+  //    usually isn't known yet (an overnight shift that started yesterday is
+  //    still running this morning, and the ຂາດວຽກ sweep only judges a day once
+  //    its scan window has closed), so on those two dates a day with no
+  //    record yet stays blank instead of presumed worked.
+  //  - scannedSet: a day with a scan — a rest day that has one, or has a ຂ
+  //    record, still counts as ພ but is marked so it can't go unnoticed
+  //    (restDayFlag below).
   const todayKey = dayjs().format('YYYY-MM-DD');
   const yesterdayKey = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
-  const recentFrom = rangeStartKey > yesterdayKey ? rangeStartKey : yesterdayKey;
-  const recentTo = rangeEndKey < todayKey ? rangeEndKey : todayKey;
-  const recentEnabled = recentFrom <= recentTo;
-  const { data: recentDailyData, isLoading: recentLoading } = useList<AttendanceDaily>({
-    resource: 'attendance-daily',
-    filters: [
-      { field: 'date', operator: 'gte', value: recentFrom },
-      { field: 'date', operator: 'lte', value: recentTo },
-    ],
-    pagination: { pageSize: RANGE_ROW_LIMIT },
-    queryOptions: { enabled: recentEnabled },
+  const { data: dailyData, isLoading: dailyLoading } = useCustom<AttendanceDaily[]>({
+    url: `${API_URL}/attendance-daily/range`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
   });
-  const recentDailySet = useMemo(() => {
-    const set = new Set<string>();
-    for (const d of recentDailyData?.data ?? []) {
+  const { absentSet, recentDailySet, scannedSet } = useMemo(() => {
+    const absent = new Map<string, AttendanceDaily>();
+    const any = new Set<string>();
+    const scanned = new Set<string>();
+    for (const d of dailyData?.data ?? []) {
       if (!d.employee) continue;
-      set.add(`${idOf(d.employee)}_${d.date}`);
+      const key = `${idOf(d.employee)}_${d.date}`;
+      any.add(key);
+      if (d.status === 'absent') absent.set(key, d);
+      else if (d.firstIn || d.lastOut) scanned.add(key);
     }
-    return set;
-  }, [recentDailyData?.data]);
+    return { absentSet: absent, recentDailySet: any, scannedSet: scanned };
+  }, [dailyData?.data]);
 
   // Days someone actually scanned before their recorded start date — still
   // counted as worked (see beforeHire below).
@@ -496,6 +497,16 @@ const PayrollSummaryGrid: React.FC = () => {
     () => new Set((substituteDaysData?.data ?? []).map((r) => `${r.employee}_${r.date}`)),
     [substituteDaysData?.data]
   );
+
+  // Each person's recurring rest day as it stood on every day in range — a
+  // changed rest day applies from its own date on, it doesn't re-read the
+  // days before it (utils/restDays.ts).
+  const { data: restScheduleData, isLoading: restScheduleLoading } = useCustom<RestDayScheduleRow[]>({
+    url: `${API_URL}/rest-day-history/schedule`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
+  });
+  const restRowsByEmployee = useMemo(() => groupRestRowsByEmployee(restScheduleData?.data), [restScheduleData?.data]);
 
   const scheduledSet = useMemo(() => {
     const set = new Set<string>();
@@ -582,7 +593,7 @@ const PayrollSummaryGrid: React.FC = () => {
     const key = `${emp._id}_${dateKey}`;
     if (scheduledSet.has(key)) return 'work';
     if (restSet.has(key) || swappedSet.has(key)) return 'rest';
-    if ((emp.defaultRestDay ?? []).includes(dow)) return 'rest';
+    if (restDaysOn(restRowsByEmployee.get(emp._id), emp.defaultRestDay, dateKey).includes(dow)) return 'rest';
     // Nothing is actually known/decided for this date yet — a queued shift,
     // a rest override, a leave, or the recurring default would all have
     // already matched above (and are shown as such even when the date is in
@@ -668,6 +679,15 @@ const PayrollSummaryGrid: React.FC = () => {
     return 'graceLeave';
   };
 
+  // Only asked about a day printDayState already resolved to 'rest' — see
+  // REST_DAY_FLAG.
+  const restDayFlag = (emp: Employee, dateKey: string): RestDayFlag | null => {
+    const key = `${emp._id}_${dateKey}`;
+    if (absentSet.has(key)) return 'absentOnRest';
+    if (scannedSet.has(key)) return 'workedOnRest';
+    return null;
+  };
+
   const rows = useMemo<SummaryRow[]>(() => {
     return employees.map((emp) => {
       let workDays = 0;
@@ -735,7 +755,7 @@ const PayrollSummaryGrid: React.FC = () => {
         untracked: !emp.deviceUserId,
       };
     });
-  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
   // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
   // column) for whoever maintains payroll to see, answer and confirm. One
@@ -958,7 +978,7 @@ const PayrollSummaryGrid: React.FC = () => {
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
   const loading =
-    employeesLoading || scheduledLoading || restLoading || swappedLoading || absentLoading || (recentEnabled && recentLoading) || scannedBeforeHireLoading || substituteDaysLoading || leavesLoading || overtimeLoading;
+    employeesLoading || scheduledLoading || restLoading || swappedLoading || dailyLoading || scannedBeforeHireLoading || substituteDaysLoading || restScheduleLoading || leavesLoading || overtimeLoading;
 
   const handlePrintClick = () => window.print();
 
@@ -1170,6 +1190,32 @@ const PayrollSummaryGrid: React.FC = () => {
                 </Typography.Text>
               </Space>
             ))}
+            {(Object.keys(REST_DAY_FLAG) as RestDayFlag[]).map((flag) => (
+              <Space key={flag} size={6}>
+                <span
+                  style={{
+                    position: 'relative',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 18,
+                    height: 18,
+                    borderRadius: 3,
+                    background: PRINT_DAY_STYLE.rest.bg,
+                    color: PRINT_DAY_STYLE.rest.text,
+                    border: `1px solid ${PRINT_DAY_STYLE.rest.text}`,
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  {PRINT_DAY_STYLE.rest.label}
+                  <span style={{ ...REST_DAY_FLAG_BAR, background: REST_DAY_FLAG[flag].color }} />
+                </span>
+                <Typography.Text strong style={{ fontSize: 13, color: '#262626' }}>
+                  {REST_DAY_FLAG[flag].legend}
+                </Typography.Text>
+              </Space>
+            ))}
           </Space>
         </Space>
       </div>
@@ -1236,9 +1282,22 @@ const PayrollSummaryGrid: React.FC = () => {
               render={(_, r: SummaryRow) => {
                 const state = printDayState(r.employee, dateKey, day.day());
                 const style = PRINT_DAY_STYLE[state];
+                const flag = state === 'rest' ? restDayFlag(r.employee, dateKey) : null;
                 const content = (
-                  <div style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 0', fontSize: 12 * (style.zoom ?? 1), fontWeight: 600 }}>
+                  <div
+                    title={flag ? REST_DAY_FLAG[flag].title : undefined}
+                    style={{
+                      position: 'relative',
+                      background: style.bg,
+                      color: style.text,
+                      borderRadius: 4,
+                      padding: '2px 0',
+                      fontSize: 12 * (style.zoom ?? 1),
+                      fontWeight: 600,
+                    }}
+                  >
                     {style.label}
+                    {flag && <span style={{ ...REST_DAY_FLAG_BAR, background: REST_DAY_FLAG[flag].color }} />}
                   </div>
                 );
                 return withComment(
@@ -1349,7 +1408,7 @@ const PayrollSummaryGrid: React.FC = () => {
       </Table>
       </div>
         ),
-        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, loading, offsetHeader]
+        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, scannedSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, loading, offsetHeader]
       )}
 
       <div className="payroll-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
@@ -1473,7 +1532,7 @@ const PayrollSummaryGrid: React.FC = () => {
         </tbody>
       </table>
         ),
-        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
+        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
       )}
 
       <div className="payroll-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>

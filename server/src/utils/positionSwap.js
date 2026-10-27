@@ -1,12 +1,13 @@
 const Employee = require('../models/Employee');
 const Position = require('../models/Position');
 const ScheduledPositionSwap = require('../models/ScheduledPositionSwap');
-const RestDayHistory = require('../models/RestDayHistory');
 const Shift = require('../models/Shift');
 const ShiftCategory = require('../models/ShiftCategory');
 const { toDateKey } = require('./attendanceProcessor');
 const { recordShiftChange } = require('./shiftHistory');
 const { resolveRestDayForPosition, mergeRestDayRule } = require('./restDayRules');
+const { restDaysOnFor, recordRestDayChange, sameRestDays } = require('./restDaySchedule');
+const { recomputeLeavesAfterRestChange } = require('./leaveDeduction');
 
 // Attendance (recomputeDay/resolveExpectedShift) always reads an employee's
 // CURRENT position/defaultShiftCategory live, at the moment each scan comes
@@ -145,28 +146,29 @@ async function pinBlankScheduleForSwapDay(employee, effectiveDate) {
 // someone picks a rest day by hand, just applied automatically since nobody
 // is sitting at a form during a swap. Returns the resolved day (only when it
 // actually changed) so the caller can fold it into the same Employee.updateOne
-// as everything else the swap already touches; returns null when nothing
-// needs to change, including the case where the day IS forbidden but the
-// position has no fallback configured — that's left as-is, same gap as
-// before this existed, since there's no admin to ask mid-swap.
-async function resolveMoverRestDay(employee, newPosition) {
-  const current = employee.defaultRestDay ?? [];
-  if (!current.length) return null;
+// The change is recorded as of the swap date (restDaySchedule.js), so days
+// before it keep the old rest day. Returns whether it changed; false too when
+// the day IS forbidden but the position has no fallback configured — that's
+// left as-is, same gap as before this existed, since there's no admin to ask
+// mid-swap.
+async function resolveMoverRestDay(employee, newPosition, effectiveDate) {
+  const current = await restDaysOnFor(employee._id, effectiveDate);
+  if (!current.length) return false;
   let resolved;
   try {
     resolved = resolveRestDayForPosition(mergeRestDayRule(employee, newPosition), current);
   } catch {
-    return null;
+    return false;
   }
-  const unchanged = resolved.length === current.length && resolved.every((d) => current.includes(d));
-  if (unchanged) return null;
-  await RestDayHistory.create({
-    employee: employee._id,
-    previousRestDay: current,
+  if (sameRestDays(resolved, current)) return false;
+  await recordRestDayChange({
+    employeeId: employee._id,
     newRestDay: resolved,
+    effectiveDate,
+    source: 'position-swap',
     changedByEmail: 'ລະບົບ (ສະຫຼັບຕຳແໜ່ງອັດຕະໂນມັດ)',
   });
-  return resolved;
+  return true;
 }
 
 // Whoever currently holds a position all shares one working time (see the
@@ -242,9 +244,10 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
     }
   }
 
-  const [restDayUpdatesA, restDayUpdatesB] = await Promise.all([
-    Promise.all(empListA.map((e) => resolveMoverRestDay(e, positionB))),
-    Promise.all(empListB.map((e) => resolveMoverRestDay(e, positionA))),
+  const historyDate = effectiveDate || toDateKey(new Date());
+  const [restDayChangedA, restDayChangedB] = await Promise.all([
+    Promise.all(empListA.map((e) => resolveMoverRestDay(e, positionB, historyDate))),
+    Promise.all(empListB.map((e) => resolveMoverRestDay(e, positionA, historyDate))),
   ]);
 
   // The designated head travels with the group, same as their shift time —
@@ -254,7 +257,7 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
   // picking up the other side's, and the positions' own `head` fields swap to
   // match so a later admin look-up of "who heads this position" agrees with it.
   await Promise.all([
-    ...empListA.map((e, i) =>
+    ...empListA.map((e) =>
       Employee.updateOne(
         { _id: e._id },
         {
@@ -263,11 +266,10 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
           defaultShiftCategory: canonicalB.categoryId,
           defaultShiftStart: canonicalB.start,
           defaultShiftEnd: canonicalB.end,
-          ...(restDayUpdatesA[i] != null ? { defaultRestDay: restDayUpdatesA[i] } : {}),
         }
       )
     ),
-    ...empListB.map((e, i) =>
+    ...empListB.map((e) =>
       Employee.updateOne(
         { _id: e._id },
         {
@@ -276,7 +278,6 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
           defaultShiftCategory: canonicalA.categoryId,
           defaultShiftStart: canonicalA.start,
           defaultShiftEnd: canonicalA.end,
-          ...(restDayUpdatesB[i] != null ? { defaultRestDay: restDayUpdatesB[i] } : {}),
         }
       )
     ),
@@ -284,12 +285,19 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
     Position.updateOne({ _id: positionBId }, { head: positionA?.head || null }),
   ]);
 
+  // A mover whose rest day just moved has their leaves from the swap date on
+  // worked out again against it (utils/leaveDeduction.js).
+  const restMoved = [...empListA.filter((_, i) => restDayChangedA[i]), ...empListB.filter((_, i) => restDayChangedB[i])];
+  for (const e of restMoved) {
+    // eslint-disable-next-line no-await-in-loop
+    await recomputeLeavesAfterRestChange(e._id, historyDate);
+  }
+
   // Recorded as of the swap date, so every day before it keeps being judged
   // by each mover's old shift — without this, the night group's last night
   // would be re-read as a day shift and its morning scan-out would land on
   // the swap day instead (see models/ShiftChangeLog.js).
-  const historyDate = effectiveDate || toDateKey(new Date());
-  const toB = { defaultShiftCategory: canonicalB.categoryId, defaultShiftStart: canonicalB.start, defaultShiftEnd: canonicalB.end };
+  const toB ={ defaultShiftCategory: canonicalB.categoryId, defaultShiftStart: canonicalB.start, defaultShiftEnd: canonicalB.end };
   const toA = { defaultShiftCategory: canonicalA.categoryId, defaultShiftStart: canonicalA.start, defaultShiftEnd: canonicalA.end };
   await Promise.all([
     ...empListA.map((e) => recordShiftChange(e._id, e, toB, historyDate, 'position-swap')),
