@@ -10,6 +10,7 @@ import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL } from '../../providers/axios';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
+import { regularShiftHours } from '../../utils/shiftHistory';
 
 const { RangePicker } = DatePicker;
 
@@ -1259,10 +1260,13 @@ const PayrollSummaryGrid: React.FC = () => {
           render={(_, r: SummaryRow) => {
             const note = resignedNote(r.employee);
             return (
-              <span>
-                {`${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`}
-                {note && <span style={{ marginLeft: 6, fontSize: 11, color: '#a6a6a6' }}>{note}</span>}
-              </span>
+              <>
+                <span>
+                  {`${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`}
+                  {note && <span style={{ marginLeft: 6, fontSize: 11, color: '#a6a6a6' }}>{note}</span>}
+                </span>
+                <div style={{ fontSize: 11, color: '#8c8c8c' }}>ກະ: {regularShiftHours(r.employee) ?? 'ຍັງບໍ່ມີກະ'}</div>
+              </>
             );
           }}
         />
@@ -1506,6 +1510,7 @@ const PayrollSummaryGrid: React.FC = () => {
                 {resignedNote(r.employee) && (
                   <span style={{ marginLeft: 4, fontSize: 7, color: '#a6a6a6' }}>{resignedNote(r.employee)}</span>
                 )}
+                <div style={{ fontSize: 7, color: '#8c8c8c' }}>ກະ: {regularShiftHours(r.employee) ?? '-'}</div>
               </td>
               {days.map((d) => {
                 const dateKey = d.format('YYYY-MM-DD');
