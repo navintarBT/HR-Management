@@ -1,15 +1,46 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Edit, useForm, useSelect } from '@refinedev/antd';
+import { useNavigation } from '@refinedev/core';
 import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Divider, Button } from 'antd';
 import dayjs from 'dayjs';
 import type { Department, EmploymentType, Employee, ShiftCategory } from '../../types';
 import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
 import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { useAbsenceSeverityPrompt } from '../../components/AbsenceSeverityPrompt';
 
 export const EmployeeEdit: React.FC = () => {
-  const { formProps, saveButtonProps, query, form } = useForm({ resource: 'employees' });
+  const { list } = useNavigation();
+  // Moving someone to another position keeps the tier their absences were
+  // recorded with — ask (only if any absence this month would change) whether
+  // to carry the new position's rules over, then go back to the list. Refine's
+  // own redirect would unmount the question before it could be answered.
+  const { prompt: askAbsenceSeverity, modal: absenceSeverityModal } = useAbsenceSeverityPrompt();
+  const recordRef = useRef<Employee | undefined>(undefined);
+  const { formProps, saveButtonProps, query, form } = useForm<Employee>({
+    resource: 'employees',
+    redirect: false,
+    onMutationSuccess: (_data, variables) => {
+      const before = recordRef.current;
+      const previousPosition = before && (typeof before.position === 'object' ? before.position?._id : before.position);
+      const nextPosition = (variables as { position?: string }).position;
+      if (before && nextPosition && previousPosition !== nextPosition) {
+        askAbsenceSeverity(
+          { employees: [before._id] },
+          {
+            applyByDefault: false,
+            reason: `"${before.firstName ?? ''} ${before.lastName ?? ''}" ຍ້າຍຕຳແໜ່ງແລ້ວ`,
+            onDone: () => list('employees'),
+          }
+        );
+      } else {
+        list('employees');
+      }
+    },
+  });
   const record = query?.data?.data;
+  recordRef.current = record;
   // refine auto-derives formProps.initialValues straight from the fetched
   // record — hireDate/workTime land there as raw strings, not dayjs objects.
   // Spreading that onto the Form would mount DatePicker/RangePicker with a
@@ -60,14 +91,14 @@ export const EmployeeEdit: React.FC = () => {
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
     optionValue: '_id',
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { selectProps: positionHeadSelect } = useSelect<Employee>({
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
     optionValue: '_id',
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { selectProps: employmentTypeSelect } = useSelect<EmploymentType>({
@@ -290,6 +321,7 @@ export const EmployeeEdit: React.FC = () => {
         </Row>
       </Form>
       )}
+      {absenceSeverityModal}
     </Edit>
   );
 };

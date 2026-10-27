@@ -5,6 +5,7 @@ import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, 
 import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Department, Employee, Position, Shift } from '../../types';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 function idOf(value: { _id: string } | string | null | undefined) {
   if (!value) return undefined;
@@ -176,7 +177,7 @@ export const ScheduleCoversGrid: React.FC = () => {
   const { data: allEmployeesData } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
   });
   const allEmployees = allEmployeesData?.data ?? [];
 

@@ -8,6 +8,7 @@ import type { Employee, Position, Shift, ShiftCategory, Identity } from '../../t
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { categorical } from '../../theme/palette';
 import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 const colorForId = (id: string) => categorical[id.charCodeAt(id.length - 1) % categorical.length];
 
@@ -72,18 +73,21 @@ export const SchedulePage: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 200 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const employees = employeesData?.data ?? [];
 
+  // A week holds at most a few rows per person — but one company holiday
+  // alone adds a ພັກ row for everyone, so a plain 500 ran out in a week with
+  // two of them. Sized off the employee ceiling instead.
   const { data: shiftsData, isLoading: shiftsLoading } = useList<Shift>({
     resource: 'shifts',
     filters: [
       { field: 'date', operator: 'gte', value: weekStartKey },
       { field: 'date', operator: 'lte', value: weekEndKey },
     ],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE * 7 },
   });
   const shifts = shiftsData?.data ?? [];
 

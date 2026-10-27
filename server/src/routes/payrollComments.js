@@ -28,18 +28,43 @@ function statusUpdate(req, status) {
   return update;
 }
 
+// A cell's column key carries its dates (see models/PayrollComment.js): a day
+// cell is inside [from, to] when its date is, a summary cell when its whole
+// range is.
+function columnInRange(column, from, to) {
+  if (column.startsWith('day:')) {
+    const day = column.slice(4);
+    return day >= from && day <= to;
+  }
+  const [start, end] = (column.split(':')[1] ?? '').split('_');
+  return !!start && !!end && start >= from && end <= to;
+}
+
 // Same access as the page itself (ສະຫຼຸບເງິນເດືອນ) — admin/manager only.
 // Fetched in bulk once per page load, same as every other payroll-summary
 // data source (shifts, leaves, overtime, attendance-daily) — comment volume
 // is low enough that grouping client-side by employee+column is simpler and
-// faster than a request per cell.
+// faster than a request per cell. `from`/`to` (YYYY-MM-DD) keep only the
+// cells in the range the page shows, so the fetch doesn't grow with every
+// month of comments ever written.
 router.get('/', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const { _start = 0, _end = 5000, _sort = 'createdAt', _order = 'asc', ...filters } = req.query;
+    const { _start = 0, _end = 5000, _sort = 'createdAt', _order = 'asc', from, to, ...filters } = req.query;
     const query = {};
     for (const [key, value] of Object.entries(filters)) {
       if (value === undefined || value === '') continue;
       query[key] = value;
+    }
+    const isDateKey = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (isDateKey(from) && isDateKey(to)) {
+      // Day cells by plain string range (indexable); the few summary cells
+      // are narrowed further below, since their dates sit mid-key.
+      query.$or = [{ column: { $gte: `day:${from}`, $lte: `day:${to}` } }, { column: { $not: /^day:/ } }];
+      const items = (await PayrollComment.find(query).populate(POPULATE).sort({ [_sort]: _order === 'asc' ? 1 : -1 })).filter((c) =>
+        columnInRange(c.column, from, to)
+      );
+      res.set('X-Total-Count', String(items.length));
+      return res.json(items);
     }
     const start = Number(_start) || 0;
     const end = Number(_end) || start + 5000;

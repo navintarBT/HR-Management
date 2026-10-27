@@ -6,6 +6,12 @@ import { SearchOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import type { Department, Employee, Position } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import {
+  AbsenceSeverityPromptProvider,
+  AbsenceSeverityRecalcButton,
+  useAbsenceSeverityPromptContext,
+} from '../../components/AbsenceSeverityPrompt';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -166,7 +172,7 @@ const EmployeeRuleTable: React.FC = () => {
   const { data: employeesData, isLoading, refetch } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -678,7 +684,7 @@ const EmployeeRestDayRuleTable: React.FC = () => {
   const { data: employeesData, isLoading, refetch } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -915,6 +921,11 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
   const { mutate: updatePosition } = useUpdate();
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
+  // Absences already on file keep the tier they were recorded with — after
+  // a change, ask whether to carry it over to this month's (AbsenceSeverityPrompt).
+  const { prompt: askAbsenceSeverity } = useAbsenceSeverityPromptContext();
+  const askForPositions = (positionIds: string[], reason: string) =>
+    askAbsenceSeverity({ positions: positionIds }, { applyByDefault: true, reason });
 
   const setNoAbsenceDays = (position: Position, days: number[]) => {
     updatePosition(
@@ -924,6 +935,7 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
           notify?.({ type: 'success', message: `ບັນທຶກວັນຫ້າມຂາດຂອງ "${position.name}" ແລ້ວ` });
           invalidate({ resource: 'positions', invalidates: ['list'] });
           refetch();
+          askForPositions([position._id], `ວັນຫ້າມຂາດຂອງ "${position.name}" ປ່ຽນແລ້ວ`);
         },
       }
     );
@@ -937,6 +949,7 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
           notify?.({ type: 'success', message: `ບັນທຶກລະດັບການຕັດເງິນຂອງ "${position.name}" ແລ້ວ` });
           invalidate({ resource: 'positions', invalidates: ['list'] });
           refetch();
+          askForPositions([position._id], `ລະດັບວັນຫ້າມຂາດຂອງ "${position.name}" ປ່ຽນແລ້ວ`);
         },
       }
     );
@@ -954,6 +967,7 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
           notify?.({ type: 'success', message: `ລຶບວັນຫ້າມຂາດຂອງ "${position.name}" ແລ້ວ` });
           invalidate({ resource: 'positions', invalidates: ['list'] });
           refetch();
+          askForPositions([position._id], `ວັນຫ້າມຂາດຂອງ "${position.name}" ຖືກລຶບແລ້ວ`);
         },
       }
     );
@@ -1016,6 +1030,7 @@ const NoAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, number>
     setCreateOpen(false);
     createForm.resetFields();
     setCreateDeptFilter(undefined);
+    if (succeeded) askForPositions(positionIds, `ສ້າງວັນຫ້າມຂາດໃຫ້ ${positionIds.length} ຕຳແໜ່ງແລ້ວ`);
   };
 
   const SEVERITY_OPTIONS = [
@@ -1229,6 +1244,9 @@ const OrdinaryAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, n
   const { mutate: updatePosition } = useUpdate();
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
+  const { prompt: askAbsenceSeverity } = useAbsenceSeverityPromptContext();
+  const askForPositions = (positionIds: string[], reason: string) =>
+    askAbsenceSeverity({ positions: positionIds }, { applyByDefault: true, reason });
 
   const setSeverity = (position: Position, severity: 'X2' | 'X3' | undefined) => {
     updatePosition(
@@ -1238,6 +1256,7 @@ const OrdinaryAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, n
           notify?.({ type: 'success', message: `ບັນທຶກລະດັບການຕັດເງິນສຳລັບມື້ທຳມະດາຂອງ "${position.name}" ແລ້ວ` });
           invalidate({ resource: 'positions', invalidates: ['list'] });
           refetch();
+          askForPositions([position._id], `ລະດັບມື້ທຳມະດາຂອງ "${position.name}" ປ່ຽນແລ້ວ`);
         },
       }
     );
@@ -1251,6 +1270,7 @@ const OrdinaryAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, n
           notify?.({ type: 'success', message: `ລຶບລະດັບການຕັດເງິນສຳລັບມື້ທຳມະດາຂອງ "${position.name}" ແລ້ວ` });
           invalidate({ resource: 'positions', invalidates: ['list'] });
           refetch();
+          askForPositions([position._id], `ລະດັບມື້ທຳມະດາຂອງ "${position.name}" ຖືກລຶບແລ້ວ`);
         },
       }
     );
@@ -1304,6 +1324,7 @@ const OrdinaryAbsenceRuleTable: React.FC<{ employeesByPosition: Record<string, n
     setCreateOpen(false);
     createForm.resetFields();
     setCreateDeptFilter(undefined);
+    if (succeeded) askForPositions(positionIds, `ຕັ້ງລະດັບມື້ທຳມະດາໃຫ້ ${positionIds.length} ຕຳແໜ່ງແລ້ວ`);
   };
 
   const SEVERITY_OPTIONS = [
@@ -1489,7 +1510,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
   const { data: employeesData, isLoading, refetch } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -1513,6 +1534,9 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
   const { mutate: updateEmployee } = useUpdate();
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
+  const { prompt: askAbsenceSeverity } = useAbsenceSeverityPromptContext();
+  const askForEmployee = (employee: Employee, reason: string) =>
+    askAbsenceSeverity({ employees: [employee._id] }, { applyByDefault: true, reason });
 
   const setDays = (employee: Employee, days: number[]) => {
     updateEmployee(
@@ -1522,6 +1546,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
           notify?.({ type: 'success', message: `ບັນທຶກວັນຫ້າມຂາດຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ` });
           invalidate({ resource: 'employees', invalidates: ['list'] });
           refetch();
+          askForEmployee(employee, `ວັນຫ້າມຂາດສະເພາະຂອງ "${employee.firstName} ${employee.lastName}" ປ່ຽນແລ້ວ`);
         },
       }
     );
@@ -1534,6 +1559,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
           notify?.({ type: 'success', message: `ບັນທຶກລະດັບການຕັດເງິນຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ` });
           invalidate({ resource: 'employees', invalidates: ['list'] });
           refetch();
+          askForEmployee(employee, `ລະດັບວັນຫ້າມຂາດສະເພາະຂອງ "${employee.firstName} ${employee.lastName}" ປ່ຽນແລ້ວ`);
         },
       }
     );
@@ -1546,6 +1572,7 @@ const EmployeeNoAbsenceRuleTable: React.FC = () => {
           notify?.({ type: 'success', message: `ລຶບການຕັ້ງພິເສດຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ — ກັບໄປໃຊ້ຄ່າຈາກຕຳແໜ່ງ` });
           invalidate({ resource: 'employees', invalidates: ['list'] });
           refetch();
+          askForEmployee(employee, `"${employee.firstName} ${employee.lastName}" ກັບໄປໃຊ້ວັນຫ້າມຂາດຂອງຕຳແໜ່ງແລ້ວ`);
         },
       }
     );
@@ -1715,7 +1742,7 @@ const EmployeeOrdinaryAbsenceRuleTable: React.FC = () => {
   const { data: employeesData, isLoading, refetch } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -1739,6 +1766,9 @@ const EmployeeOrdinaryAbsenceRuleTable: React.FC = () => {
   const { mutate: updateEmployee } = useUpdate();
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
+  const { prompt: askAbsenceSeverity } = useAbsenceSeverityPromptContext();
+  const askForEmployee = (employee: Employee, reason: string) =>
+    askAbsenceSeverity({ employees: [employee._id] }, { applyByDefault: true, reason });
 
   const setSeverity = (employee: Employee, severity: 'X2' | 'X3' | undefined) => {
     updateEmployee(
@@ -1748,6 +1778,7 @@ const EmployeeOrdinaryAbsenceRuleTable: React.FC = () => {
           notify?.({ type: 'success', message: `ບັນທຶກລະດັບການຕັດເງິນສຳລັບມື້ທຳມະດາຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ` });
           invalidate({ resource: 'employees', invalidates: ['list'] });
           refetch();
+          askForEmployee(employee, `ລະດັບມື້ທຳມະດາສະເພາະຂອງ "${employee.firstName} ${employee.lastName}" ປ່ຽນແລ້ວ`);
         },
       }
     );
@@ -1760,6 +1791,7 @@ const EmployeeOrdinaryAbsenceRuleTable: React.FC = () => {
           notify?.({ type: 'success', message: `ລຶບການຕັ້ງພິເສດຂອງ "${employee.firstName} ${employee.lastName}" ແລ້ວ — ກັບໄປໃຊ້ຄ່າຈາກຕຳແໜ່ງ` });
           invalidate({ resource: 'employees', invalidates: ['list'] });
           refetch();
+          askForEmployee(employee, `"${employee.firstName} ${employee.lastName}" ກັບໄປໃຊ້ລະດັບມື້ທຳມະດາຂອງຕຳແໜ່ງແລ້ວ`);
         },
       }
     );
@@ -1888,7 +1920,7 @@ function useEmployeesByPosition(): Record<string, number> {
   const { data: employeesData } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
   });
   return useMemo(() => {
     const map: Record<string, number> = {};
@@ -1948,11 +1980,19 @@ export const RestDayRulePage: React.FC = () => {
   );
 };
 
-export const NoAbsenceRulePage: React.FC = () => {
+// One shared "carry this over to absences already on file?" dialog for all
+// four tables below, plus ຄິດລະດັບໃໝ່ in the header (AbsenceSeverityPrompt).
+export const NoAbsenceRulePage: React.FC = () => (
+  <AbsenceSeverityPromptProvider>
+    <NoAbsenceRuleContent />
+  </AbsenceSeverityPromptProvider>
+);
+
+const NoAbsenceRuleContent: React.FC = () => {
   const employeesByPosition = useEmployeesByPosition();
 
   return (
-    <List title="ວັນຫ້າມຂາດ" breadcrumb={false}>
+    <List title="ວັນຫ້າມຂາດ" breadcrumb={false} headerButtons={<AbsenceSeverityRecalcButton />}>
       <Typography.Title level={5}>ວັນຫ້າມຂາດ (ເຈາະຈົງວັນ)</Typography.Title>
       <Typography.Paragraph type="secondary">
         ຕຳແໜ່ງທີ່ຕັ້ງໄວ້ນີ້ ຈະຕັດເງິນໃນລະດັບທີ່ກຳນົດ (X2/X3) ຖ້າຄົນໃນຕຳແໜ່ງນັ້ນຂາດວຽກໃນວັນນີ້ — ແຕ່ຈະບໍ່ມີຜົນຖ້າວັນນັ້ນເປັນວັນພັກຂອງເຂົາຢູ່ແລ້ວ

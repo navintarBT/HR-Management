@@ -6,6 +6,7 @@ import type { Department, EmploymentType, Employee, ShiftCategory } from '../../
 import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
 import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 export const EmployeeCreate: React.FC = () => {
   const { formProps, saveButtonProps, form } = useForm({ resource: 'employees' });
@@ -65,14 +66,14 @@ export const EmployeeCreate: React.FC = () => {
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
     optionValue: '_id',
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { selectProps: positionHeadSelect } = useSelect<Employee>({
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
     optionValue: '_id',
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { selectProps: employmentTypeSelect } = useSelect<EmploymentType>({

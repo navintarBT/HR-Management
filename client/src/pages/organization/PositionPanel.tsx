@@ -9,6 +9,7 @@ import { useShowAllToggle } from '../../hooks/useShowAllToggle';
 import { withLocalTextFilter } from '../../utils/selectFilters';
 import { axiosInstance, API_URL } from '../../providers/axios';
 import { palette } from '../../theme/palette';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 export const PositionPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
@@ -54,7 +55,7 @@ export const PositionPanel: React.FC = () => {
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
     optionValue: '_id',
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const invalidate = useInvalidate();

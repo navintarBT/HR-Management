@@ -24,6 +24,21 @@ function timesOverlap(startA, endA, startB, endB) {
   return startA < endB && startB < endA;
 }
 
+// One person's date is either a rest day or a work day, never both — a second
+// row of the other kind (e.g. a cover added on top of their own ພັກ) left every
+// page and the absence sweep to pick one of the two their own way. ຕາຕະລາງວັນພັກ
+// already makes you ຄືນຄ່າປົກກະຕິ first; this holds the same rule for every
+// other way in (ການເຮັດແທນ, ຕາຕະລາງກະ, the API). A company holiday is exempt —
+// it overwrites one existing row by design (utils/holidayShifts.ts).
+const WORK_ON_REST_CONFLICT = 'ມື້ນີ້ຕັ້ງເປັນວັນພັກ ຫຼື ສະຫຼັບກະໄວ້ແລ້ວ — ກະລຸນາຄືນຄ່າປົກກະຕິມື້ນີ້ກ່ອນ';
+const REST_ON_WORK_CONFLICT = 'ມື້ນີ້ມີຕາຕະລາງຕັ້ງໄວ້ແລ້ວ — ກະລຸນາແກ້ໄຂ ຫຼື ຄືນຄ່າປົກກະຕິມື້ນີ້ກ່ອນ';
+async function hasKindConflict(employee, date, status, excludeId) {
+  const kinds = status === 'rest' ? ['scheduled', 'swapped', 'rest'] : ['rest', 'swapped'];
+  const query = { employee, date, status: { $in: kinds } };
+  if (excludeId) query._id = { $ne: excludeId };
+  return !!(await Shift.exists(query));
+}
+
 // A company-wide holiday closure (see holidays.js's applyRestDayToAll, which
 // always tags the rows it creates with `holiday`) rests EVERYONE regardless
 // of position — it isn't someone choosing their own day off, so it's exempt
@@ -69,13 +84,19 @@ async function applyShiftUpdate(id, changes) {
   const status = changes.status ?? current.status;
 
   let effectiveChanges = changes;
+  const holidayId = changes.holiday ?? current.holiday;
   if (status !== 'rest') {
+    if (!holidayId && (await hasKindConflict(employee, date, status, current._id))) {
+      throw { status: 409, message: WORK_ON_REST_CONFLICT };
+    }
     const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
     const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
     if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
   } else {
-    const holidayId = changes.holiday ?? current.holiday;
     const effectiveDate = await ensurePersonalRestDayAllowed(employee, date, holidayId);
+    if (!holidayId && (await hasKindConflict(employee, effectiveDate, 'rest', current._id))) {
+      throw { status: 409, message: REST_ON_WORK_CONFLICT };
+    }
     if (effectiveDate !== date) effectiveChanges = { ...changes, date: effectiveDate };
   }
 
@@ -143,6 +164,9 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
     }
     let effectiveDate = date;
     if (status !== 'rest') {
+      if (!holiday && (await hasKindConflict(employee, date, status))) {
+        return res.status(409).json({ message: WORK_ON_REST_CONFLICT });
+      }
       const existing = await Shift.find({ employee, date, status: 'scheduled' });
       const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
       if (conflict) {
@@ -150,6 +174,9 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
       }
     } else {
       effectiveDate = await ensurePersonalRestDayAllowed(employee, date, holiday);
+      if (!holiday && (await hasKindConflict(employee, effectiveDate, 'rest'))) {
+        return res.status(409).json({ message: REST_ON_WORK_CONFLICT });
+      }
     }
     const item = await Shift.create({ ...req.body, date: effectiveDate });
     const populated = await item.populate(SHIFT_POPULATE);

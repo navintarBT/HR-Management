@@ -52,6 +52,16 @@ const attendanceDailySchema = new mongoose.Schema(
     // disciplinaryNote: this is standing in for a scan that should have
     // happened, not overriding one that did.
     autoFilledReason: { type: String, trim: true, default: null },
+    // What this absence costs — the ວັນຫ້າມຂາດ / ມື້ທຳມະດາ tier (X2/X3; null =
+    // none configured) — locked when the absence is recorded, from the rules
+    // and position in force then, same idea as graceMinutes above: a later
+    // rule change or a move to another position must not rewrite what an
+    // absence already cost. Changed only on purpose (utils/absenceSeverity.js
+    // reapplyAbsenceSeverity — who did it in absenceSeverityByEmail).
+    // absenceSeveritySetAt is null on anything that isn't an absence.
+    absenceSeverity: { type: String, enum: ['X2', 'X3'], default: null },
+    absenceSeveritySetAt: { type: Date, default: null },
+    absenceSeverityByEmail: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );

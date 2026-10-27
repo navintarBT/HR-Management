@@ -8,6 +8,8 @@ import { API_URL, axiosInstance } from '../../providers/axios';
 import type { Employee, Department, Position, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { useAbsenceSeverityPrompt } from '../../components/AbsenceSeverityPrompt';
 
 const { RangePicker: TimeRangePicker } = TimePicker;
 
@@ -69,7 +71,7 @@ export const BulkShiftEditPage: React.FC = () => {
   const { data: employeesData, isLoading, refetch } = useList<Employee>({
     resource: 'employees',
     filters,
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const employees = employeesData?.data ?? [];
@@ -129,6 +131,11 @@ export const BulkShiftEditPage: React.FC = () => {
   const [movePosition, setMovePosition] = useState<string>();
   const [movingPosition, setMovingPosition] = useState(false);
 
+  // Their absences already on file keep the tier they were recorded with —
+  // ask (only if any this month would change) whether the new position's
+  // rules should apply to them too; keeping the old tiers is the default.
+  const { prompt: askAbsenceSeverity, modal: absenceSeverityModal } = useAbsenceSeverityPrompt();
+
   const submitMovePosition = async () => {
     if (!movePosition || !selectedIds.length) return;
     const target = allPositions.find((p) => p._id === movePosition);
@@ -150,6 +157,13 @@ export const BulkShiftEditPage: React.FC = () => {
     setPositionModalOpen(false);
     setMovePosition(undefined);
     refreshAll();
+    const moved = selectedIds.filter((_, i) => results[i].status === 'fulfilled');
+    if (moved.length) {
+      askAbsenceSeverity(
+        { employees: moved },
+        { applyByDefault: false, reason: `ຍ້າຍ ${moved.length} ຄົນໄປຕຳແໜ່ງ "${target?.name ?? ''}" ແລ້ວ` }
+      );
+    }
   };
 
   // ---- 3. ຍ້າຍກະ (ປ່ຽນກະປະຈຳ) ----
@@ -355,6 +369,7 @@ export const BulkShiftEditPage: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+      {absenceSeverityModal}
     </List>
   );
 };

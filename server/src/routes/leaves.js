@@ -163,13 +163,22 @@ function attachDeductionAmount(leaveDoc) {
   return leave;
 }
 
+// `from`/`to` (YYYY-MM-DD) keep only leaves overlapping that range — the
+// pages that used to fetch every leave ever filed (and silently lost the
+// newest ones once there were more than their page size) ask for just the
+// span they show. Bounds are built as local days, the same way leave dates
+// are stored (local midnight), so a leave ending exactly on `from` still
+// counts.
 function scopedQuery(req) {
-  const { _start = 0, _end = 10, _sort = '_id', _order = 'asc', ...filters } = req.query;
+  const { _start = 0, _end = 10, _sort = '_id', _order = 'asc', from, to, ...filters } = req.query;
   const query = {};
   for (const [key, value] of Object.entries(filters)) {
     if (value === undefined || value === '') continue;
     query[key] = value;
   }
+  const isDateKey = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  if (isDateKey(from)) query.endDate = { $gte: new Date(`${from}T00:00:00`) };
+  if (isDateKey(to)) query.startDate = { $lte: new Date(`${to}T23:59:59.999`) };
   if (req.user.role === 'employee') {
     query.employee = req.user.employeeId ? req.user.employeeId._id : null;
   }

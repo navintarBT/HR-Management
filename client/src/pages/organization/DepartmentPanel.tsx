@@ -6,6 +6,7 @@ import type { Department, Employee, Identity } from '../../types';
 import { useTableStickyOffset, useTabsNavBottom } from '../../hooks/useTableStickyOffset';
 import { useShowAllToggle } from '../../hooks/useShowAllToggle';
 import { withLocalTextFilter } from '../../utils/selectFilters';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 export const DepartmentPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
@@ -35,7 +36,7 @@ export const DepartmentPanel: React.FC = () => {
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
     optionValue: '_id',
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { modalProps: createModalProps, formProps: createFormProps, show: showCreate } = useModalForm<Department>({

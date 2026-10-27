@@ -33,12 +33,14 @@ const dashboardRoutes = require('./routes/dashboard');
 const restDayHistoryRoutes = require('./routes/restDayHistory');
 const payrollCommentRoutes = require('./routes/payrollComments');
 const scheduledShiftChangeRoutes = require('./routes/scheduledShiftChanges');
+const shiftChangeLogRoutes = require('./routes/shiftChangeLogs');
 const deviceUserRoutes = require('./routes/deviceUsers');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
 const { runDueScheduledShiftChanges } = require('./utils/scheduledShiftChange');
 const { markAbsentForMissedScans } = require('./utils/attendanceProcessor');
 const { deactivateEndedResignations } = require('./utils/employeeStatus');
+const { lockUnlockedAbsences } = require('./utils/absenceSeverity');
 
 const app = express();
 
@@ -85,6 +87,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/rest-day-history', restDayHistoryRoutes);
 app.use('/api/payroll-comments', payrollCommentRoutes);
 app.use('/api/scheduled-shift-changes', scheduledShiftChangeRoutes);
+app.use('/api/shift-change-logs', shiftChangeLogRoutes);
 app.use('/api/device-users', deviceUserRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
@@ -117,6 +120,11 @@ connectDB()
     // Catches any position swap scheduled for a date that's already arrived
     // (including while the server was down), then re-checks periodically so
     // one left running overnight still fires without anyone's browser open.
+    // Absences recorded before tiers were stored on them get locked at the
+    // tier the pages already showed — a no-op once that's done.
+    lockUnlockedAbsences()
+      .then((n) => n && console.log(`[attendance] locked the deduction tier on ${n} earlier absences`))
+      .catch((err) => console.error('[attendance] locking absence tiers failed', err));
     runDueScheduledSwaps().catch((err) => console.error('[position-swaps] startup check failed', err));
     setInterval(() => {
       runDueScheduledSwaps().catch((err) => console.error('[position-swaps] scheduled check failed', err));

@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/core';
@@ -8,6 +8,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL } from '../../providers/axios';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 const { RangePicker } = DatePicker;
 
@@ -19,6 +20,11 @@ const LAO_MONTHS = [
 // fit the print table's narrow per-day header cells alongside the date number.
 const LAO_WEEKDAYS_SHORT = ['ອາ', 'ຈ', 'ອັງ', 'ພຸ', 'ພະ', 'ສຸ', 'ເສ'];
 const MAX_RANGE_DAYS = 31;
+// Page size for every per-range list on this page (shifts, leaves, OT,
+// attendance, comments): at most about one row per person per day, so
+// staff ceiling × the longest range always fits — a fixed number like 5000
+// silently drops rows once the staff grows past it.
+const RANGE_ROW_LIMIT = ALL_EMPLOYEES_PAGE_SIZE * MAX_RANGE_DAYS;
 
 // The 10 summary cells a comment can attach to, in the same order they're
 // rendered — used to resolve a stored column key back to the Lao label for
@@ -44,6 +50,17 @@ function labelForColumn(column: string): string {
   // range — "x2" alone wouldn't say which month's number it's about.
   const [from, to] = (range ?? '').split('_');
   return from && to ? `${label} (${dayjs(from).format('DD/MM')}–${dayjs(to).format('DD/MM/YYYY')})` : label;
+}
+
+// Whether a comment's cell falls inside the date range the page shows: a day
+// cell's date, or a summary cell's whole range (baked into its key).
+function columnInRange(column: string, startKey: string, endKey: string) {
+  if (column.startsWith('day:')) {
+    const day = column.slice(4);
+    return day >= startKey && day <= endKey;
+  }
+  const [from, to] = (column.split(':')[1] ?? '').split('_');
+  return !!from && !!to && from >= startKey && to <= endKey;
 }
 
 function idOf(value: unknown) {
@@ -265,7 +282,7 @@ const PayrollSummaryGrid: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -355,7 +372,7 @@ const PayrollSummaryGrid: React.FC = () => {
       { field: 'date', operator: 'lte', value: rangeEndKey },
       { field: 'status', operator: 'eq', value: 'scheduled' },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
   const { data: restShiftsData, isLoading: restLoading } = useList<Shift>({
     resource: 'shifts',
@@ -364,7 +381,7 @@ const PayrollSummaryGrid: React.FC = () => {
       { field: 'date', operator: 'lte', value: rangeEndKey },
       { field: 'status', operator: 'eq', value: 'rest' },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
   const { data: swappedShiftsData, isLoading: swappedLoading } = useList<Shift>({
     resource: 'shifts',
@@ -373,15 +390,19 @@ const PayrollSummaryGrid: React.FC = () => {
       { field: 'date', operator: 'lte', value: rangeEndKey },
       { field: 'status', operator: 'eq', value: 'swapped' },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
-  // No startDate/endDate filter here — leaves.js's own list route doesn't
-  // support _gte/_lte (unlike the crudFactory-backed shifts route above), so
-  // every approved leave is fetched once and matched against the range client-side.
+  // Only approved leaves overlapping the range (leaves.js's from/to) — every
+  // leave ever filed used to be fetched and matched here, and the newest ones
+  // would have silently dropped off once there were more than the page size.
   const { data: leavesData, isLoading: leavesLoading } = useList<Leave>({
     resource: 'leaves',
-    filters: [{ field: 'status', operator: 'eq', value: 'approved' }],
-    pagination: { pageSize: 5000 },
+    filters: [
+      { field: 'status', operator: 'eq', value: 'approved' },
+      { field: 'from', operator: 'eq', value: rangeStartKey },
+      { field: 'to', operator: 'eq', value: rangeEndKey },
+    ],
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
   const leaves = leavesData?.data ?? [];
 
@@ -394,7 +415,7 @@ const PayrollSummaryGrid: React.FC = () => {
       { field: 'date', operator: 'lte', value: rangeEndKey },
       { field: 'status', operator: 'eq', value: 'approved' },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
   const overtimeRecords = overtimeData?.data ?? [];
 
@@ -411,15 +432,17 @@ const PayrollSummaryGrid: React.FC = () => {
       { field: 'date', operator: 'lte', value: rangeEndKey },
       { field: 'status', operator: 'eq', value: 'absent' },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
+  // Keyed `${employeeId}_${date}` — the record itself is kept because it
+  // carries the absence's locked tier (see noAbsenceSeverityFor).
   const absentSet = useMemo(() => {
-    const set = new Set<string>();
+    const map = new Map<string, AttendanceDaily>();
     for (const a of absentDailyData?.data ?? []) {
       if (!a.employee) continue;
-      set.add(`${idOf(a.employee)}_${a.date}`);
+      map.set(`${idOf(a.employee)}_${a.date}`, a);
     }
-    return set;
+    return map;
   }, [absentDailyData?.data]);
 
   // Today's and last night's outcome usually isn't known yet: an overnight
@@ -438,7 +461,7 @@ const PayrollSummaryGrid: React.FC = () => {
       { field: 'date', operator: 'gte', value: recentFrom },
       { field: 'date', operator: 'lte', value: recentTo },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: RANGE_ROW_LIMIT },
     queryOptions: { enabled: recentEnabled },
   });
   const recentDailySet = useMemo(() => {
@@ -600,12 +623,17 @@ const PayrollSummaryGrid: React.FC = () => {
     return 'work';
   };
 
-  // ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ's "ວັນຫ້າມຂາດ" — an absence on one of these weekdays
-  // is charged at the position's configured tier instead of just counting as
-  // a plain ຂາດວຽກ. Only meaningful for a day classifyDay already resolved to
+  // ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ's "ວັນຫ້າມຂາດ" / ມື້ທຳມະດາ — the tier an absence is
+  // charged at. Only meaningful for a day classifyDay already resolved to
   // 'absent' (that precedence — rest/leave always wins first — is classifyDay's
-  // job, not this one's).
-  const noAbsenceSeverityFor = (emp: Employee, dow: number): 'X2' | 'X3' | null => {
+  // job, not this one's). The tier is the one locked onto the absence when it
+  // was recorded (server/src/utils/absenceSeverity.js) — working it out from
+  // today's rules and position, as this used to, let a rule change or a
+  // position move rewrite months already paid. The live rule below is only a
+  // fallback for an absence not locked yet.
+  const noAbsenceSeverityFor = (emp: Employee, dateKey: string, dow: number): 'X2' | 'X3' | null => {
+    const absence = absentSet.get(`${emp._id}_${dateKey}`);
+    if (absence?.absenceSeveritySetAt) return absence.absenceSeverity ?? null;
     const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
     // The employee's own override (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces the
     // position's when set — same precedence as the server's mergeRestDayRule.
@@ -627,7 +655,7 @@ const PayrollSummaryGrid: React.FC = () => {
     if (beforeHire(emp, dateKey)) return 'notStarted';
     const status = classifyDay(emp, dateKey, dow);
     if (status === 'absent') {
-      const severity = noAbsenceSeverityFor(emp, dow);
+      const severity = noAbsenceSeverityFor(emp, dateKey, dow);
       if (severity === 'X2') return 'x2Absent';
       if (severity === 'X3') return 'x3Absent';
       return 'absent';
@@ -664,7 +692,7 @@ const PayrollSummaryGrid: React.FC = () => {
         else if (status === 'rest') restDays += 1;
         else if (status === 'absent') {
           absentDays += 1;
-          const severity = noAbsenceSeverityFor(emp, dow);
+          const severity = noAbsenceSeverityFor(emp, dateKey, dow);
           if (severity === 'X2') x2 += 1;
           else if (severity === 'X3') x3 += 1;
         } else if (status === 'future') futureDays += 1;
@@ -714,9 +742,16 @@ const PayrollSummaryGrid: React.FC = () => {
   // thread per cell: fetched in bulk like every other data source on this
   // page, then grouped by a flat employee+column key — see the PayrollComment
   // type for what that key looks like for each cell kind.
+  // Only the cells in the range on screen (payrollComments.js's from/to) —
+  // every comment ever written was fetched before, and past the page size
+  // the newest would have silently dropped off the grid and the bell.
   const { data: commentsData, refetch: refetchComments } = useList<PayrollComment>({
     resource: 'payroll-comments',
-    pagination: { pageSize: 5000 },
+    filters: [
+      { field: 'from', operator: 'eq', value: rangeStartKey },
+      { field: 'to', operator: 'eq', value: rangeEndKey },
+    ],
+    pagination: { pageSize: RANGE_ROW_LIMIT },
   });
   const threadsByKey = useMemo(() => {
     const docsByKey = new Map<string, PayrollComment[]>();
@@ -758,26 +793,17 @@ const PayrollSummaryGrid: React.FC = () => {
   const dayCommentColumn = (dateKey: string) => `day:${dateKey}`;
   const summaryCommentColumn = (col: string) => `${col}:${rangeStartKey}_${rangeEndKey}`;
 
-  // fromBell: opened from the bell list — on close, scroll to that cell (when
-  // it's in the current view) so the reader lands on what they just checked.
-  const [commentCell, setCommentCell] = useState<{
-    employeeId: string;
-    employeeName: string;
-    column: string;
-    label: string;
-    fromBell?: boolean;
-  } | null>(null);
+  const [commentCell, setCommentCell] = useState<{ employeeId: string; employeeName: string; column: string; label: string } | null>(
+    null
+  );
   const { mutate: createComment, isLoading: postingComment } = useCreate();
   const { mutate: patchCommentStatus, isLoading: savingCommentStatus } = useCustomMutation();
 
-  const openComments = (employeeId: string, employeeName: string, column: string, label: string, fromBell = false) => {
-    setCommentCell({ employeeId, employeeName, column, label, fromBell });
+  const openComments = (employeeId: string, employeeName: string, column: string, label: string) => {
+    setCommentCell({ employeeId, employeeName, column, label });
   };
 
-  const closeComments = () => {
-    if (commentCell?.fromBell) focusComment(commentCell.employeeId, commentCell.column);
-    setCommentCell(null);
-  };
+  const closeComments = () => setCommentCell(null);
 
   // Typing a draft lives inside CommentThreadModal itself (its own local
   // state), not here — this component also renders the full payroll table
@@ -808,10 +834,11 @@ const PayrollSummaryGrid: React.FC = () => {
     );
   };
 
-  // Small clickable marker in a cell's corner — orange dot while the cell's
-  // thread waits for ຢືນຢັນ, green once confirmed, faint when there's none,
-  // so a reviewer scanning the grid can spot flagged cells without opening
-  // anything. A pure-CSS ::after dot (see the .payroll-comment-cell rules
+  // Clickable marker on a cell's corner — a big orange-red dot while the
+  // cell's thread waits for ຢືນຢັນ, a smaller blue one once confirmed (green
+  // vanished on the green ມ cells), faint when there's none, so a reviewer
+  // scanning the grid can spot flagged cells without opening anything. Both
+  // carry a white ring so they stand out on every cell color. A pure-CSS ::after dot (see the .payroll-comment-cell rules
   // below) instead of a rendered icon component — with up to ~250 employees
   // × ~41 columns, an antd icon (several real DOM nodes: span > svg > path)
   // on every single cell was enough extra DOM weight to make the whole table
@@ -831,16 +858,16 @@ const PayrollSummaryGrid: React.FC = () => {
     );
   };
 
-  // Bell — every OPEN thread from any month or filter, so nothing waiting for
-  // review hides just because the page shows a different range; an entry
-  // opens its thread directly, no matching cell needed. The badge is the open
-  // count, so it drops as threads are confirmed. Confirmed threads are listed
-  // on the second tab, most recently confirmed first. No ຢືນຢັນ button on the
-  // entries themselves: a button at the right of each row looked like the
-  // table's action buttons and got pressed by mistake — confirming happens
-  // inside the thread, after reading it.
+  // Bell — the threads on cells inside the date range on screen: the month by
+  // default, or whatever range the date filter is set to. An entry takes the
+  // reader to its cell (see jumpToThread), and they open it there themselves.
+  // The badge is the open count, so it drops as threads are confirmed.
+  // Confirmed threads are listed on the second tab, most recently confirmed
+  // first. No ຢືນຢັນ button on the entries themselves: a button at the right
+  // of each row looked like the table's action buttons and got pressed by
+  // mistake — confirming happens inside the thread, after reading it.
   const { openThreads, resolvedThreads } = useMemo(() => {
-    const all = [...threadsByKey.values()];
+    const all = [...threadsByKey.values()].filter((t) => columnInRange(t.column, rangeStartKey, rangeEndKey));
     return {
       openThreads: all
         .filter((t) => t.status === 'open')
@@ -849,7 +876,7 @@ const PayrollSummaryGrid: React.FC = () => {
         .filter((t) => t.status === 'resolved')
         .sort((a, b) => dayjs(b.resolvedAt).valueOf() - dayjs(a.resolvedAt).valueOf()),
     };
-  }, [threadsByKey]);
+  }, [threadsByKey, rangeStartKey, rangeEndKey]);
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifTab, setNotifTab] = useState<'open' | 'resolved'>('open');
@@ -857,16 +884,45 @@ const PayrollSummaryGrid: React.FC = () => {
 
   // Imperative, not React state — scrolling/flashing a cell must NOT trigger
   // a re-render of the whole table (same reasoning as the comment draft
-  // living in its own component instead of state up here). A cell outside
-  // the current view simply isn't there to scroll to.
+  // living in its own component instead of state up here). Returns false when
+  // the cell isn't in the current view.
   const focusComment = (employeeId: string, column: string) => {
     const el = document.getElementById(`comment-${employeeId}::${column}`);
-    if (!el) return;
+    if (!el) return false;
     el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
     el.classList.remove('payroll-comment-flash');
     void el.offsetWidth;
     el.classList.add('payroll-comment-flash');
-    setTimeout(() => el.classList.remove('payroll-comment-flash'), 3200);
+    setTimeout(() => el.classList.remove('payroll-comment-flash'), 4500);
+    return true;
+  };
+
+  // A bell entry whose cell isn't on screen because a department/position/
+  // person filter hides that employee (the bell only follows the date range):
+  // clear those filters, then scroll once the table has re-rendered with the
+  // cell in it — pendingFocus is checked after every render.
+  const pendingFocus = useRef<{ employeeId: string; column: string } | null>(null);
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (target && focusComment(target.employeeId, target.column)) pendingFocus.current = null;
+  });
+  const jumpToThread = (t: CommentThread) => {
+    setNotifOpen(false);
+    if (focusComment(t.employeeId, t.column)) return;
+    if (!rows.some((r) => r.employee._id === t.employeeId)) {
+      setDepartmentFilter(undefined);
+      setPositionFilter(undefined);
+      setPersonFilter(undefined);
+    }
+    const pending = { employeeId: t.employeeId, column: t.column };
+    pendingFocus.current = pending;
+    // Still not on screen after that (e.g. the employee is no longer listed
+    // on this page at all) — say so rather than silently doing nothing.
+    setTimeout(() => {
+      if (pendingFocus.current !== pending) return;
+      pendingFocus.current = null;
+      message.info('ບໍ່ພົບຊ່ອງນີ້ໃນຕາຕະລາງ');
+    }, 8000);
   };
 
   const exportCsv = () => {
@@ -924,12 +980,12 @@ const PayrollSummaryGrid: React.FC = () => {
           border-radius: 50%;
           background: rgba(0, 0, 0, 0.12);
         }
-        .payroll-comment-cell.has-comment::after { background: #fa8c16; width: 6px; height: 6px; }
-        .payroll-comment-cell.is-resolved::after { background: #52c41a; width: 6px; height: 6px; }
-        .payroll-comment-flash { animation: payrollCommentFlash 1.6s ease-out 2; border-radius: 4px; }
+        .payroll-comment-cell.has-comment::after { top: -4px; right: -4px; width: 11px; height: 11px; background: #fa541c; box-shadow: 0 0 0 2px #fff; z-index: 1; }
+        .payroll-comment-cell.is-resolved::after { top: -3px; right: -3px; width: 8px; height: 8px; background: #1677ff; box-shadow: 0 0 0 2px #fff; z-index: 1; }
+        .payroll-comment-flash { animation: payrollCommentFlash 1.1s ease-out 4; border-radius: 4px; outline: 3px solid #fa541c; outline-offset: 2px; }
         @keyframes payrollCommentFlash {
-          0% { box-shadow: 0 0 0 0 rgba(250, 140, 22, 0.65); }
-          100% { box-shadow: 0 0 0 10px rgba(250, 140, 22, 0); }
+          0% { box-shadow: 0 0 0 0 rgba(250, 84, 28, 0.8); }
+          100% { box-shadow: 0 0 0 14px rgba(250, 84, 28, 0); }
         }
         @media print {
           @page { size: A4 landscape; margin: 5mm; }
@@ -1039,10 +1095,8 @@ const PayrollSummaryGrid: React.FC = () => {
                     return (
                       <div
                         key={t.key}
-                        onClick={() => {
-                          setNotifOpen(false);
-                          openComments(t.employeeId, t.employeeName, t.column, label, true);
-                        }}
+                        onClick={() => jumpToThread(t)}
+                        title="ໄປຫາຊ່ອງນີ້"
                         style={{ padding: '8px 4px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
                       >
                         <div style={{ fontSize: 12, fontWeight: 600 }}>
@@ -1099,6 +1153,20 @@ const PayrollSummaryGrid: React.FC = () => {
                 </span>
                 <Typography.Text strong style={{ fontSize: 13, color: '#262626' }}>
                   {PRINT_DAY_LEGEND_TEXT[state]}
+                </Typography.Text>
+              </Space>
+            ))}
+            {([
+              ['has-comment', 'ຄອມເມັ້ນລໍຖ້າຢືນຢັນ'],
+              ['is-resolved', 'ຄອມເມັ້ນຢືນຢັນແລ້ວ'],
+            ] as const).map(([marker, text]) => (
+              <Space key={marker} size={6}>
+                <span
+                  className={`payroll-comment-cell ${marker}`}
+                  style={{ display: 'inline-block', width: 18, height: 18, borderRadius: 3, border: '1px solid #d9d9d9', cursor: 'default' }}
+                />
+                <Typography.Text strong style={{ fontSize: 13, color: '#262626' }}>
+                  {text}
                 </Typography.Text>
               </Space>
             ))}

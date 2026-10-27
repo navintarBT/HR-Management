@@ -4,11 +4,26 @@ import { useList, useCustom, useGetIdentity, useCreate, useUpdate, useDelete, us
 import { Table, Typography, Space, Button, Modal, Form, TimePicker, DatePicker, Select, Input, Popconfirm } from 'antd';
 import { LeftOutlined, RightOutlined, CalendarOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import type { AttendanceDaily, Employee, Shift, Identity, Department, Position, ShiftCategory, Leave, ScheduledShiftChange, ScheduledPositionSwap } from '../../types';
+import type {
+  AttendanceDaily,
+  Employee,
+  Shift,
+  Identity,
+  Department,
+  Position,
+  ShiftCategory,
+  Leave,
+  ScheduledShiftChange,
+  ScheduledPositionSwap,
+  ShiftChangeLogEntry,
+} from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import { ScheduleCoversGrid } from './covers';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { preferredOverride } from '../../utils/dayOverride';
+import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
 
 // One action in the cell menu — a full-width button with a title and a one-line hint.
 const ChoiceButton: React.FC<{ title: string; description: string; onClick: () => void; disabled?: boolean }> = ({
@@ -73,7 +88,16 @@ function resolveDefaultTime(employee: Employee): { start: string; end: string } 
 // ahead of any Shift override — it's this table's ultimate source of truth
 // for "is this person actually coming in," so it should show even if a
 // stale/conflicting Shift row says otherwise underneath.
-function computeCell(employee: Employee, dateKey: string, override?: Shift, isSubstituted?: boolean, isOnLeave?: boolean): Cell {
+// `regularTime` is the regular shift in force on dateKey (see regularTimeOn in
+// the grid below) — a past day keeps the shift it really had, not today's.
+function computeCell(
+  employee: Employee,
+  dateKey: string,
+  override: Shift | undefined,
+  isSubstituted: boolean,
+  isOnLeave: boolean,
+  regularTime: { start: string; end: string } | null
+): Cell {
   if (isSubstituted) return { kind: 'substituted' };
   if (isOnLeave) return { kind: 'leave' };
   if (override) {
@@ -91,8 +115,7 @@ function computeCell(employee: Employee, dateKey: string, override?: Shift, isSu
   }
   const dow = dayjs(dateKey).day();
   if ((employee.defaultRestDay ?? []).includes(dow)) return { kind: 'rest', isOverride: false };
-  const defaultTime = resolveDefaultTime(employee);
-  if (defaultTime) return { kind: 'work', start: defaultTime.start, end: defaultTime.end, isOverride: false };
+  if (regularTime) return { kind: 'work', start: regularTime.start, end: regularTime.end, isOverride: false };
   return { kind: 'unset' };
 }
 
@@ -111,6 +134,10 @@ const CELL_STYLE: Record<Cell['kind'], React.CSSProperties> = {
 export const MonthlyScheduleGrid: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
   const isManager = identity?.role === 'admin' || identity?.role === 'manager';
+  // The recurring rest day is saved on the employee record, which only an
+  // admin may edit (routes/employees.js) — a manager used to get the button
+  // and then a "forbidden" error on save.
+  const isAdmin = identity?.role === 'admin';
 
   const [monthStart, setMonthStart] = useState(() => dayjs().startOf('month'));
   const daysInMonth = monthStart.daysInMonth();
@@ -121,7 +148,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -183,38 +210,58 @@ export const MonthlyScheduleGrid: React.FC = () => {
     });
   }, [allEmployees, allPositions, search, departmentFilter, positionFilter, shiftCategoryFilter]);
 
+  // Sized off the employee ceiling: each company holiday day alone adds a
+  // ພັກ row for everyone, so a fixed 3000 ran out in a month with many.
   const { data: shiftsData, isLoading: shiftsLoading } = useList<Shift>({
     resource: 'shifts',
     filters: [
       { field: 'date', operator: 'gte', value: monthStartKey },
       { field: 'date', operator: 'lte', value: monthEndKey },
     ],
-    pagination: { pageSize: 3000 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE * 31 },
   });
   const shifts = shiftsData?.data ?? [];
 
-  // Only 'scheduled'/'rest' shifts count as an override for this table — a
-  // 'cancelled' one (from the position-based weekly schedule) isn't a rest-day
-  // decision, so it's ignored here and the cell just falls back to the default.
+  // A 'cancelled' row isn't a rest-day decision, so it never counts here.
+  // When someone has more than one row on a date, the same one wins as on
+  // every other page and in the absence sweep (utils/dayOverride.ts) — this
+  // used to be whichever row happened to come last.
   const overrideByEmpDate = useMemo(() => {
     const map: Record<string, Shift> = {};
     for (const s of shifts) {
-      if (s.status === 'cancelled') continue;
-      map[`${idOf(s.employee)}_${s.date}`] = s;
+      const key = `${idOf(s.employee)}_${s.date}`;
+      const preferred = preferredOverride(map[key], s);
+      if (preferred) map[key] = preferred;
     }
     return map;
   }, [shifts]);
 
+  // Regular-shift changes from the start of this month on — a past day keeps
+  // the regular shift it really had (models/ShiftChangeLog.js), not today's.
+  const { data: shiftLogsData } = useCustom<ShiftChangeLogEntry[]>({
+    url: `${API_URL}/shift-change-logs`,
+    method: 'get',
+    config: { query: { after: monthStartKey } },
+  });
+  const shiftLogsByEmployee = useMemo(() => groupLogsByEmployee(shiftLogsData?.data), [shiftLogsData?.data]);
+  const regularTimeOn = (emp: Employee, dateKey: string) => {
+    const historical = shiftOnDate(shiftLogsByEmployee.get(emp._id), dateKey);
+    if (!historical) return resolveDefaultTime(emp);
+    return historical.startTime && historical.endTime ? { start: historical.startTime, end: historical.endTime } : null;
+  };
+
   // So a day marked "ມາແທນ" from ປະຫວັດການສະແກນ (or from this page's own modal)
   // shows up here too, instead of just reverting to blank once its queued
-  // Shift is gone.
+  // Shift is gone. Only those rows — the whole month's records used to be
+  // fetched for this and were cut off at 5000.
   const { data: attendanceDailyData } = useList<AttendanceDaily>({
     resource: 'attendance-daily',
     filters: [
       { field: 'date', operator: 'gte', value: monthStartKey },
       { field: 'date', operator: 'lte', value: monthEndKey },
+      { field: 'status', operator: 'eq', value: 'substituted' },
     ],
-    pagination: { pageSize: 5000 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE * 31 },
   });
   const substitutedByEmpDate = useMemo(() => {
     const map: Record<string, boolean> = {};
@@ -229,13 +276,17 @@ export const MonthlyScheduleGrid: React.FC = () => {
   // swap away from a day that needs staffing — it isn't meant to also block
   // marking a date "rest" when the employee is already out on approved leave
   // that day regardless (nothing about the restriction changes the fact that
-  // they're not coming in). Fetched unfiltered by month, like other
-  // client-side-filtered lists in this app — leave records are few per
-  // employee either way.
+  // they're not coming in). Only leaves overlapping this month — fetching
+  // every leave ever filed would silently lose the newest ones once there
+  // were more than the page size.
   const { data: approvedLeavesData } = useList<Leave>({
     resource: 'leaves',
-    filters: [{ field: 'status', operator: 'eq', value: 'approved' }],
-    pagination: { pageSize: 2000, mode: 'server' },
+    filters: [
+      { field: 'status', operator: 'eq', value: 'approved' },
+      { field: 'from', operator: 'eq', value: monthStartKey },
+      { field: 'to', operator: 'eq', value: monthEndKey },
+    ],
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE * 31, mode: 'server' },
   });
   const approvedLeaveRangesByEmployee = useMemo(() => {
     const map: Record<string, { start: Dayjs; end: Dayjs }[]> = {};
@@ -297,7 +348,16 @@ export const MonthlyScheduleGrid: React.FC = () => {
   const editingOverride = editing ? overrideByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
   const editingIsSubstituted = editing ? !!substitutedByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : false;
   const editingIsOnLeave = editing ? hasApprovedLeaveOn(editing.employee._id, editing.dateKey) : false;
-  const editingCell = editing ? computeCell(editing.employee, editing.dateKey, editingOverride, editingIsSubstituted, editingIsOnLeave) : null;
+  const editingCell = editing
+    ? computeCell(
+        editing.employee,
+        editing.dateKey,
+        editingOverride,
+        editingIsSubstituted,
+        editingIsOnLeave,
+        regularTimeOn(editing.employee, editing.dateKey)
+      )
+    : null;
   const editingPendingShiftChange = editing ? pendingShiftChangeByEmpDate[`${editing.employee._id}_${editing.dateKey}`] : undefined;
 
   const [timeForm] = Form.useForm();
@@ -620,14 +680,8 @@ export const MonthlyScheduleGrid: React.FC = () => {
     if (queued?.status === 'scheduled' && queued.startTime && queued.endTime) {
       return [dayjs(`${dateKey}T${queued.startTime}`), dayjs(`${dateKey}T${queued.endTime}`)];
     }
-    const category = emp.defaultShiftCategory;
-    if (category && typeof category === 'object') {
-      return [dayjs(`${dateKey}T${category.startTime}`), dayjs(`${dateKey}T${category.endTime}`)];
-    }
-    if (emp.defaultShiftStart && emp.defaultShiftEnd) {
-      return [dayjs(`${dateKey}T${emp.defaultShiftStart}`), dayjs(`${dateKey}T${emp.defaultShiftEnd}`)];
-    }
-    return undefined;
+    const regular = regularTimeOn(emp, dateKey);
+    return regular ? [dayjs(`${dateKey}T${regular.start}`), dayjs(`${dateKey}T${regular.end}`)] : undefined;
   };
 
   const fillCoverTime = (coveredId: string) => {
@@ -843,7 +897,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
               <span>
                 {emp.firstName} {emp.lastName}
               </span>
-              {isManager && (
+              {isAdmin && (
                 <Button
                   size="small"
                   type="text"
@@ -873,7 +927,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
                 const override = overrideByEmpDate[`${emp._id}_${dateKey}`];
                 const isSubstituted = !!substitutedByEmpDate[`${emp._id}_${dateKey}`];
                 const isOnLeave = hasApprovedLeaveOn(emp._id, dateKey);
-                const cell = computeCell(emp, dateKey, override, isSubstituted, isOnLeave);
+                const cell = computeCell(emp, dateKey, override, isSubstituted, isOnLeave, regularTimeOn(emp, dateKey));
                 const isOverride = (cell.kind === 'rest' || cell.kind === 'work') && cell.isOverride;
                 // Auto-created by a position swap (see positionSwap.js) — an
                 // admin editing this by hand could put the employee back on a

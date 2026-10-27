@@ -8,6 +8,7 @@ import { API_URL, axiosInstance } from '../../providers/axios';
 import type { Employee, Holiday, Identity } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { applyRestDayToAll } from '../../utils/holidayShifts';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 const { RangePicker } = DatePicker;
 
@@ -44,7 +45,7 @@ export const HolidayListPage: React.FC = () => {
   const { data: employeesData } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
   });
   const activeEmployees = employeesData?.data ?? [];
 

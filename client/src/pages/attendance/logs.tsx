@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/core';
-import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm } from 'antd';
+import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm, message } from 'antd';
 import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { AttendanceDaily, Department, Employee, Identity, Position, Shift, ScheduledPositionSwap } from '../../types';
+import type { AttendanceDaily, Department, Employee, Identity, Position, Shift, ScheduledPositionSwap, ShiftChangeLogEntry } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import { lateLabel } from '../../utils/lateSeverity';
+import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -17,8 +19,12 @@ function idOf(value: unknown) {
 // tier only when one's actually configured — ວັນຫ້າມຂາດ (ຕັ້ງຄ່າກົດຂອງຕຳແໜ່ງ)
 // for the specific days chosen there, ordinaryAbsenceSeverity for any other
 // day. null (no tier at all) when neither is set for this employee/position —
-// no hardcoded default, unlike before this was configurable.
-function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' | null {
+// no hardcoded default, unlike before this was configurable. The tier locked
+// onto the absence when it was recorded wins (server/src/utils/
+// absenceSeverity.js) — today's rules are only a fallback for one not locked
+// yet, so a rule change or position move can't rewrite a past absence here.
+function absentSeverity(emp: Employee, day: Dayjs, row: AttendanceDaily): 'X2' | 'X3' | null {
+  if (row.absenceSeveritySetAt) return row.absenceSeverity ?? null;
   const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
   const dow = day.day();
   // The employee's own override (ຕັ້ງຄ່າສະເພາະລາຍບຸກຄົນ) fully replaces the
@@ -33,6 +39,9 @@ function absentSeverity(emp: Employee, day: Dayjs): 'X2' | 'X3' | null {
 }
 
 const { RangePicker } = DatePicker;
+// Two months of day columns is already wider than anyone scrolls — and the
+// server serves at most 93 days of records per request.
+const MAX_RANGE_DAYS = 62;
 
 // Background/text pair per AttendanceDaily.status, plus a "rest day" look-alike
 // for days with no record at all that match the employee's recurring day off
@@ -88,7 +97,7 @@ const AttendanceSummaryGrid: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -133,15 +142,24 @@ const AttendanceSummaryGrid: React.FC = () => {
     [allEmployees, search, departmentFilter, positionFilter]
   );
 
-  const { data: dailyData, isLoading: dailyLoading, refetch: refetchDaily } = useList<AttendanceDaily>({
-    resource: 'attendance-daily',
-    filters: [
-      { field: 'date', operator: 'gte', value: rangeStartKey },
-      { field: 'date', operator: 'lte', value: rangeEndKey },
-    ],
-    pagination: { pageSize: 5000 },
+  // Every record in range — the generic list's page size (5000 here) had
+  // been cutting off the newest rows once 250+ staff × a month passed it,
+  // so the last days of the month showed up blank.
+  const { data: dailyData, isLoading: dailyLoading, refetch: refetchDaily } = useCustom<AttendanceDaily[]>({
+    url: `${API_URL}/attendance-daily/range`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
   });
   const dailyRows = dailyData?.data ?? [];
+
+  // Regular-shift changes from the start of the range on — a past day's
+  // manual fix starts from the shift that applied THAT day, not today's.
+  const { data: shiftLogsData } = useCustom<ShiftChangeLogEntry[]>({
+    url: `${API_URL}/shift-change-logs`,
+    method: 'get',
+    config: { query: { after: rangeStartKey } },
+  });
+  const shiftLogsByEmployee = useMemo(() => groupLogsByEmployee(shiftLogsData?.data), [shiftLogsData?.data]);
 
   const byEmpDate = useMemo(() => {
     const map: Record<string, AttendanceDaily> = {};
@@ -264,7 +282,13 @@ const AttendanceSummaryGrid: React.FC = () => {
   const openEdit = (emp: Employee, dateKey: string) => {
     const row = byEmpDate[`${emp._id}_${dateKey}`];
     const queued = scheduledByEmpDate[`${emp._id}_${dateKey}`];
-    const expected = queued ? { start: queued.startTime, end: queued.endTime } : resolveDefaultTime(emp);
+    const historical = shiftOnDate(shiftLogsByEmployee.get(emp._id), dateKey);
+    const regular = historical
+      ? historical.startTime && historical.endTime
+        ? { start: historical.startTime, end: historical.endTime }
+        : null
+      : resolveDefaultTime(emp);
+    const expected = queued ? { start: queued.startTime, end: queued.endTime } : regular;
 
     form.setFieldsValue({
       checkIn: row?.firstIn ? dayjs(row.firstIn) : expected ? dayjs(`${dateKey}T${expected.start}`) : undefined,
@@ -389,7 +413,16 @@ const AttendanceSummaryGrid: React.FC = () => {
             <Typography.Text type="secondary">ຫຼືເລືອກຊ່ວງເອງ:</Typography.Text>
             <RangePicker
               value={range}
-              onChange={(v) => v && v[0] && v[1] && setRange([v[0], v[1]])}
+              onChange={(v) => {
+                if (!v || !v[0] || !v[1]) return;
+                let [start, end] = v;
+                const spanDays = end.startOf('day').diff(start.startOf('day'), 'day') + 1;
+                if (spanDays > MAX_RANGE_DAYS) {
+                  end = start.add(MAX_RANGE_DAYS - 1, 'day');
+                  message.warning(`ເລືອກຊ່ວງວັນທີໄດ້ສູງສຸດ ${MAX_RANGE_DAYS} ວັນ`);
+                }
+                setRange([start, end]);
+              }}
               format="DD/MM/YYYY"
               allowClear={false}
             />
@@ -548,7 +581,7 @@ const AttendanceSummaryGrid: React.FC = () => {
                 const style = row ? CELL_STYLE[row.status] : undefined;
                 if (style) {
                   const time = timeText(row!);
-                  const severity = row!.status === 'absent' ? absentSeverity(emp, day) : null;
+                  const severity = row!.status === 'absent' ? absentSeverity(emp, day, row!) : null;
                   const label =
                     row!.status === 'late'
                       ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)

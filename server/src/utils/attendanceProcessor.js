@@ -6,6 +6,7 @@ const Leave = require('../models/Leave');
 const ShiftCategory = require('../models/ShiftCategory');
 const ShiftChangeLog = require('../models/ShiftChangeLog');
 const { shiftOnDate, shiftLogsFor } = require('./shiftHistory');
+const { severityFieldsForAbsence, CLEARED_SEVERITY } = require('./absenceSeverity');
 
 const GRACE_MINUTES = 15;
 const SEVERE_LATE_MINUTES = 60;
@@ -126,6 +127,32 @@ async function resolveExpectedShift(employeeId, dateKey) {
   }
 
   return null;
+}
+
+// One person can end up with more than one Shift row on the same date (a
+// cover on top of their own override, an old 'cancelled' row) — every caller
+// that looks at a day's rows picks the same one: a working shift wins over a
+// swapped-blank day, which wins over a rest day, and 'cancelled' never counts.
+// Same order resolveExpectedShift and ສະຫຼຸບເງິນເດືອນ already follow.
+const OVERRIDE_PRECEDENCE = ['scheduled', 'swapped', 'rest'];
+function pickDayOverride(rows) {
+  let best = null;
+  for (const row of rows ?? []) {
+    const rank = OVERRIDE_PRECEDENCE.indexOf(row.status);
+    if (rank === -1) continue;
+    if (!best || rank < OVERRIDE_PRECEDENCE.indexOf(best.status)) best = row;
+  }
+  return best;
+}
+
+function groupByEmployee(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const key = String(row.employee);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+  }
+  return map;
 }
 
 // Called only for a day with no 'scheduled'/'swapped' Shift row of its own.
@@ -281,6 +308,9 @@ async function recomputeDay(employeeId, dateKey) {
       : lateMinutes > 0
         ? 'late'
         : 'present';
+  // Late past autoAbsentMinutes counts as an absence — its tier is locked
+  // like any other absence's (see models/AttendanceDaily.js).
+  const severity = status === 'absent' ? await severityFieldsForAbsence(employeeId, dateKey) : CLEARED_SEVERITY;
 
   return AttendanceDaily.findOneAndUpdate(
     { employee: employeeId, date: dateKey },
@@ -297,13 +327,17 @@ async function recomputeDay(employeeId, dateKey) {
       earlyLeaveMinutes,
       otHours,
       status,
+      ...severity,
     },
     { upsert: true, new: true }
   );
 }
 
+// Used by the absence sweep and by a deliberate (disciplinary) ຂາດ — either
+// way the tier is locked here, from the rules in force now.
 async function markAbsent(employeeId, dateKey) {
   const expected = await resolveExpectedShift(employeeId, dateKey);
+  const severity = await severityFieldsForAbsence(employeeId, dateKey);
   return AttendanceDaily.findOneAndUpdate(
     { employee: employeeId, date: dateKey },
     {
@@ -317,6 +351,7 @@ async function markAbsent(employeeId, dateKey) {
       earlyLeaveMinutes: 0,
       otHours: 0,
       status: 'absent',
+      ...severity,
     },
     { upsert: true, new: true }
   );
@@ -347,6 +382,7 @@ async function markPresentFromShift(employeeId, dateKey, expected, note) {
       otHours: 0,
       status: 'present',
       autoFilledReason: note,
+      ...CLEARED_SEVERITY,
     },
     { upsert: true, new: true }
   );
@@ -422,14 +458,7 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
       existingDaily.filter((r) => !(r.status === 'absent' && !r.disciplinaryNote)).map((r) => String(r.employee))
     );
     const onLeave = new Set(approvedLeaves.map((l) => String(l.employee)));
-    const shiftByEmployee = new Map();
-    for (const s of dayShifts) {
-      const key = String(s.employee);
-      // Same ambiguity resolveExpectedShift itself has if more than one
-      // 'scheduled' row exists for one employee/day (e.g. a cover shift
-      // alongside their own) — whichever is found first wins either way.
-      if (!shiftByEmployee.has(key)) shiftByEmployee.set(key, s);
-    }
+    const shiftsByEmployee = groupByEmployee(dayShifts);
 
     const toFill = [];
     for (const employee of employees) {
@@ -438,7 +467,10 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
         skipped.push({ employee: empId, date: dateKey });
         continue;
       }
-      const shift = shiftByEmployee.get(empId);
+      // Two 'scheduled' rows (a cover alongside their own) still leave which
+      // one's time is used to whichever is found first — same ambiguity
+      // resolveExpectedShift itself has.
+      const shift = pickDayOverride(shiftsByEmployee.get(empId));
       if (shift && (shift.status === 'rest' || shift.status === 'swapped')) {
         skipped.push({ employee: empId, date: dateKey });
         continue;
@@ -530,7 +562,7 @@ async function markAbsentForMissedScans() {
       ),
     ]);
     const hasDaily = new Set(existingDaily.map((r) => String(r.employee)));
-    const overrideStatusByEmployee = new Map(overrides.map((o) => [String(o.employee), o.status]));
+    const overridesByEmployee = groupByEmployee(overrides);
     const onLeave = new Set(approvedLeaves.map((l) => String(l.employee)));
 
     for (const employee of employees) {
@@ -541,7 +573,10 @@ async function markAbsentForMissedScans() {
       // No scanner code: they can't scan at all, so a missing scan says nothing.
       if (!employee.deviceUserId) continue;
 
-      const overrideStatus = overrideStatusByEmployee.get(empId);
+      // Previously the LAST row found decided it, 'cancelled' included — a
+      // leftover cancelled row on someone's recurring rest day made that day
+      // look like it had an override, so it was judged as a work day.
+      const overrideStatus = pickDayOverride(overridesByEmployee.get(empId))?.status;
       if (overrideStatus === 'rest' || overrideStatus === 'swapped') continue;
       if (!overrideStatus && (employee.defaultRestDay ?? []).includes(dow)) continue;
 
@@ -573,6 +608,7 @@ async function markLeave(employeeId, dateKey) {
       earlyLeaveMinutes: 0,
       otHours: 0,
       status: 'leave',
+      ...CLEARED_SEVERITY,
     },
     { upsert: true, new: true }
   );
@@ -595,6 +631,7 @@ async function markSubstituted(employeeId, dateKey) {
       earlyLeaveMinutes: 0,
       otHours: 0,
       status: 'substituted',
+      ...CLEARED_SEVERITY,
     },
     { upsert: true, new: true }
   );
@@ -645,6 +682,7 @@ module.exports = {
   markLeave,
   markSubstituted,
   reprocessFromLogs,
+  pickDayOverride,
   GRACE_MINUTES,
   STANDARD_WORK_HOURS,
 };

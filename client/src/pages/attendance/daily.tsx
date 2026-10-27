@@ -1,14 +1,19 @@
 import { useMemo, useState } from 'react';
 import { List } from '@refinedev/antd';
-import { useList } from '@refinedev/core';
-import { Table, Select, Button, Space, Typography, Input, DatePicker } from 'antd';
+import { useList, useCustom } from '@refinedev/core';
+import { Table, Select, Button, Space, Typography, Input, DatePicker, message } from 'antd';
 import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { lateTier, formatMinutes } from '../../utils/lateSeverity';
+import { API_URL } from '../../providers/axios';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 const { RangePicker } = DatePicker;
+// The most the server's /attendance-daily/range serves per request — about a
+// quarter, enough for any report this page is used for.
+const MAX_RANGE_DAYS = 93;
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -51,7 +56,7 @@ export const AttendanceDailyPage: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status_in', operator: 'eq', value: 'active,resigned' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -88,17 +93,13 @@ export const AttendanceDailyPage: React.FC = () => {
     });
   }, [allEmployees, search, departmentFilter, positionFilter]);
 
-  const { data: dailyData, isLoading: dailyLoading } = useList<AttendanceDaily>({
-    resource: 'attendance-daily',
-    filters: [
-      { field: 'date', operator: 'gte', value: rangeStartKey },
-      { field: 'date', operator: 'lte', value: rangeEndKey },
-    ],
-    // 192 active employees × 31 days is already 5952 — past the old 5000
-    // cap, which Refine's simple-rest provider truncates silently (no error,
-    // just missing rows) rather than paginating further. Comfortable
-    // headroom past that ceiling for a while yet.
-    pagination: { pageSize: 20000 },
+  // Every record in range, bounded by the range rather than a row count —
+  // any fixed page size (5000, then 20000 here) silently drops the newest
+  // rows once staff × days passes it, which a longer custom range already did.
+  const { data: dailyData, isLoading: dailyLoading } = useCustom<AttendanceDaily[]>({
+    url: `${API_URL}/attendance-daily/range`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
   });
   const dailyRows = dailyData?.data ?? [];
 
@@ -181,7 +182,16 @@ export const AttendanceDailyPage: React.FC = () => {
             <Typography.Text type="secondary">ຫຼືເລືອກຊ່ວງເອງ:</Typography.Text>
             <RangePicker
               value={range}
-              onChange={(v) => v && v[0] && v[1] && setRange([v[0], v[1]])}
+              onChange={(v) => {
+                if (!v || !v[0] || !v[1]) return;
+                let [start, end] = v;
+                const spanDays = end.startOf('day').diff(start.startOf('day'), 'day') + 1;
+                if (spanDays > MAX_RANGE_DAYS) {
+                  end = start.add(MAX_RANGE_DAYS - 1, 'day');
+                  message.warning(`ເລືອກຊ່ວງວັນທີໄດ້ສູງສຸດ ${MAX_RANGE_DAYS} ວັນ`);
+                }
+                setRange([start, end]);
+              }}
               format="DD/MM/YYYY"
               allowClear={false}
             />

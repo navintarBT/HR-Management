@@ -8,6 +8,7 @@ import type { Department, Employee, Identity, Overtime, Position } from '../../t
 import { OvertimeStatusTag } from '../../components/StatusTags';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { withLocalTextFilter as withTextFilter } from '../../utils/selectFilters';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 const { RangePicker: TimeRangePicker } = TimePicker;
 const { RangePicker: DateRangePicker } = DatePicker;
@@ -141,7 +142,7 @@ export const OvertimeSummaryGrid: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
@@ -270,7 +271,7 @@ export const OvertimeDetailList: React.FC = () => {
     optionLabel: (item) => (item.employeeCode ? `${item.employeeCode} - ${item.firstName} ${item.lastName}` : `${item.firstName} ${item.lastName}`),
     optionValue: '_id',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { modalProps, formProps, show, close } = useModalForm<Overtime>({

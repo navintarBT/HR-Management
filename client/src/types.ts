@@ -106,6 +106,23 @@ export interface AttendanceDaily {
   status: AttendanceStatus;
   disciplinaryNote?: string | null; // set only when an admin/manager forced status='absent' as discipline — the reason given
   autoFilledReason?: string | null; // set only when an admin bulk-filled this day as 'present' because the scanning system itself was down
+  // An absence's ວັນຫ້າມຂາດ / ມື້ທຳມະດາ tier, locked when it was recorded
+  // (server/src/utils/absenceSeverity.js) — read this, don't recompute it from
+  // today's rules. absenceSeveritySetAt null = not locked yet.
+  absenceSeverity?: 'X2' | 'X3' | null;
+  absenceSeveritySetAt?: string | null;
+}
+
+// One absence whose locked tier would change under today's rules — from
+// POST /attendance-daily/absence-severity.
+export interface AbsenceSeverityChange {
+  _id: string;
+  employee: string;
+  employeeCode: string;
+  employeeName: string;
+  date: string;
+  from: 'X2' | 'X3' | null;
+  to: 'X2' | 'X3' | null;
 }
 
 export type LeaveType = 'vacation' | 'sick' | 'personal';
@@ -225,6 +242,22 @@ export interface ScheduledShiftChange {
   createdByEmail?: string;
   appliedAt?: string;
   createdAt: string;
+}
+
+// One change to an employee's regular shift and the day it took effect
+// (server/src/models/ShiftChangeLog.js), as GET /shift-change-logs returns it.
+export interface ShiftSnapshot {
+  category?: string | null;
+  startTime: string | null; // HH:mm
+  endTime: string | null; // HH:mm
+}
+
+export interface ShiftChangeLogEntry {
+  _id: string;
+  employee: string;
+  effectiveDate: string; // YYYY-MM-DD — first day of `next`
+  previous?: ShiftSnapshot;
+  next?: ShiftSnapshot;
 }
 
 export type OvertimeStatus = 'pending' | 'approved' | 'rejected';

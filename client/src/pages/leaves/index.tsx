@@ -8,8 +8,15 @@ import type { Employee, Identity, Leave, Department, Position } from '../../type
 import { LeaveStatusTag } from '../../components/StatusTags';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { withLocalTextFilter } from '../../utils/selectFilters';
+import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 
 const { RangePicker } = DatePicker;
+
+// Both lists below fetch about a year of leaves (the annual balance is
+// per calendar year) — sized well past a year's worth for the whole staff.
+// They used to fetch every leave ever filed, which past the old 2000 cap
+// would have silently dropped the newest ones (and the balance with them).
+const LEAVE_LIST_LIMIT = ALL_EMPLOYEES_PAGE_SIZE * 31;
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -99,14 +106,20 @@ export const LeaveSummaryGrid: React.FC = () => {
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500 },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE },
     sorters: [{ field: 'employeeCode', order: 'asc' }],
   });
   const allEmployees = employeesData?.data ?? [];
 
+  // The viewed month's year — what both the month rows and the annual
+  // balance read (leaves.js's from/to: overlapping the range).
   const { data: leavesData, isLoading: leavesLoading } = useList<Leave>({
     resource: 'leaves',
-    pagination: { pageSize: 2000, mode: 'server' },
+    filters: [
+      { field: 'from', operator: 'eq', value: monthStart.startOf('year').format('YYYY-MM-DD') },
+      { field: 'to', operator: 'eq', value: monthStart.endOf('year').format('YYYY-MM-DD') },
+    ],
+    pagination: { pageSize: LEAVE_LIST_LIMIT, mode: 'server' },
   });
   const allLeaves = leavesData?.data ?? [];
 
@@ -255,12 +268,23 @@ export const LeaveDetailList: React.FC = () => {
       .map((p) => ({ label: p.name, value: p._id }));
   }, [allPositions, departmentFilter]);
 
-  // Fetched unpaginated (a leave list is never huge) so the month view and the
-  // code/name search below can both filter client-side — matching the pattern
-  // used on the attendance report pages.
+  // Fetched for the viewed year plus a month either side (and the custom
+  // range, if any) so the month view, the code/name search, the annual
+  // balance, a split pair's other half across New Year and the date pickers'
+  // "already on leave" days can all filter client-side.
+  const leaveFetchFrom = [monthStart.startOf('year').subtract(1, 'month'), ...(customRange ? [customRange[0]] : [])]
+    .reduce((a, b) => (b.isBefore(a) ? b : a))
+    .format('YYYY-MM-DD');
+  const leaveFetchTo = [monthStart.endOf('year').add(1, 'month'), ...(customRange ? [customRange[1]] : [])]
+    .reduce((a, b) => (b.isAfter(a) ? b : a))
+    .format('YYYY-MM-DD');
   const { data: leavesData, isLoading } = useList<Leave>({
     resource: 'leaves',
-    pagination: { pageSize: 2000, mode: 'server' },
+    filters: [
+      { field: 'from', operator: 'eq', value: leaveFetchFrom },
+      { field: 'to', operator: 'eq', value: leaveFetchTo },
+    ],
+    pagination: { pageSize: LEAVE_LIST_LIMIT, mode: 'server' },
     sorters: [{ field: 'startDate', order: 'desc' }],
   });
   const allLeaves = leavesData?.data ?? [];
@@ -414,7 +438,7 @@ export const LeaveDetailList: React.FC = () => {
     optionLabel: (item) => (item.employeeCode ? `${item.employeeCode} - ${item.firstName} ${item.lastName}` : `${item.firstName} ${item.lastName}`),
     optionValue: '_id',
     filters: [{ field: 'status', operator: 'eq', value: 'active' }],
-    pagination: { pageSize: 500, mode: 'server' },
+    pagination: { pageSize: ALL_EMPLOYEES_PAGE_SIZE, mode: 'server' },
   });
 
   const { mutate: deleteLeave } = useDelete();
