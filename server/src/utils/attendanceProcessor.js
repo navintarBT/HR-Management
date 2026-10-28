@@ -244,8 +244,29 @@ async function resolveShiftDateKey(employeeId, timestamp) {
   return todayKey;
 }
 
+// Whether an approved leave covers this day.
+async function approvedLeaveCovers(employeeId, dateKey) {
+  const { start, end } = dayRange(dateKey);
+  return !!(await Leave.exists({ employee: employeeId, status: 'approved', startDate: { $lte: end }, endDate: { $gte: start } }));
+}
+
+// A day HR decided by hand that incoming scans must not overwrite: a
+// disciplinary ຂາດ and a ມາແທນ. Both deleted that day's scans when they were
+// set, but the same punches can come back — ດຶງການສະແກນຍ້ອນຫຼັງ, or a
+// terminal re-sending its backlog — and re-deriving the day from them turned
+// it back into ມາ (keeping the disciplinary note on a ມາ day).
+function isLockedByHand(daily) {
+  return !!daily && (daily.status === 'substituted' || (daily.status === 'absent' && !!daily.disciplinaryNote));
+}
+
 // Recomputes the daily aggregate for one employee on one day from raw logs.
-async function recomputeDay(employeeId, dateKey) {
+// A day locked by hand (isLockedByHand) is left as it is unless `force` —
+// HR's own ແກ້ໄຂເວລາ (manual-fix), which replaces the day on purpose.
+async function recomputeDay(employeeId, dateKey, { force = false } = {}) {
+  if (!force) {
+    const existing = await AttendanceDaily.findOne({ employee: employeeId, date: dateKey });
+    if (isLockedByHand(existing)) return existing;
+  }
   const { windowStart, windowEnd, expected, overnight } = await resolveShiftWindow(employeeId, dateKey);
 
   const logs = await AttendanceLog.find({
@@ -283,17 +304,24 @@ async function recomputeDay(employeeId, dateKey) {
     }
   }
 
+  // A day an approved leave covers stays ລາ even when someone scans on it
+  // (agreed 2026-10-28): the leave decides. The scan's times are still kept,
+  // so ປະຫວັດການສະແກນ and ສະຫຼຸບເງິນເດືອນ can flag the day for HR to check
+  // (and correct the leave if they really came in) — and nothing is judged
+  // late or early against a shift they were off from.
+  const onLeave = await approvedLeaveCovers(employeeId, dateKey);
+
   let lateMinutes = 0;
   let earlyLeaveMinutes = 0;
   const autoAbsentMinutes = expected ? expected.autoAbsentMinutes : null;
-  if (standardStart && firstIn) {
+  if (standardStart && firstIn && !onLeave) {
     // Measured from the exact shift start — graceMinutes no longer shifts
     // this threshold (and so no longer keeps a slightly-late scan classified
     // as "present"); it now only sizes the "ຊ້າ" vs "ຊ້າເກີນ X ນາທີ" label
     // tiers on the attendance-log UI, against the raw minutes here.
     lateMinutes = firstIn > standardStart ? Math.round((firstIn - standardStart) / 60000) : 0;
   }
-  if (standardEnd && lastOut) {
+  if (standardEnd && lastOut && !onLeave) {
     earlyLeaveMinutes = lastOut < standardEnd ? Math.round((standardEnd - lastOut) / 60000) : 0;
   }
 
@@ -303,7 +331,9 @@ async function recomputeDay(employeeId, dateKey) {
     : 0;
   const expectedHours = computeExpectedHours(expected);
 
-  const status = !firstIn || !lastOut
+  const status = onLeave
+    ? 'leave'
+    : !firstIn || !lastOut
     ? 'incomplete'
     : autoAbsentMinutes != null && lateMinutes > autoAbsentMinutes
       ? 'absent'
@@ -330,6 +360,10 @@ async function recomputeDay(employeeId, dateKey) {
       otHours,
       status,
       ...severity,
+      // Derived from real scans now: no longer a hand-set ຂາດ, nor standing
+      // in for scans that never arrived (an outage fill whose scans turned up).
+      disciplinaryNote: null,
+      autoFilledReason: null,
     },
     { upsert: true, new: true }
   );
@@ -442,25 +476,24 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
     const dow = new Date(`${dateKey}T00:00:00`).getDay();
     // eslint-disable-next-line no-await-in-loop
     const [existingDaily, dayShifts, approvedLeaves] = await Promise.all([
-      AttendanceDaily.find({ date: dateKey }, 'employee status disciplinaryNote'),
+      AttendanceDaily.find({ date: dateKey }, 'employee status disciplinaryNote firstIn lastOut'),
       Shift.find({ date: dateKey, status: { $in: ['scheduled', 'swapped', 'rest'] } }, 'employee status startTime endTime'),
       Leave.find(
         { status: 'approved', startDate: { $lte: new Date(`${dateKey}T23:59:59.999`) }, endDate: { $gte: new Date(`${dateKey}T00:00:00`) } },
         'employee'
       ),
     ]);
-    // A plain 'absent' with no disciplinaryNote is never anything but the
-    // automatic sweep's own guess (recomputeDay's real-scan path never
-    // produces 'absent' — see markAbsentForMissedScans) — and that sweep runs
-    // on server startup too, so it will have already "found" a multi-day
-    // outage as a wave of no-shows before an admin even gets to this button.
-    // That specific case is exactly what this tool exists to correct, so it's
-    // the one status this bulk fill is allowed to overwrite; a disciplinary
-    // absence (deliberately set) and every other status (a real scan, leave,
-    // substituted, ...) still block it completely, same as before.
-    const hasDaily = new Set(
-      existingDaily.filter((r) => !(r.status === 'absent' && !r.disciplinaryNote)).map((r) => String(r.employee))
-    );
+    // An 'absent' with no scan at all and no disciplinaryNote is the
+    // automatic sweep's own guess — and that sweep runs on server startup
+    // too, so it will have already "found" a multi-day outage as a wave of
+    // no-shows before an admin even gets to this button. That specific case
+    // is exactly what this tool exists to correct, so it's the one row this
+    // bulk fill is allowed to overwrite. An 'absent' WITH a scan is real —
+    // recomputeDay records someone late past autoAbsentMinutes that way — and
+    // a disciplinary absence (deliberately set) and every other status (a
+    // real scan, leave, substituted, ...) still block it completely.
+    const isSweepGuess = (r) => r.status === 'absent' && !r.disciplinaryNote && !r.firstIn && !r.lastOut;
+    const hasDaily = new Set(existingDaily.filter((r) => !isSweepGuess(r)).map((r) => String(r.employee)));
     const onLeave = new Set(approvedLeaves.map((l) => String(l.employee)));
     const shiftsByEmployee = groupByEmployee(dayShifts);
 
@@ -621,9 +654,49 @@ async function markLeave(employeeId, dateKey) {
       otHours: 0,
       status: 'leave',
       ...CLEARED_SEVERITY,
+      disciplinaryNote: null,
+      autoFilledReason: null,
     },
     { upsert: true, new: true }
   );
+}
+
+// Brings one day in line with the employee's leave, from what's on file NOW
+// — so it runs once a leave's changes (added, approved, moved, deleted) are
+// saved. Covered by an approved leave → ລາ, keeping any scan's times (see
+// recomputeDay; a leave outranks a hand-set ຂາດ/ມາແທນ, as marking leave
+// always has). Not covered → whatever its scans say, or nothing: a ລາ mark
+// with no leave behind it any more is removed.
+async function refreshLeaveDay(employeeId, dateKey) {
+  if (await approvedLeaveCovers(employeeId, dateKey)) {
+    return (await recomputeDay(employeeId, dateKey, { force: true })) ?? markLeave(employeeId, dateKey);
+  }
+  const recomputed = await recomputeDay(employeeId, dateKey);
+  if (!recomputed) await AttendanceDaily.deleteOne({ employee: employeeId, date: dateKey, status: 'leave' });
+  return recomputed;
+}
+
+// Approved-leave days whose ລາ mark a scan had replaced, before a scan on a
+// leave day stopped doing that (2026-10-28) — back to ລາ, the scan's times
+// kept. Run once at startup; a no-op once done.
+async function relabelScannedLeaveDays() {
+  const leaves = await Leave.find({ status: 'approved' }, 'employee startDate endDate').lean();
+  let fixed = 0;
+  for (const leave of leaves) {
+    const keys = [];
+    for (let d = new Date(leave.startDate); d <= leave.endDate; d.setDate(d.getDate() + 1)) keys.push(toDateKey(d));
+    // eslint-disable-next-line no-await-in-loop
+    const rows = await AttendanceDaily.find(
+      { employee: leave.employee, date: { $in: keys }, status: { $ne: 'leave' }, $or: [{ firstIn: { $ne: null } }, { lastOut: { $ne: null } }] },
+      'date'
+    ).lean();
+    for (const row of rows) {
+      // eslint-disable-next-line no-await-in-loop
+      await refreshLeaveDay(leave.employee, row.date);
+      fixed += 1;
+    }
+  }
+  return fixed;
 }
 
 // The position-eligibility check (Position.allowsSubstituteStatus) lives in
@@ -679,6 +752,31 @@ async function reprocessFromLogs({ employeeId, dateKey } = {}) {
   return results;
 }
 
+// Punches that arrived while no employee had their PIN (a new hire enrolled
+// at the scanner before HR created them, a PIN typed in later) were stored
+// with no employee and never counted — so the absence sweep called those
+// days ຂາດ. Linked to whoever has the PIN now, and their days worked out
+// again. Only the last LINK_BACK_DAYS: an old PIN handed to someone new must
+// not pick up a stranger's scans from long ago.
+const LINK_BACK_DAYS = 62;
+async function linkUnmatchedScans(employee, now = new Date()) {
+  if (!employee?.deviceUserId) return 0;
+  const since = new Date(now.getTime() - LINK_BACK_DAYS * 24 * 3600000);
+  const logs = await AttendanceLog.find({ deviceUserId: employee.deviceUserId, employee: null, timestamp: { $gte: since } }, '_id timestamp');
+  if (!logs.length) return 0;
+  await AttendanceLog.updateMany({ _id: { $in: logs.map((l) => l._id) } }, { employee: employee._id });
+  const days = new Set();
+  for (const log of logs) {
+    // eslint-disable-next-line no-await-in-loop
+    days.add(await resolveShiftDateKey(employee._id, log.timestamp));
+  }
+  for (const day of days) {
+    // eslint-disable-next-line no-await-in-loop
+    await recomputeDay(employee._id, day);
+  }
+  return logs.length;
+}
+
 module.exports = {
   toDateKey,
   dayRange,
@@ -692,9 +790,13 @@ module.exports = {
   bulkMarkPresentForOutage,
   markAbsentForMissedScans,
   markLeave,
+  refreshLeaveDay,
+  relabelScannedLeaveDays,
   markSubstituted,
   reprocessFromLogs,
+  linkUnmatchedScans,
   pickDayOverride,
+  isLockedByHand,
   GRACE_MINUTES,
   STANDARD_WORK_HOURS,
 };

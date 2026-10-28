@@ -44,6 +44,7 @@ import {
   mondayOptionLabel,
   effectiveRestrictedRestDays,
 } from '../../utils/restDays';
+import { followsIrregularRule } from '../../utils/substituteRule';
 
 // One action in the cell menu — a full-width button with a title and a one-line hint.
 const ChoiceButton: React.FC<{ title: string; description: string; onClick: () => void; disabled?: boolean }> = ({
@@ -868,14 +869,12 @@ export const MonthlyScheduleGrid: React.FC = () => {
     );
   };
 
-  // Only offered on employees/positions flagged for it (see ຕັ້ງຄ່າມາບໍ່ປົກກະຕິ)
-  // — someone else covers the shift instead, so this employee never scans.
-  // Triggered here on the schedule since that's where a queued shift already
-  // is; the result then just shows up on ປະຫວັດການສະແກນ (attendance) as usual.
-  const canSubstitute =
-    !!editing &&
-    (editing.employee.allowsSubstituteStatus ??
-      (typeof editing.employee.position === 'object' ? editing.employee.position?.allowsSubstituteStatus : false)) === true;
+  // Only offered to people under the ມາບໍ່ປົກກະຕິ rule (see ຕັ້ງຄ່າມາບໍ່ປົກກະຕິ —
+  // flagged employees/positions, and anyone with no regular shift) — someone
+  // else covers the shift instead, so this employee never scans. Triggered
+  // here on the schedule since that's where a queued shift already is; the
+  // result then just shows up on ປະຫວັດການສະແກນ (attendance) as usual.
+  const canSubstitute = !!editing && followsIrregularRule(editing.employee);
   const [submittingSubstitute, setSubmittingSubstitute] = useState(false);
 
   const handleSubstitute = async () => {

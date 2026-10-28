@@ -94,7 +94,7 @@ module.exports = crudRouter(Position, {
   // ຫົວໜ້າຕໍາແໜ່ງ is the source of truth for every employee's ຫົວໜ້າຕໍາແໜ່ງ — when
   // it changes here, push it to every employee already holding this position so
   // their stored positionHead never drifts from what's configured on the position.
-  afterUpdate: async (position, body) => {
+  afterUpdate: async (position, body, before) => {
     if ('head' in body) {
       await Employee.updateMany({ position: position._id }, { positionHead: position.head || null });
     }
@@ -102,14 +102,21 @@ module.exports = crudRouter(Position, {
     // backs up and clears it for everyone already here in the same action.
     // Turning it back off restores each person's own backed-up shift time —
     // only for employees actually inheriting the position's setting (no
-    // individual override of their own); this toggle is always an explicit
-    // flip of the current value, so the old effective value for them was
-    // simply the opposite of the new one.
-    if ('allowsSubstituteStatus' in body) {
-      const wasEnabled = !body.allowsSubstituteStatus;
-      const willBeEnabled = body.allowsSubstituteStatus === true;
+    // individual override of their own). Compared against the stored value,
+    // not assumed to be a flip: the same "on" sent twice (a second confirm
+    // while the first was still saving) backed up the already-cleared shift
+    // over the real one, and turning it off then restored nothing.
+    const wasEnabled = before?.allowsSubstituteStatus === true;
+    const willBeEnabled = position.allowsSubstituteStatus === true;
+    if ('allowsSubstituteStatus' in body && wasEnabled !== willBeEnabled) {
       const inheritingEmployees = await Employee.find({ position: position._id, allowsSubstituteStatus: null });
       for (const emp of inheritingEmployees) {
+        // Someone already in the target state (a second identical request
+        // overlapping this one) is left alone — re-running the switch would
+        // back up an empty shift, or restore an empty backup over a real one.
+        const hasLiveShift = !!(emp.defaultShiftCategory || emp.defaultShiftStart || emp.defaultShiftEnd);
+        const hasBackup = !!(emp.substituteBackupShiftCategory || emp.substituteBackupShiftStart || emp.substituteBackupShiftEnd);
+        if (willBeEnabled ? !hasLiveShift && hasBackup : hasLiveShift && !hasBackup) continue;
         const transition = computeSubstituteTransitionUpdate(emp, wasEnabled, willBeEnabled);
         if (transition) {
           await Employee.updateOne({ _id: emp._id }, transition);

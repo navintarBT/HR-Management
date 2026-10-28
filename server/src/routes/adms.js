@@ -7,11 +7,14 @@ const DeviceEnrolledUser = require('../models/DeviceEnrolledUser');
 const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attendanceProcessor');
 const { splitLines, parseRecordLine, userFromRecord, templateFromRecord, parseDeviceOptions } = require('../utils/zkProtocol');
 const { ingestTemplates } = require('../utils/deviceSync');
+const { isApprovedDevice, NEW_DEVICE_DEFAULTS } = require('../utils/deviceApproval');
 
 // ZKTeco's "push" (ADMS) protocol. Real terminals are configured with this
 // server's URL and hit these fixed paths on their own — no Authorization
 // header (the device can't be given a JWT), so this router is intentionally
-// unauthenticated. Bodies are tab-separated plaintext, not JSON.
+// unauthenticated — instead, a serial number seen for the first time has to be
+// approved on ເຄື່ອງສະແກນ before anything it sends is taken (models/Device.js
+// `approved`). Bodies are tab-separated plaintext, not JSON.
 //   GET  /iclock/cdata?SN=<serial>&options=all   device handshake / config pull
 //   POST /iclock/cdata?SN=<serial>&table=ATTLOG  attendance punches (body: one per line)
 //   POST /iclock/cdata?SN=<serial>&table=BIODATA users / fingerprint & face templates
@@ -60,13 +63,23 @@ function parseSerial(value) {
   return /^[A-Za-z0-9_-]{1,40}$/.test(sn) ? sn : null;
 }
 
+// A serial number seen for the first time is registered as not approved —
+// see models/Device.js `approved`.
 async function findOrTouchDevice(serialNumber) {
   const device = await Device.findOneAndUpdate(
     { serialNumber },
-    { $setOnInsert: { attStamp: 0, opStamp: 0 }, $set: { lastSeenAt: new Date() } },
+    { $setOnInsert: NEW_DEVICE_DEFAULTS, $set: { lastSeenAt: new Date() } },
     { upsert: true, new: true }
   );
   return device;
+}
+
+// Punches and templates from a terminal nobody has approved yet are refused,
+// not stored. Anything but "OK" makes the terminal keep them and retry, so a
+// real new scanner loses nothing: its backlog arrives once it's approved.
+async function refuseUnapproved(device, res) {
+  await Device.updateOne({ _id: device._id }, { blockedUploadAt: new Date() });
+  return res.type('text/plain').send('ERROR');
 }
 
 // Mirrors routes/attendanceActions.js's heuristic so both ingestion paths
@@ -213,6 +226,11 @@ router.post('/iclock/cdata', express.text({ type: '*/*', limit: '10mb' }), async
     const Stamp = typeof req.query.Stamp === 'string' ? req.query.Stamp : '';
     if (!SN || !table) return res.type('text/plain').send('ERROR');
     const device = await findOrTouchDevice(SN);
+    const isDataUpload = table.toUpperCase() === 'ATTLOG' || RECORD_TABLES.includes(table.toUpperCase());
+    if (isDataUpload && !isApprovedDevice(device)) {
+      console.log(`[adms] SN=${SN} ${table} upload refused — this scanner isn't approved yet`);
+      return refuseUnapproved(device, res);
+    }
 
     if (table.toUpperCase() === 'ATTLOG') {
       const rows = parseAttLog(req.body);
@@ -317,7 +335,14 @@ router.get('/iclock/getrequest', async (req, res, next) => {
   try {
     const SN = parseSerial(req.query.SN);
     if (!SN) return res.type('text/plain').send('OK');
-    await Device.updateOne({ serialNumber: SN }, { $setOnInsert: { attStamp: 0, opStamp: 0 }, lastGetRequestAt: new Date() }, { upsert: true });
+    const device = await Device.findOneAndUpdate(
+      { serialNumber: SN },
+      { $setOnInsert: NEW_DEVICE_DEFAULTS, $set: { lastGetRequestAt: new Date() } },
+      { upsert: true, new: true }
+    );
+    // Nothing is queued for an unapproved terminal anyway — this just makes
+    // sure one never receives a command (user records, templates).
+    if (!isApprovedDevice(device)) return res.type('text/plain').send('OK');
 
     const pending = await DeviceCommand.find({ serialNumber: SN, status: 'pending' }).sort('cmdId').limit(MAX_COMMANDS_PER_POLL);
     if (!pending.length) return res.type('text/plain').send('OK');
@@ -392,6 +417,9 @@ router.post('/iclock/querydata', express.text({ type: '*/*', limit: '10mb' }), a
     const SN = parseSerial(req.query.SN);
     if (!SN) return res.type('text/plain').send('OK');
     const device = await findOrTouchDevice(SN);
+    // Only ever the reply to a query this server sent, which an unapproved
+    // terminal never gets — dropped rather than stored.
+    if (!isApprovedDevice(device)) return res.type('text/plain').send('OK');
     const tablename = typeof req.query.tablename === 'string' ? req.query.tablename : '';
     const result = await ingestRecordUpload(device, req.body);
     if (!result.pins) {
@@ -418,7 +446,7 @@ router.all('/iclock/*', express.text({ type: '*/*', limit: '10mb' }), async (req
       await Device.updateOne(
         { serialNumber: SN },
         {
-          $setOnInsert: { attStamp: 0, opStamp: 0 },
+          $setOnInsert: NEW_DEVICE_DEFAULTS,
           $set: {
             lastSeenAt: new Date(),
             lastUnknownRequest: {

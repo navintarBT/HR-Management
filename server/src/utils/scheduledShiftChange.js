@@ -56,19 +56,31 @@ async function applyScheduledShiftChange(change) {
   }
 }
 
-// Same catch-up-on-restart + periodic-recheck shape as runDueScheduledSwaps.
+// Same catch-up-on-restart + periodic-recheck shape as runDueScheduledSwaps,
+// and the same atomic claim so two overlapping checks never both apply one.
 async function runDueScheduledShiftChanges() {
   const todayKey = toDateKey(new Date());
-  const due = await ScheduledShiftChange.find({ status: 'pending', effectiveDate: { $lte: todayKey } });
-  for (const change of due) {
+  const due = await ScheduledShiftChange.find({ status: 'pending', effectiveDate: { $lte: todayKey } }, '_id');
+  let applied = 0;
+  for (const { _id } of due) {
     // eslint-disable-next-line no-await-in-loop
-    await applyScheduledShiftChange(change);
-    change.status = 'applied';
-    change.appliedAt = new Date();
-    // eslint-disable-next-line no-await-in-loop
-    await change.save();
+    const change = await ScheduledShiftChange.findOneAndUpdate(
+      { _id, status: 'pending' },
+      { status: 'applied', appliedAt: new Date() },
+      { new: true }
+    );
+    if (!change) continue;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await applyScheduledShiftChange(change);
+    } catch (err) {
+      // eslint-disable-next-line no-await-in-loop
+      await ScheduledShiftChange.updateOne({ _id }, { status: 'pending', $unset: { appliedAt: 1 } });
+      throw err;
+    }
+    applied += 1;
   }
-  return due.length;
+  return applied;
 }
 
 module.exports = {

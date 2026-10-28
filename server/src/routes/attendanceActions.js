@@ -4,6 +4,7 @@ const AttendanceLog = require('../models/AttendanceLog');
 const AttendanceDaily = require('../models/AttendanceDaily');
 const Shift = require('../models/Shift');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { followsIrregularRule } = require('../utils/substituteRule');
 const {
   recomputeDay,
   reprocessFromLogs,
@@ -77,8 +78,9 @@ router.post('/push', (req, res, next) => {
 });
 
 // Used by the "Simulate Scan" button in the UI — same effect as /push but addressed
-// directly by employee id and requires a logged-in user.
-router.post('/simulate', authenticate, async (req, res, next) => {
+// directly by employee id. It writes a real scan for anyone at any time, so
+// admin/manager only (any logged-in account, 'employee' included, could use it).
+router.post('/simulate', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
     const { employeeId, timestamp } = req.body;
     const employee = await Employee.findById(employeeId);
@@ -172,7 +174,8 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
       });
     }
 
-    const daily = await recomputeDay(employeeId, date);
+    // force: HR is replacing this day on purpose, even a ຂາດ/ມາແທນ set by hand.
+    const daily = await recomputeDay(employeeId, date, { force: true });
     res.json({ ok: true, daily });
   } catch (err) {
     next(err);
@@ -197,9 +200,9 @@ router.post('/mark-substituted', authenticate, requireRole('admin', 'manager'), 
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
     // An explicit override on the employee wins over the position's setting
     // either way — allows one person to opt in even outside a flagged
-    // position, or opt out despite being in one.
-    const allowed = employee.allowsSubstituteStatus ?? employee.position?.allowsSubstituteStatus;
-    if (!allowed) {
+    // position, or opt out despite being in one; someone with no regular
+    // shift has it on too (utils/substituteRule.js).
+    if (!followsIrregularRule(employee)) {
       return res.status(403).json({ message: 'ພະນັກງານ/ຕຳແໜ່ງນີ້ບໍ່ອະນຸຍາດໃຫ້ໃຊ້ສະຖານະ "ມາແທນ"' });
     }
 
@@ -293,6 +296,12 @@ router.post('/bulk-mark-present', authenticate, requireRole('admin'), async (req
     const { startDate, endDate, note } = req.body;
     if (!startDate || !endDate || !note) {
       return res.status(400).json({ message: 'ກະລຸນາລະບຸ ຊ່ວງວັນທີ່ ແລະ ເຫດຜົນ' });
+    }
+    // A malformed date turns into the key 'NaN-NaN-NaN', which still sorts
+    // before most end dates — the day-by-day loop would never finish.
+    const isDateKey = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime());
+    if (!isDateKey(startDate) || !isDateKey(endDate)) {
+      return res.status(400).json({ message: 'ວັນທີ່ຕ້ອງເປັນ YYYY-MM-DD' });
     }
     if (endDate < startDate) {
       return res.status(400).json({ message: 'ວັນທີ່ສິ້ນສຸດຕ້ອງບໍ່ກ່ອນວັນທີ່ເລີ່ມ' });

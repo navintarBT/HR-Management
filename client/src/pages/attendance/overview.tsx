@@ -1,10 +1,10 @@
-import { useCustom } from '@refinedev/core';
+import { useCustom, useGetIdentity } from '@refinedev/core';
 import { List, useTable } from '@refinedev/antd';
 import { Row, Col, Card, Statistic, Table, Space, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined, CalendarOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { API_URL } from '../../providers/axios';
-import type { AttendanceLog, DashboardSummary, Employee } from '../../types';
+import type { AttendanceLog, DashboardSummary, Employee, Identity } from '../../types';
 import { SimulateScanButton } from './SimulateScanButton';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { palette } from '../../theme/palette';
@@ -16,6 +16,9 @@ const typeMap: Record<string, { label: string; color: string }> = {
 };
 
 export const AttendanceOverviewPage: React.FC = () => {
+  const { data: identity } = useGetIdentity<Identity>();
+  // The server only takes a simulated scan from an admin/manager.
+  const canSimulate = identity?.role === 'admin' || identity?.role === 'manager';
   const { data } = useCustom<DashboardSummary>({
     url: `${API_URL}/dashboard/summary`,
     method: 'get',
@@ -41,7 +44,7 @@ export const AttendanceOverviewPage: React.FC = () => {
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
-    <List title="ພາບລວມການລົງເວລາມື້ນີ້" headerButtons={<SimulateScanButton />} breadcrumb={false}>
+    <List title="ພາບລວມການລົງເວລາມື້ນີ້" headerButtons={canSimulate ? <SimulateScanButton /> : undefined} breadcrumb={false}>
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         <Col xs={24} sm={8}>
           <Card style={{ borderRadius: 12 }}>

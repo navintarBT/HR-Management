@@ -8,6 +8,7 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { queueQueryUsersCommand, queueDeletePinCommand, queueQueryAttLogCommand } = require('../utils/deviceCommands');
 const { provisionDevice, pushEmployeeToDevices } = require('../utils/deviceSync');
 const { BIO_TYPE } = require('../utils/zkProtocol');
+const { isApprovedDevice } = require('../utils/deviceApproval');
 
 const router = express.Router();
 
@@ -35,6 +36,8 @@ router.get('/devices', authenticate, requireRole('admin', 'manager'), async (req
     res.json(
       devices.map((d) => ({
         serialNumber: d.serialNumber,
+        approved: isApprovedDevice(d),
+        blockedUploadAt: d.blockedUploadAt,
         info: d.info ?? {},
         infoUpdatedAt: d.infoUpdatedAt,
         syncEnabled: !!d.syncEnabled,
@@ -61,18 +64,29 @@ router.get('/devices', authenticate, requireRole('admin', 'manager'), async (req
   }
 });
 
-// Switching sync on can provision the terminal in the same step (everyone
-// active, plus every template it can use) — the page asks for that when the
-// switch is turned on.
+// Approving a terminal (models/Device.js `approved`) lets what it sends in;
+// blocking one again also switches its sync off. Switching sync on can
+// provision the terminal in the same step (everyone active, plus every
+// template it can use) — the page asks for that when the switch is turned on.
 router.patch('/devices/:serial', authenticate, requireRole('admin'), async (req, res, next) => {
   try {
     const device = await findDevice(req.params.serial);
     if (!device) return res.status(404).json({ message: 'Not found' });
-    if (typeof req.body.syncEnabled !== 'boolean') return res.status(400).json({ message: 'syncEnabled ຕ້ອງເປັນ true/false' });
-    device.syncEnabled = req.body.syncEnabled;
+    const { approved, syncEnabled } = req.body;
+    if (approved === undefined && syncEnabled === undefined) return res.status(400).json({ message: 'ບໍ່ມີຫຍັງໃຫ້ປ່ຽນ' });
+    if (approved !== undefined && typeof approved !== 'boolean') return res.status(400).json({ message: 'approved ຕ້ອງເປັນ true/false' });
+    if (syncEnabled !== undefined && typeof syncEnabled !== 'boolean') return res.status(400).json({ message: 'syncEnabled ຕ້ອງເປັນ true/false' });
+    if (approved !== undefined) {
+      device.approved = approved;
+      if (!approved) device.syncEnabled = false;
+    }
+    if (syncEnabled !== undefined) {
+      if (syncEnabled && !isApprovedDevice(device)) return res.status(400).json({ message: 'ອະນຸມັດເຄື່ອງນີ້ກ່ອນ' });
+      device.syncEnabled = syncEnabled;
+    }
     await device.save();
-    const provisioned = device.syncEnabled && req.body.provision ? await provisionDevice(device) : null;
-    res.json({ serialNumber: device.serialNumber, syncEnabled: device.syncEnabled, provisioned });
+    const provisioned = device.syncEnabled && syncEnabled && req.body.provision ? await provisionDevice(device) : null;
+    res.json({ serialNumber: device.serialNumber, approved: isApprovedDevice(device), syncEnabled: device.syncEnabled, provisioned });
   } catch (err) {
     next(err);
   }
@@ -82,6 +96,7 @@ router.post('/devices/:serial/provision', authenticate, requireRole('admin'), as
   try {
     const device = await findDevice(req.params.serial);
     if (!device) return res.status(404).json({ message: 'Not found' });
+    if (!isApprovedDevice(device)) return res.status(400).json({ message: 'ອະນຸມັດເຄື່ອງນີ້ກ່ອນ' });
     if (!device.syncEnabled) return res.status(400).json({ message: 'ເປີດ "ຊິງຂໍ້ມູນ" ຂອງເຄື່ອງນີ້ກ່ອນ' });
     res.json(await provisionDevice(device));
   } catch (err) {
@@ -96,6 +111,7 @@ router.post('/devices/:serial/pull-attlog', authenticate, requireRole('admin', '
   try {
     const device = await findDevice(req.params.serial);
     if (!device) return res.status(404).json({ message: 'Not found' });
+    if (!isApprovedDevice(device)) return res.status(400).json({ message: 'ອະນຸມັດເຄື່ອງນີ້ກ່ອນ' });
     const { start, end } = req.body;
     const valid = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime());
     if (!valid(start) || !valid(end) || start > end) {

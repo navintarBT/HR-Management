@@ -321,6 +321,35 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
   return { movedFromA: empListA.length, movedFromB: empListB.length };
 }
 
+// Marks a still-pending swap as applied in one atomic step and returns it —
+// or null when it isn't pending any more. Whoever gets it back is the only
+// one that runs it: applying the same swap twice moves everyone straight back
+// (membership is re-read each time), and two checks can easily overlap — the
+// timer, a page load (GET /position-swaps), a second server on the same
+// database. Used before applyPositionSwap everywhere a pending swap fires.
+async function claimPendingSwap(id, extra = {}) {
+  return ScheduledPositionSwap.findOneAndUpdate(
+    { _id: id, status: 'pending' },
+    { ...extra, status: 'applied', appliedAt: new Date() },
+    { new: true }
+  );
+}
+
+// Runs a claimed swap; if it fails it goes back to pending (as before the
+// claim existed) so the next check tries again.
+async function runClaimedSwap(swap) {
+  try {
+    const { movedFromA, movedFromB } = await applyPositionSwap(swap.positionA, swap.positionB, swap.effectiveDate);
+    swap.movedFromA = movedFromA;
+    swap.movedFromB = movedFromB;
+    await swap.save();
+    return swap;
+  } catch (err) {
+    await ScheduledPositionSwap.updateOne({ _id: swap._id }, { status: 'pending', $unset: { appliedAt: 1 } });
+    throw err;
+  }
+}
+
 // Applies every pending scheduled swap whose effective date has arrived.
 // Called on server startup (catches anything due while the server was down)
 // and on a recurring timer — this app has no other background job runner, so
@@ -328,18 +357,17 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
 // future date without needing the browser open.
 async function runDueScheduledSwaps() {
   const todayKey = toDateKey(new Date());
-  const due = await ScheduledPositionSwap.find({ status: 'pending', effectiveDate: { $lte: todayKey } });
-  for (const swap of due) {
+  const due = await ScheduledPositionSwap.find({ status: 'pending', effectiveDate: { $lte: todayKey } }, '_id');
+  let applied = 0;
+  for (const { _id } of due) {
     // eslint-disable-next-line no-await-in-loop
-    const { movedFromA, movedFromB } = await applyPositionSwap(swap.positionA, swap.positionB, swap.effectiveDate);
-    swap.status = 'applied';
-    swap.appliedAt = new Date();
-    swap.movedFromA = movedFromA;
-    swap.movedFromB = movedFromB;
+    const swap = await claimPendingSwap(_id);
+    if (!swap) continue; // another check already took it
     // eslint-disable-next-line no-await-in-loop
-    await swap.save();
+    await runClaimedSwap(swap);
+    applied += 1;
   }
-  return due.length;
+  return applied;
 }
 
-module.exports = { applyPositionSwap, runDueScheduledSwaps };
+module.exports = { applyPositionSwap, runDueScheduledSwaps, claimPendingSwap, runClaimedSwap };

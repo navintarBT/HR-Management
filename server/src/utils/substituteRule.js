@@ -34,4 +34,23 @@ function computeSubstituteTransitionUpdate(employee, wasEnabled, willBeEnabled) 
   };
 }
 
-module.exports = { computeSubstituteTransitionUpdate };
+// Whether someone has a regular shift of their own — a category, or a start
+// and end time.
+function hasRegularShift(employee) {
+  return !!(employee?.defaultShiftCategory || (employee?.defaultShiftStart && employee?.defaultShiftEnd));
+}
+
+// Whether the ມາບໍ່ປົກກະຕິ rule applies to this employee (their `position`
+// populated, to read its flag): their own setting when they have one,
+// otherwise on for a position that has it on — and on for anyone with no
+// regular shift at all, who has no schedule to be judged against either
+// (asked for 2026-10-28). Covers ສະຫຼຸບເງິນເດືອນ's blank-unless-scanned
+// days, marking ມາແທນ, and taking more than one cover a day.
+// client/src/utils/substituteRule.ts mirrors this.
+function followsIrregularRule(employee) {
+  if (employee?.allowsSubstituteStatus === true || employee?.allowsSubstituteStatus === false) return employee.allowsSubstituteStatus;
+  const position = employee?.position && typeof employee.position === 'object' ? employee.position : null;
+  return position?.allowsSubstituteStatus === true || !hasRegularShift(employee);
+}
+
+module.exports = { computeSubstituteTransitionUpdate, hasRegularShift, followsIrregularRule };

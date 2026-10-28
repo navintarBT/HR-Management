@@ -2,10 +2,10 @@ const express = require('express');
 const crudRouter = require('./crudFactory');
 const AttendanceDaily = require('../models/AttendanceDaily');
 const Employee = require('../models/Employee');
-const Position = require('../models/Position');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { toDateKey } = require('../utils/attendanceProcessor');
 const { reapplyAbsenceSeverity } = require('../utils/absenceSeverity');
+const { followsIrregularRule } = require('../utils/substituteRule');
 
 const router = express.Router();
 
@@ -95,18 +95,20 @@ router.post('/absence-severity', authenticate, requireRole('admin'), async (req,
   }
 });
 
-// Days staff in a ມາແທນ position (Position.allowsSubstituteStatus — the DJs)
-// actually scanned or were marked ມາແທນ. They have no fixed shift, so a day
-// with neither can't be judged worked or absent — the payroll summary leaves
-// it blank instead of presuming ມ.
+// Days staff under the ມາບໍ່ປົກກະຕິ rule (utils/substituteRule.js — the DJs,
+// and anyone with no regular shift) actually scanned or were marked ມາແທນ.
+// They have no fixed shift, so a day with neither can't be judged worked or
+// absent — the payroll summary leaves it blank instead of presuming ມ.
 router.get('/substitute-position-days', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
     const { from, to } = req.query;
     const valid = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
     if (!valid(from) || !valid(to)) return res.status(400).json({ message: 'from/to ຕ້ອງເປັນ YYYY-MM-DD' });
-    const positions = await Position.find({ allowsSubstituteStatus: true }, '_id').lean();
-    if (!positions.length) return res.json([]);
-    const employees = await Employee.find({ position: { $in: positions.map((p) => p._id) } }, '_id').lean();
+    const candidates = await Employee.find({}, 'position allowsSubstituteStatus defaultShiftCategory defaultShiftStart defaultShiftEnd')
+      .populate('position', 'allowsSubstituteStatus')
+      .lean();
+    const employees = candidates.filter(followsIrregularRule);
+    if (!employees.length) return res.json([]);
     const rows = await AttendanceDaily.find(
       {
         employee: { $in: employees.map((e) => e._id) },

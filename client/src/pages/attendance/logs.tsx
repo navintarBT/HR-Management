@@ -491,7 +491,7 @@ const AttendanceSummaryGrid: React.FC = () => {
               { color: CELL_STYLE.late.text, label: 'ຊ້າ / ຊ້າເກີນ X ນາທີ / ຊ້າເກີນ Y (3 ລະດັບ, ສີດຽວກັນ)' },
               { color: CELL_STYLE.incomplete.text, label: 'ສະແກນຄັ້ງດຽວ' },
               { color: CELL_STYLE.absent.text, label: 'ຂາດວຽກ (X2) = ວັນທຳມະດາ, (X3) = ວັນຫ້າມພັກຂອງຕຳແໜ່ງ, (X1-X3) = ວັນຫ້າມຂາດທີ່ຕັ້ງໄວ້ສະເພາະ' },
-              { color: CELL_STYLE.leave.text, label: 'ລາ' },
+              { color: CELL_STYLE.leave.text, label: 'ລາ (ລາ ⚠ = ມີການສະແກນໃນມື້ລາ, ກວດເບິ່ງ)' },
               { color: CELL_STYLE.rest.text, label: 'ພັກ / ຮ້ານປິດ' },
               { color: CELL_STYLE.substituted.text, label: 'ມາແທນ' },
               { color: CELL_STYLE.swapped.text, label: 'ສະຫຼັບກະ (ບໍ່ມີກະຍ້ອນມື້ສະຫຼັບຕຳແໜ່ງ)' },
@@ -604,17 +604,22 @@ const AttendanceSummaryGrid: React.FC = () => {
                 if (style) {
                   const time = timeText(row!);
                   const severity = row!.status === 'absent' ? absentSeverity(emp, day, row!) : null;
+                  // Still ລາ — the leave decides — but scanned anyway, so HR
+                  // checks it and corrects the leave if they really came in.
+                  const scannedOnLeave = row!.status === 'leave' && !!(row!.firstIn || row!.lastOut);
                   const label =
                     row!.status === 'late'
                       ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
                       : row!.status === 'absent'
                         ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
-                        : `${style.label}${row!.autoFilledReason ? ' ↺' : ''}`;
+                        : `${style.label}${scannedOnLeave ? ' ⚠' : ''}${row!.autoFilledReason ? ' ↺' : ''}`;
                   const cellTitle = row!.disciplinaryNote
                     ? `ລົງໂທດ: ${row!.disciplinaryNote}`
-                    : row!.autoFilledReason
-                      ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
-                      : undefined;
+                    : scannedOnLeave
+                      ? 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ'
+                      : row!.autoFilledReason
+                        ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
+                        : undefined;
                   return (
                     <div
                       title={cellTitle}

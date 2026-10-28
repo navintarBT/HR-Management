@@ -11,6 +11,7 @@ import { API_URL } from '../../providers/axios';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { regularShiftHours } from '../../utils/shiftHistory';
+import { followsIrregularRule } from '../../utils/substituteRule';
 
 const { RangePicker } = DatePicker;
 
@@ -111,15 +112,45 @@ function resignedNote(emp: Employee) {
   return `ລາອອກ ${dayjs(emp.terminationDate).format('DD/MM/YYYY')}${reason}`;
 }
 
-// Hours between an approved Overtime record's startTime/endTime, crediting a
-// crossed midnight (endTime <= startTime) as running into the next day —
-// same "overnight" convention as a shift's own start/end.
-function otHoursOf(ot: Overtime): number {
+// Minutes between an approved Overtime record's startTime/endTime, crediting
+// a crossed midnight (endTime <= startTime) as running into the next day —
+// same "overnight" convention as a shift's own start/end. Summed in minutes
+// and only then turned into hours (2 decimals): adding up hour fractions
+// printed 18:00–20:20 as 2.3333333333333335.
+function otMinutesOf(ot: Overtime): number {
   const [sh, sm] = ot.startTime.split(':').map(Number);
   const [eh, em] = ot.endTime.split(':').map(Number);
   let minutes = eh * 60 + em - (sh * 60 + sm);
   if (minutes <= 0) minutes += 24 * 60;
-  return minutes / 60;
+  return minutes;
+}
+
+// Which of a leave's own days are its free days (ປ) and which are charged
+// (its x1 count, at its deductAmount tier): the days that aren't one of its
+// restDayOverlaps, in date order — the first deductDaysX2 free, the next
+// deductDaysX1 charged, the same "first 3 days free" order leaveDeduction.js
+// counts them in. Lets a leave that crosses into another month count in each
+// month only by the days that fall in it — its full totals used to land in
+// every month it touched (a 4-day leave over a month end was charged 8).
+type LeaveDayKind = 'grace' | 'charged';
+function leaveDayKinds(leave: Leave): Map<string, LeaveDayKind> {
+  const restOverlaps = new Set((leave.restDayOverlaps ?? []).map((o) => o.date));
+  const kinds = new Map<string, LeaveDayKind>();
+  let grace = leave.deductDaysX2 ?? 0;
+  let charged = leave.deductDaysX1 ?? 0;
+  const end = dayjs(toDateKey(leave.endDate));
+  for (let d = dayjs(toDateKey(leave.startDate)); !d.isAfter(end, 'day'); d = d.add(1, 'day')) {
+    const key = d.format('YYYY-MM-DD');
+    if (restOverlaps.has(key)) continue;
+    if (grace > 0) {
+      kinds.set(key, 'grace');
+      grace -= 1;
+    } else if (charged > 0) {
+      kinds.set(key, 'charged');
+      charged -= 1;
+    }
+  }
+  return kinds;
 }
 
 interface SummaryRow {
@@ -239,6 +270,16 @@ const REST_DAY_FLAG: Record<RestDayFlag, { color: string; title: string; legend:
 };
 const REST_DAY_FLAG_BAR: CSSProperties = { position: 'absolute', left: 2, right: 2, bottom: 0, height: 3, borderRadius: 2 };
 
+// The same kind of bar on a leave day that has a scan (agreed 2026-10-28): it
+// still counts as ລາ — the leave decides — but it's marked so HR checks it
+// and corrects the leave if the person really came in.
+const LEAVE_SCAN_FLAG = {
+  color: '#d46b08',
+  title: 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ',
+  legend: 'ມີການສະແກນໃນມື້ລາ (ນັບເປັນ ລາ)',
+};
+const LEAVE_STATES: PrintDayState[] = ['graceLeave', 'x1Leave', 'x2Leave', 'x3Leave'];
+
 // Plain, undistorted borders for the print-only table — a real <table> with
 // real per-cell borders instead of AntD's Table (which, once forced through
 // a CSS transform to fit the page width, warped the glyphs and lost its
@@ -279,13 +320,11 @@ const PRINT_MIN_DAY_COL_WIDTH_PX = 6;
 // bucketing mirrors AttendanceLogsPage's isRestDay precedence (a queued 'scheduled'
 // override always wins, then 'rest'/'swapped' overrides, then the recurring
 // rest day in force that day) so this page never disagrees with what ປະຫວັດການສະແກນ shows for
-// the same date. x1/x2/x3/ป read straight off ການລາ's own deduction-tier fields
-// (deductDaysX1 grouped by which deductAmount tier the request carries, deductDaysX2
-// for the free-grace bucket) rather than recomputing anything — a leave that
-// straddles the edge of the selected range is counted by its full stored total, not
-// prorated to just the days inside range, same as ตาราง leaves already treats it.
-// ຊ/ມ x3 ແລະ ມື້ x2 have no wired-up rule yet (2026-09-28 conversation: user deferred
-// the exact formula) so they're plain manual-entry cells, not computed.
+// the same date. x1/x2/x3/ป come from ການລາ's own stored deduction fields
+// (deductDaysX1 at the deductAmount tier the request carries, deductDaysX2 for the
+// free-grace bucket), spread over the leave's own days (leaveDayKinds) so only the
+// days inside the selected range count. ມື້ x2 / ຊ/ມ x3 come from approved OT: every
+// full 24 hours is a ມື້, the hours left over are ຊ/ມ.
 const PayrollSummaryGrid: React.FC = () => {
   const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().startOf('month'), dayjs().endOf('month')]);
   const rangeStartKey = range[0].format('YYYY-MM-DD');
@@ -550,6 +589,8 @@ const PayrollSummaryGrid: React.FC = () => {
 
   const findCoveringLeave = (emp: Employee, dateKey: string) =>
     leaves.find((l) => idOf(l.employee) === emp._id && toDateKey(l.startDate) <= dateKey && toDateKey(l.endDate) >= dateKey);
+  const leaveKindsById = useMemo(() => new Map(leaves.map((l) => [l._id, leaveDayKinds(l)])), [leaves]);
+  const leaveDayKind = (leave: Leave | undefined, dateKey: string) => (leave ? leaveKindsById.get(leave._id)?.get(dateKey) : undefined);
 
   // Pay runs only up to the resignation date; days after it count as neither
   // work nor rest.
@@ -614,15 +655,10 @@ const PayrollSummaryGrid: React.FC = () => {
   // schedule itself already resolves to rest/leave/future is left alone —
   // there's no AttendanceDaily 'absent' row for those anyway (leave stamps
   // 'leave' directly, a rest day is never swept for absence).
-  // A DJ — someone in a ມາແທນ position (unless switched off for them) — has
-  // no fixed shift, so the absence sweep never judges their days.
-  const inSubstitutePosition = (emp: Employee) => {
-    const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
-    return emp.allowsSubstituteStatus !== false && position?.allowsSubstituteStatus === true;
-  };
-
   // A day that would read as ມາ or ຂາດ stays blank when the system can't
-  // know: no scanner code at all, or a DJ day with no scan and no ມາແທນ
+  // know: no scanner code at all, or a day of someone under the ມາບໍ່ປົກກະຕິ
+  // rule — a DJ, or anyone with no regular shift (utils/substituteRule.ts),
+  // whose days the absence sweep never judges — with no scan and no ມາແທນ
   // mark (a deliberate ຂາດ still shows). Rest days and leave are known
   // either way.
   const classifyDay = (emp: Employee, dateKey: string, dow: number): DayStatus => {
@@ -631,7 +667,7 @@ const PayrollSummaryGrid: React.FC = () => {
     const key = `${emp._id}_${dateKey}`;
     if (!emp.deviceUserId) return 'blank';
     if (absentSet.has(key)) return 'absent';
-    if (inSubstitutePosition(emp) && !substituteDaySet.has(key)) return 'blank';
+    if (followsIrregularRule(emp) && !substituteDaySet.has(key)) return 'blank';
     return 'work';
   };
 
@@ -674,6 +710,9 @@ const PayrollSummaryGrid: React.FC = () => {
     }
     if (status !== 'leave') return status;
     const coveringLeave = findCoveringLeave(emp, dateKey);
+    // One of the leave's free days reads ປ even when its later days are
+    // charged — same split the x1/ປ totals use.
+    if (leaveDayKind(coveringLeave, dateKey) === 'grace') return 'graceLeave';
     if (coveringLeave?.deductAmount === 'X1') return 'x1Leave';
     if (coveringLeave?.deductAmount === 'X2') return 'x2Leave';
     if (coveringLeave?.deductAmount === 'X3') return 'x3Leave';
@@ -718,18 +757,18 @@ const PayrollSummaryGrid: React.FC = () => {
           else if (severity === 'X3') x3 += 1;
         } else if (status === 'future') futureDays += 1;
         else if (status === 'blank') blankDays += 1;
-        else leaveDays += 1;
-      }
-
-      const empLeaves = leaves.filter(
-        (l) => idOf(l.employee) === emp._id && toDateKey(l.startDate) <= rangeEndKey && toDateKey(l.endDate) >= rangeStartKey
-      );
-      for (const l of empLeaves) {
-        grace += l.deductDaysX2 ?? 0;
-        const chargeableDays = l.deductDaysX1 ?? 0;
-        if (l.deductAmount === 'X1') x1 += chargeableDays;
-        else if (l.deductAmount === 'X2') x2 += chargeableDays;
-        else if (l.deductAmount === 'X3') x3 += chargeableDays;
+        else {
+          leaveDays += 1;
+          // Only this day's share of the leave (leaveDayKinds).
+          const leave = findCoveringLeave(emp, dateKey);
+          const kind = leaveDayKind(leave, dateKey);
+          if (kind === 'grace') grace += 1;
+          else if (kind === 'charged') {
+            if (leave?.deductAmount === 'X1') x1 += 1;
+            else if (leave?.deductAmount === 'X2') x2 += 1;
+            else if (leave?.deductAmount === 'X3') x3 += 1;
+          }
+        }
       }
 
       // Same rule as OvertimeSummaryPage's own "ນັບເປັນມື້ (24 ຊມ./ມື້)"
@@ -737,9 +776,14 @@ const PayrollSummaryGrid: React.FC = () => {
       // calendar day that happened to have any OT logged on it — 10 hours
       // total is 0 ມື້, not 1, no matter how many separate OT entries or
       // distinct dates it's split across.
+      // ມື້ x2 takes every full 24 hours, ຊ/ມ x3 only what's left over —
+      // 30 ຊມ. is 1 ມື້ + 6 ຊມ., the same "1 ມື້ 6 ຊົ່ວໂມງ" the OT page shows
+      // (agreed 2026-10-28). Showing the full 30 next to the 1 day put the
+      // same 24 hours in both columns.
       const empOvertime = overtimeByEmployee[emp._id] ?? [];
-      const otHours = empOvertime.reduce((sum, ot) => sum + otHoursOf(ot), 0);
-      const otDays = Math.floor(otHours / 24);
+      const otMinutes = empOvertime.reduce((sum, ot) => sum + otMinutesOf(ot), 0);
+      const otDays = Math.floor(otMinutes / (24 * 60));
+      const otHours = Math.round(((otMinutes - otDays * 24 * 60) / 60) * 100) / 100;
 
       return {
         employee: emp,
@@ -756,7 +800,7 @@ const PayrollSummaryGrid: React.FC = () => {
         untracked: !emp.deviceUserId,
       };
     });
-  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, leaveKindsById, overtimeByEmployee, rangeStartKey, rangeEndKey]);
 
   // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
   // column) for whoever maintains payroll to see, answer and confirm. One
@@ -1150,7 +1194,7 @@ const PayrollSummaryGrid: React.FC = () => {
             </Popover>
           </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            ຂາດວຽກ = ມາຈາກປະຫວັດການສະແກນຈິງ (ບໍ່ແມ່ນຕາຕະລາງ) ນັບທັງຂາດວຽກແທ້ໆ ແລະ ຂາດວຽກແບບລົງໂທດ &nbsp;|&nbsp; x1/x2/x3/ປ = ມາຈາກໜ້າ "ການລາ" (x1-x3 = ມື້ລາທີ່ຕັດເງິນ ແຍກຕາມອັດຕາ 1/2/3 ເທົ່າ, ປ = ມື້ລາທີ່ຍັງຟຣີ) &nbsp;|&nbsp; ຊ/ມ x3 = ຊົ່ວໂມງ OT ທັງໝົດ (ຈາກໜ້າ OT ທີ່ອະນຸມັດແລ້ວ), ມື້ x2 = ຈຳນວນມື້ທີ່ມີ OT
+            ຂາດວຽກ = ມາຈາກປະຫວັດການສະແກນຈິງ (ບໍ່ແມ່ນຕາຕະລາງ) ນັບທັງຂາດວຽກແທ້ໆ ແລະ ຂາດວຽກແບບລົງໂທດ &nbsp;|&nbsp; x1/x2/x3/ປ = ມາຈາກໜ້າ "ການລາ" (x1-x3 = ມື້ລາທີ່ຕັດເງິນ ແຍກຕາມອັດຕາ 1/2/3 ເທົ່າ, ປ = ມື້ລາທີ່ຍັງຟຣີ) &nbsp;|&nbsp; ມື້ x2 = OT ທີ່ອະນຸມັດແລ້ວ ຄົບທຸກ 24 ຊມ. ນັບເປັນ 1 ມື້, ຊ/ມ x3 = ຊົ່ວໂມງ OT ທີ່ເຫຼືອຈາກນັ້ນ (ເຊັ່ນ 30 ຊມ. = 1 ມື້ + 6 ຊມ.)
           </Typography.Text>
           <Space size={[14, 6]} wrap>
             {(Object.keys(PRINT_DAY_STYLE) as PrintDayState[]).map((state) => (
@@ -1217,6 +1261,30 @@ const PayrollSummaryGrid: React.FC = () => {
                 </Typography.Text>
               </Space>
             ))}
+            <Space size={6}>
+              <span
+                style={{
+                  position: 'relative',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 18,
+                  height: 18,
+                  borderRadius: 3,
+                  background: PRINT_DAY_STYLE.x1Leave.bg,
+                  color: PRINT_DAY_STYLE.x1Leave.text,
+                  border: `1px solid ${PRINT_DAY_STYLE.x1Leave.text}`,
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                {PRINT_DAY_STYLE.x1Leave.label}
+                <span style={{ ...REST_DAY_FLAG_BAR, background: LEAVE_SCAN_FLAG.color }} />
+              </span>
+              <Typography.Text strong style={{ fontSize: 13, color: '#262626' }}>
+                {LEAVE_SCAN_FLAG.legend}
+              </Typography.Text>
+            </Space>
           </Space>
         </Space>
       </div>
@@ -1287,9 +1355,10 @@ const PayrollSummaryGrid: React.FC = () => {
                 const state = printDayState(r.employee, dateKey, day.day());
                 const style = PRINT_DAY_STYLE[state];
                 const flag = state === 'rest' ? restDayFlag(r.employee, dateKey) : null;
+                const leaveScan = LEAVE_STATES.includes(state) && scannedSet.has(`${r.employee._id}_${dateKey}`);
                 const content = (
                   <div
-                    title={flag ? REST_DAY_FLAG[flag].title : undefined}
+                    title={flag ? REST_DAY_FLAG[flag].title : leaveScan ? LEAVE_SCAN_FLAG.title : undefined}
                     style={{
                       position: 'relative',
                       background: style.bg,
@@ -1302,6 +1371,7 @@ const PayrollSummaryGrid: React.FC = () => {
                   >
                     {style.label}
                     {flag && <span style={{ ...REST_DAY_FLAG_BAR, background: REST_DAY_FLAG[flag].color }} />}
+                    {leaveScan && <span style={{ ...REST_DAY_FLAG_BAR, background: LEAVE_SCAN_FLAG.color }} />}
                   </div>
                 );
                 return withComment(

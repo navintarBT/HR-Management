@@ -14,7 +14,7 @@ const { resolveRestDayForEmployee } = require('../utils/restDayRules');
 const { queueDeleteUserCommand } = require('../utils/deviceCommands');
 const { pushEmployeeToDevices, removeStoredTemplates, moveStoredTemplates } = require('../utils/deviceSync');
 const { shiftFieldsDiffer, recordShiftChange } = require('../utils/shiftHistory');
-const { toDateKey } = require('../utils/attendanceProcessor');
+const { toDateKey, linkUnmatchedScans } = require('../utils/attendanceProcessor');
 
 // Follow-up work that runs after the employee change itself is saved (queuing
 // for the scanners, recording a shift change) — a problem there is logged
@@ -357,6 +357,8 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
     // Onto every sync-enabled scanner right away, so the new person only has
     // to enroll a face/finger there.
     await runAfterSave('push new employee to scanners', () => pushEmployeeToDevices(employee));
+    // Scans made with this PIN before the record existed (utils/attendanceProcessor.js).
+    await runAfterSave('link earlier scans', () => linkUnmatchedScans(employee));
 
     const populated = await employee.populate(POPULATE);
     res.status(201).json(populated);
@@ -470,6 +472,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       }
       if (newPin && (pinChanged || nameChanged || becameActive)) await pushEmployeeToDevices(item);
     });
+    if (newPin && pinChanged) await runAfterSave('link earlier scans', () => linkUnmatchedScans(item));
 
     res.json(item);
   } catch (err) {

@@ -3,6 +3,7 @@ const Employee = require('../models/Employee');
 const BiometricTemplate = require('../models/BiometricTemplate');
 const { queueCommandsForDevice } = require('./deviceCommands');
 const { buildUserInfoCommand, buildBiodataCommand, canReceiveTemplate, hashText } = require('./zkProtocol');
+const { APPROVED_DEVICE_FILTER } = require('./deviceApproval');
 
 // Keeps every sync-enabled terminal holding the same people: an employee added
 // here is pushed to them (so they only need to enroll a face/finger at the
@@ -29,7 +30,7 @@ function templateKeyString(t) {
 }
 
 async function syncTargets(excludeSerial) {
-  const devices = await Device.find({ syncEnabled: true });
+  const devices = await Device.find({ syncEnabled: true, ...APPROVED_DEVICE_FILTER });
   return excludeSerial ? devices.filter((d) => d.serialNumber !== excludeSerial) : devices;
 }
 

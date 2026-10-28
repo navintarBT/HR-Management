@@ -268,6 +268,10 @@ export interface ScannerDeviceInfo {
 
 export interface ScannerDevice {
   serialNumber: string;
+  // A serial number seen for the first time isn't trusted until an admin
+  // approves it — nothing it sends is taken before then.
+  approved: boolean;
+  blockedUploadAt?: string;
   info: ScannerDeviceInfo;
   infoUpdatedAt?: string;
   syncEnabled: boolean;

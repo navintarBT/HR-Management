@@ -70,11 +70,12 @@ router.patch('/:id', authenticate, requireRole('admin', 'manager'), async (req, 
     if (req.body.status !== 'cancelled') {
       return res.status(400).json({ message: 'ແກ້ໄຂໄດ້ສະເພາະການຍົກເລີກ' });
     }
-    const change = await ScheduledShiftChange.findById(req.params.id);
-    if (!change) return res.status(404).json({ message: 'Not found' });
-    if (change.status !== 'pending') return res.status(400).json({ message: 'ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ທັນມີຜົນ' });
-    change.status = 'cancelled';
-    await change.save();
+    const existing = await ScheduledShiftChange.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Not found' });
+    // Checked in the same step as the change — the scheduled run may be
+    // applying it right now.
+    const change = await ScheduledShiftChange.findOneAndUpdate({ _id: existing._id, status: 'pending' }, { status: 'cancelled' }, { new: true });
+    if (!change) return res.status(400).json({ message: 'ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ທັນມີຜົນ' });
     await unpinScheduleForEffectiveDate(change.employee, change.effectiveDate);
     const populated = await change.populate(POPULATE);
     res.json(populated);

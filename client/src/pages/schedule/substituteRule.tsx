@@ -4,6 +4,7 @@ import { useList, useUpdate, useInvalidate, useNotification } from '@refinedev/c
 import { Table, Switch, Select, Input, Space, Typography, Popconfirm, Button, Modal, Form } from 'antd';
 import { SearchOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { Department, Employee, Position } from '../../types';
+import { followsIrregularRule, hasRegularShift } from '../../utils/substituteRule';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
@@ -325,11 +326,18 @@ const EmployeeRuleTable: React.FC = () => {
           title="ຄ່າທີ່ໃຊ້ຈິງ"
           width={110}
           render={(_, emp: Employee) => {
-            const posAllows = typeof emp.position === 'object' ? emp.position?.allowsSubstituteStatus : false;
-            const effective = emp.allowsSubstituteStatus ?? posAllows;
+            const effective = followsIrregularRule(emp);
+            // On only because they have no regular shift (utils/substituteRule.ts).
+            const posAllows = typeof emp.position === 'object' && emp.position?.allowsSubstituteStatus === true;
+            const byNoShift = effective && emp.allowsSubstituteStatus == null && !posAllows && !hasRegularShift(emp);
             return (
               <Typography.Text strong type={effective ? 'success' : undefined}>
                 {effective ? 'ອະນຸຍາດ' : 'ບໍ່ອະນຸຍາດ'}
+                {byNoShift && (
+                  <Typography.Text type="secondary" style={{ display: 'block', fontSize: 11, fontWeight: 'normal' }}>
+                    (ບໍ່ມີກະ)
+                  </Typography.Text>
+                )}
               </Typography.Text>
             );
           }}

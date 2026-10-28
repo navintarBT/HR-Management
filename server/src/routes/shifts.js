@@ -4,6 +4,7 @@ const Employee = require('../models/Employee');
 const Leave = require('../models/Leave');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { resolveRestDayForEmployee, nearestDateForWeekday } = require('../utils/restDayRules');
+const { followsIrregularRule } = require('../utils/substituteRule');
 
 const router = express.Router();
 
@@ -38,6 +39,26 @@ async function hasKindConflict(employee, date, status, excludeId) {
   if (excludeId) query._id = { $ne: excludeId };
   return !!(await Shift.exists(query));
 }
+
+// One cover a day for ordinary staff (asked for 2026-10-28): with two working
+// rows on one day, attendance judges lateness and absence against only one of
+// them. Checked when a cover is added or moved onto another person/day, so it
+// blocks a cover for someone who already has one — or any other working row —
+// that day. People under the ມາບໍ່ປົກກະຕິ rule (the DJs, anyone with no
+// regular shift — utils/substituteRule.js) can still take several.
+const SECOND_WORK_CONFLICT = 'ຄົນນີ້ມີວຽກໃນມື້ນີ້ແລ້ວ (ໄປແທນຄົນອື່ນ ຫຼື ມີກະທີ່ຕັ້ງໄວ້) — ມອບວຽກແທນໄດ້ມື້ລະ 1 ວຽກ';
+async function hasSecondWorkConflict(employeeId, date, excludeId) {
+  const employee = await Employee.findById(employeeId, 'position allowsSubstituteStatus defaultShiftCategory defaultShiftStart defaultShiftEnd').populate(
+    'position',
+    'allowsSubstituteStatus'
+  );
+  if (!employee || followsIrregularRule(employee)) return false;
+  const query = { employee: employeeId, date, status: 'scheduled' };
+  if (excludeId) query._id = { $ne: excludeId };
+  return !!(await Shift.exists(query));
+}
+
+const OVERLAP_CONFLICT = 'ພະນັກງານຄົນນີ້ມີກະທີ່ເວລາຊ້ອນກັນໃນມື້ນີ້ແລ້ວ';
 
 // A company-wide holiday closure (see holidays.js's applyRestDayToAll, which
 // always tags the rows it creates with `holiday`) rests EVERYONE regardless
@@ -89,9 +110,20 @@ async function applyShiftUpdate(id, changes) {
     if (!holidayId && (await hasKindConflict(employee, date, status, current._id))) {
       throw { status: 409, message: WORK_ON_REST_CONFLICT };
     }
+    // Only when this edit makes it a cover on a new person/day — editing the
+    // time of a cover already in place never trips it.
+    const coveringFor = changes.coveringFor !== undefined ? changes.coveringFor : current.coveringFor;
+    const newCoverDay =
+      String(employee) !== String(current.employee) ||
+      date !== current.date ||
+      current.status !== 'scheduled' ||
+      String(coveringFor ?? '') !== String(current.coveringFor ?? '');
+    if (status === 'scheduled' && coveringFor && newCoverDay && (await hasSecondWorkConflict(employee, date, current._id))) {
+      throw { status: 409, message: SECOND_WORK_CONFLICT };
+    }
     const existing = await Shift.find({ employee, date, status: 'scheduled', _id: { $ne: current._id } });
     const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
-    if (conflict) throw { status: 409, message: 'Employee already has an overlapping shift that day' };
+    if (conflict) throw { status: 409, message: OVERLAP_CONFLICT };
   } else {
     const effectiveDate = await ensurePersonalRestDayAllowed(employee, date, holidayId);
     if (!holidayId && (await hasKindConflict(employee, effectiveDate, 'rest', current._id))) {
@@ -167,10 +199,13 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
       if (!holiday && (await hasKindConflict(employee, date, status))) {
         return res.status(409).json({ message: WORK_ON_REST_CONFLICT });
       }
+      if (coveringFor && (await hasSecondWorkConflict(employee, date))) {
+        return res.status(409).json({ message: SECOND_WORK_CONFLICT });
+      }
       const existing = await Shift.find({ employee, date, status: 'scheduled' });
       const conflict = existing.some((s) => timesOverlap(startTime, endTime, s.startTime, s.endTime));
       if (conflict) {
-        return res.status(409).json({ message: 'Employee already has an overlapping shift that day' });
+        return res.status(409).json({ message: OVERLAP_CONFLICT });
       }
     } else {
       effectiveDate = await ensurePersonalRestDayAllowed(employee, date, holiday);

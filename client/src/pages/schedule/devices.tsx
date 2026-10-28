@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { List } from '@refinedev/antd';
 import { useCustom, useGetIdentity, useNotification } from '@refinedev/core';
-import { Table, Button, Space, Typography, Tag, Switch, Modal, DatePicker, Tooltip } from 'antd';
-import { ReloadOutlined, CloudDownloadOutlined, SyncOutlined, HistoryOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Typography, Tag, Switch, Modal, DatePicker, Tooltip, Alert } from 'antd';
+import { ReloadOutlined, CloudDownloadOutlined, SyncOutlined, HistoryOutlined, CheckOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Identity, ScannerDevice } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
@@ -104,6 +104,33 @@ export const ScannerDevicesPage: React.FC = () => {
     });
   };
 
+  // A serial number that turns up for the first time could be anyone posting
+  // to this server, so nothing it sends counts until it's approved here.
+  const setApproved = (device: ScannerDevice, approved: boolean) => {
+    modal.confirm({
+      title: approved ? `ອະນຸມັດເຄື່ອງ ${device.serialNumber}?` : `ບລັອກເຄື່ອງ ${device.serialNumber}?`,
+      content: approved
+        ? 'ກວດໃຫ້ແນ່ໃຈວ່າແມ່ນເຄື່ອງສະແກນຂອງຮ້ານແທ້ (ທຽບ serial ກັບສະຕິກເກີຫຼັງເຄື່ອງ) — ຫຼັງອະນຸມັດ ການສະແກນ ແລະ ໃບໜ້າ/ນິ້ວມືຈາກເຄື່ອງນີ້ຈະເຂົ້າລະບົບ, ອັນທີ່ເຄື່ອງເກັບໄວ້ລະຫວ່າງລໍຖ້າຈະສົ່ງເຂົ້າມາເອງ'
+        : 'ການສະແກນ ແລະ ໃບໜ້າ/ນິ້ວມືຈາກເຄື່ອງນີ້ຈະບໍ່ເຂົ້າລະບົບອີກ ແລະ ປິດຊິງຂໍ້ມູນໃຫ້ — ຂໍ້ມູນທີ່ເຂົ້າມາແລ້ວບໍ່ຖືກລຶບ',
+      okText: approved ? 'ອະນຸມັດ' : 'ບລັອກ',
+      okButtonProps: approved ? undefined : { danger: true },
+      cancelText: 'ຍົກເລີກ',
+      onOk: async () => {
+        setBusySerial(device.serialNumber);
+        try {
+          await axiosInstance.patch(`${API_URL}/device-users/devices/${device.serialNumber}`, { approved });
+          notify?.({ type: 'success', message: approved ? 'ອະນຸມັດເຄື່ອງແລ້ວ' : 'ບລັອກເຄື່ອງແລ້ວ' });
+          refetch();
+        } catch (err) {
+          fail(err);
+        } finally {
+          setBusySerial(null);
+        }
+      },
+    });
+  };
+  const waitingCount = devices.filter((d) => !d.approved).length;
+
   const provision = async (device: ScannerDevice) => {
     setBusySerial(device.serialNumber);
     try {
@@ -153,6 +180,15 @@ export const ScannerDevicesPage: React.FC = () => {
             ໂຫຼດຄືນໃໝ່
           </Button>
         </Space>
+        {waitingCount > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={`ມີ ${waitingCount} ເຄື່ອງລໍຖ້າອະນຸມັດ — ການສະແກນຈາກເຄື່ອງທີ່ຍັງບໍ່ອະນຸມັດຈະບໍ່ເຂົ້າລະບົບ`}
+            description="ເຄື່ອງທີ່ຕິດຕໍ່ມາຄັ້ງທຳອິດຕ້ອງໃຫ້ແອດມິນອະນຸມັດກ່ອນ ເພື່ອກັນບໍ່ໃຫ້ຄົນອື່ນສົ່ງການສະແກນ ຫຼື ລາຍນິ້ວມືປອມເຂົ້າມາ. ຖ້າບໍ່ຮູ້ຈັກ serial ນັ້ນ ໃຫ້ກົດບລັອກ"
+          />
+        )}
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           ເຄື່ອງທີ່ເປີດ "ຊິງ" ຈະໄດ້ຮັບພະນັກງານທີ່ໃຊ້ງານທຸກຄົນ (ພະນັກງານໃໝ່ພຽງແຕ່ໄປລົງໃບໜ້າ/ນິ້ວມືຢູ່ເຄື່ອງ) ແລະ ໃບໜ້າ/ນິ້ວມືທີ່ລົງຢູ່ເຄື່ອງອື່ນທີ່ເປີດຊິງ —
           ສະເພາະເຄື່ອງທີ່ໃຊ້ລະບົບສະແກນລຸ້ນດຽວກັນ (ເບິ່ງຖັນ "ລຸ້ນລະບົບສະແກນ"). ຄຳສັ່ງຈະໄປຮອດເຄື່ອງເມື່ອມັນຖາມຫາຄຳສັ່ງ (ປົກກະຕິທຸກ 30 ວິນາທີ)
@@ -173,6 +209,12 @@ export const ScannerDevicesPage: React.FC = () => {
           render={(_, d: ScannerDevice) => (
             <Space direction="vertical" size={0}>
               <Typography.Text strong>{d.serialNumber}</Typography.Text>
+              {!d.approved && <Tag color="red">ລໍຖ້າອະນຸມັດ</Tag>}
+              {!d.approved && d.blockedUploadAt && (
+                <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                  ພະຍາຍາມສົ່ງຂໍ້ມູນລ່າສຸດ {formatTime(d.blockedUploadAt)} — ຍັງບໍ່ຮັບ
+                </Typography.Text>
+              )}
               {d.info.deviceName && <Tag>{d.info.deviceName}</Tag>}
               {d.info.ipAddress && <Typography.Text type="secondary">IP {d.info.ipAddress}</Typography.Text>}
               {d.info.firmware && (
@@ -260,7 +302,7 @@ export const ScannerDevicesPage: React.FC = () => {
           render={(_, d: ScannerDevice) => (
             <Switch
               checked={d.syncEnabled}
-              disabled={!isAdmin}
+              disabled={!isAdmin || !d.approved}
               loading={busySerial === d.serialNumber}
               onChange={(checked) => setSync(d, checked)}
             />
@@ -270,6 +312,11 @@ export const ScannerDevicesPage: React.FC = () => {
           title="ຈັດການ"
           render={(_, d: ScannerDevice) => (
             <Space direction="vertical" size={4}>
+              {isAdmin && !d.approved && (
+                <Button size="small" type="primary" icon={<CheckOutlined />} loading={busySerial === d.serialNumber} onClick={() => setApproved(d, true)}>
+                  ອະນຸມັດເຄື່ອງນີ້
+                </Button>
+              )}
               {isAdmin && d.syncEnabled && (
                 <Tooltip title="ສົ່ງພະນັກງານທີ່ໃຊ້ງານທັງໝົດ ແລະ ໃບໜ້າ/ນິ້ວມືທີ່ໃຊ້ໄດ້ ໄປເຄື່ອງນີ້ອີກຄັ້ງ">
                   <Button size="small" icon={<SyncOutlined />} loading={busySerial === d.serialNumber} onClick={() => provision(d)}>
@@ -277,9 +324,16 @@ export const ScannerDevicesPage: React.FC = () => {
                   </Button>
                 </Tooltip>
               )}
-              <Button size="small" icon={<HistoryOutlined />} onClick={() => setAttDevice(d)}>
-                ດຶງການສະແກນຍ້ອນຫຼັງ
-              </Button>
+              {d.approved && (
+                <Button size="small" icon={<HistoryOutlined />} onClick={() => setAttDevice(d)}>
+                  ດຶງການສະແກນຍ້ອນຫຼັງ
+                </Button>
+              )}
+              {isAdmin && d.approved && (
+                <Button size="small" type="text" danger icon={<StopOutlined />} onClick={() => setApproved(d, false)}>
+                  ບລັອກ
+                </Button>
+              )}
             </Space>
           )}
         />

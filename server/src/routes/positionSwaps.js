@@ -2,7 +2,7 @@ const express = require('express');
 const ScheduledPositionSwap = require('../models/ScheduledPositionSwap');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { toDateKey } = require('../utils/attendanceProcessor');
-const { applyPositionSwap, runDueScheduledSwaps } = require('../utils/positionSwap');
+const { applyPositionSwap, runDueScheduledSwaps, claimPendingSwap, runClaimedSwap } = require('../utils/positionSwap');
 
 const router = express.Router();
 
@@ -70,20 +70,21 @@ router.patch('/:id', authenticate, requireRole('admin', 'manager'), async (req, 
     const todayKey = toDateKey(new Date());
     const isImmediate = effectiveDate <= todayKey;
 
-    swap.positionA = positionA;
-    swap.positionB = positionB;
-    swap.effectiveDate = effectiveDate;
-
+    // Same atomic claim as the scheduled run — it may have fired this swap
+    // since the page loaded.
+    let updated;
     if (isImmediate) {
-      const { movedFromA, movedFromB } = await applyPositionSwap(positionA, positionB, effectiveDate);
-      swap.status = 'applied';
-      swap.appliedAt = new Date();
-      swap.movedFromA = movedFromA;
-      swap.movedFromB = movedFromB;
+      updated = await claimPendingSwap(swap._id, { positionA, positionB, effectiveDate });
+      if (updated) await runClaimedSwap(updated);
+    } else {
+      updated = await ScheduledPositionSwap.findOneAndUpdate(
+        { _id: swap._id, status: 'pending' },
+        { positionA, positionB, effectiveDate },
+        { new: true }
+      );
     }
-
-    await swap.save();
-    const populated = await swap.populate(POPULATE);
+    if (!updated) return res.status(400).json({ message: 'ແກ້ໄຂໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ທັນສະຫຼັບ' });
+    const populated = await updated.populate(POPULATE);
     res.json(populated);
   } catch (err) {
     next(err);
@@ -94,10 +95,11 @@ router.patch('/:id/cancel', authenticate, requireRole('admin', 'manager'), async
   try {
     const swap = await ScheduledPositionSwap.findById(req.params.id);
     if (!swap) return res.status(404).json({ message: 'Not found' });
-    if (swap.status !== 'pending') return res.status(400).json({ message: 'ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ທັນສະຫຼັບ' });
-    swap.status = 'cancelled';
-    await swap.save();
-    const populated = await swap.populate(POPULATE);
+    // Only while still pending, checked in the same step as the change — a
+    // scheduled run may be applying it right now.
+    const cancelled = await ScheduledPositionSwap.findOneAndUpdate({ _id: swap._id, status: 'pending' }, { status: 'cancelled' }, { new: true });
+    if (!cancelled) return res.status(400).json({ message: 'ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ທັນສະຫຼັບ' });
+    const populated = await cancelled.populate(POPULATE);
     res.json(populated);
   } catch (err) {
     next(err);

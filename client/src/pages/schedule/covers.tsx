@@ -12,6 +12,7 @@ import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { preferredOverride } from '../../utils/dayOverride';
 import { groupLogsByEmployee, shiftOnDate, regularShiftHours } from '../../utils/shiftHistory';
+import { followsIrregularRule } from '../../utils/substituteRule';
 
 function idOf(value: { _id: string } | string | null | undefined) {
   if (!value) return undefined;
@@ -457,13 +458,20 @@ export const ScheduleCoversGrid: React.FC = () => {
       .sort((a, b) => (a.employeeCode ?? '').localeCompare(b.employeeCode ?? ''))
       .map((e) => {
         const covering = shiftIndex.covering.get(`${e._id}_${assignFor.dateKey}`) ?? [];
+        // One cover a day for ordinary staff — someone who already covers
+        // that day, or has a set shift of their own then, can't be picked
+        // (the server refuses it too). ມາບໍ່ປົກກະຕິ people can take several.
+        const busy =
+          (covering.length > 0 || shiftIndex.own.get(`${e._id}_${assignFor.dateKey}`)?.status === 'scheduled') && !followsIrregularRule(e);
         return {
           value: e._id,
           label: `${e.employeeCode ?? ''} ${fullName(e)}`.trim(),
           position: positionOf(e),
+          disabled: busy,
           day: [
             dayStatusLabel(statusOn(e, assignFor.dateKey)),
             ...covering.map((s) => `ແທນ ${codeOf(s.coveringFor as Employee)} ${s.startTime}-${s.endTime}`),
+            ...(busy ? ['ມີວຽກໃນມື້ນີ້ແລ້ວ — ມອບເພີ່ມບໍ່ໄດ້'] : []),
           ].join(' · '),
         };
       });

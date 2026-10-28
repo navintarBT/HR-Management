@@ -60,6 +60,17 @@ const deviceSchema = new mongoose.Schema(
     // from this system (utils/deviceSync.js). Off by default so a terminal
     // that's nearly full, or one being retired, never gets filled up by it.
     syncEnabled: { type: Boolean, default: false },
+    // The /iclock endpoints can't authenticate a terminal, so any serial
+    // number registers itself on first contact — a serial seen for the first
+    // time is stored as false and nothing it sends (punches, users,
+    // fingerprints/faces) is taken until an admin approves it on ເຄື່ອງສະແກນ.
+    // Deliberately no schema default: terminals already registered before
+    // this existed have no value and count as approved (utils/deviceApproval.js),
+    // so switching this on stopped no real scanner.
+    approved: { type: Boolean },
+    // Last time a not-yet-approved terminal tried to upload punches or
+    // templates (refused, so it keeps them and retries) — shown on ເຄື່ອງສະແກນ.
+    blockedUploadAt: { type: Date },
     // The last /iclock/* request nothing here recognized — e.g. a terminal
     // still in access-control push mode — kept so the scanner page can show
     // it instead of it only ever reaching the server log.

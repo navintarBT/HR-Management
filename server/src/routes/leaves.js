@@ -1,10 +1,9 @@
 const mongoose = require('mongoose');
 const express = require('express');
 const Leave = require('../models/Leave');
-const AttendanceDaily = require('../models/AttendanceDaily');
 const Employee = require('../models/Employee');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { markLeave, recomputeDay, toDateKey } = require('../utils/attendanceProcessor');
+const { refreshLeaveDay, toDateKey } = require('../utils/attendanceProcessor');
 const { getAnniversary, computeDeductionFields } = require('../utils/leaveDeduction');
 
 const router = express.Router();
@@ -116,28 +115,21 @@ async function ensureNoOverlappingLeave(payload, excludeIds) {
   throw err;
 }
 
-async function markApprovedLeaveDays(leave) {
-  for (let d = new Date(leave.startDate); d <= leave.endDate; d.setDate(d.getDate() + 1)) {
-    // eslint-disable-next-line no-await-in-loop
-    await markLeave(leave.employee, toDateKey(d));
+// Brings every day the given leave ranges touch in line with the leaves on
+// file now (attendanceProcessor's refreshLeaveDay: ລາ where an approved leave
+// covers the day, otherwise what the scans say, or nothing). Always run AFTER
+// the leave changes are saved: working from the saved state is what keeps
+// ranges that share days — a split pair's halves, an edit's old and new
+// dates — from undoing each other's marks, which marking the new days and
+// then clearing the old ones (or the other way round) did.
+async function refreshLeaveDays(employeeId, ranges) {
+  const days = new Set();
+  for (const { startDate, endDate } of ranges) {
+    for (let d = new Date(startDate); d <= new Date(endDate); d.setDate(d.getDate() + 1)) days.add(toDateKey(d));
   }
-}
-
-// Undoes markApprovedLeaveDays for one date — re-derives the day from real scan
-// logs if there are any (rare: the employee actually scanned despite being on
-// leave that day), otherwise the "leave" marking was the only thing there, so
-// it's deleted outright rather than left behind as a stale AttendanceDaily row.
-async function revertLeaveMarking(employeeId, dateKey) {
-  const recomputed = await recomputeDay(employeeId, dateKey);
-  if (!recomputed) {
-    await AttendanceDaily.deleteOne({ employee: employeeId, date: dateKey, status: 'leave' });
-  }
-}
-
-async function revertApprovedLeaveDays(leave) {
-  for (let d = new Date(leave.startDate); d <= leave.endDate; d.setDate(d.getDate() + 1)) {
+  for (const day of days) {
     // eslint-disable-next-line no-await-in-loop
-    await revertLeaveMarking(leave.employee, toDateKey(d));
+    await refreshLeaveDay(employeeId, day);
   }
 }
 
@@ -200,8 +192,7 @@ router.post('/', authenticate, async (req, res, next) => {
       Object.assign(afterPayload, await computeDeductionFields(employee, afterPayload.startDate, afterPayload.endDate, true, afterPayload.deductAmount));
 
       const [beforeItem, afterItem] = await Leave.create([beforePayload, afterPayload]);
-      await markApprovedLeaveDays(beforeItem);
-      await markApprovedLeaveDays(afterItem);
+      await refreshLeaveDays(beforeItem.employee, [beforeItem, afterItem]);
       const populated = await beforeItem.populate([{ path: 'employee', populate: 'department position' }, { path: 'approver' }]);
       return res.status(201).json(attachDeductionAmount(populated));
     }
@@ -209,7 +200,7 @@ router.post('/', authenticate, async (req, res, next) => {
     Object.assign(payload, await computeDeductionFields(employee, payload.startDate, payload.endDate, undefined, payload.deductAmount));
 
     const item = await Leave.create(payload);
-    await markApprovedLeaveDays(item);
+    await refreshLeaveDays(item.employee, [item]);
     const populated = await item.populate([{ path: 'employee', populate: 'department position' }, { path: 'approver' }]);
     res.status(201).json(attachDeductionAmount(populated));
   } catch (err) {
@@ -229,10 +220,10 @@ router.post('/', authenticate, async (req, res, next) => {
 //    back into one plain leave (the sibling is deleted).
 // The submitted startDate/endDate on `item` are treated as the new COMBINED
 // range for the whole pair, not just item's own half — the edit form warns
-// the admin of this when editing a split half.
+// the admin of this when editing a split half. Returns the new 'after' half
+// it created, if any; the caller brings the days in line afterwards.
 async function applyDateChange(item, sibling, nextPayload, employee) {
   if (sibling) {
-    if (sibling.status === 'approved') await revertApprovedLeaveDays(sibling);
     await Leave.deleteOne({ _id: sibling._id });
     nextPayload.splitGroupId = null;
     nextPayload.splitPart = null;
@@ -244,7 +235,7 @@ async function applyDateChange(item, sibling, nextPayload, employee) {
   const split = splitIfStraddling(employee, nextPayload.startDate, nextPayload.endDate);
   if (!split) {
     Object.assign(nextPayload, await computeDeductionFields(employee, nextPayload.startDate, nextPayload.endDate, undefined, nextPayload.deductAmount));
-    return;
+    return null;
   }
 
   const groupId = new mongoose.Types.ObjectId();
@@ -268,8 +259,7 @@ async function applyDateChange(item, sibling, nextPayload, employee) {
     ...split.after,
   };
   Object.assign(afterPayload, await computeDeductionFields(employee, split.after.startDate, split.after.endDate, true, nextPayload.deductAmount));
-  const afterItem = await Leave.create(afterPayload);
-  if (afterItem.status === 'approved') await markApprovedLeaveDays(afterItem);
+  return Leave.create(afterPayload);
 }
 
 router.patch('/:id', authenticate, async (req, res, next) => {
@@ -286,7 +276,10 @@ router.patch('/:id', authenticate, async (req, res, next) => {
 
     const sibling = item.splitGroupId ? await Leave.findOne({ splitGroupId: item.splitGroupId, _id: { $ne: item._id } }) : null;
 
-    const wasApproved = item.status === 'approved';
+    // Every day this edit can change: the old dates of this leave and of its
+    // split sibling, plus (below) the new ones.
+    const touched = [{ startDate: item.startDate, endDate: item.endDate }];
+    if (sibling) touched.push({ startDate: sibling.startDate, endDate: sibling.endDate });
     const oldStartDate = item.startDate;
     const oldEndDate = item.endDate;
 
@@ -316,7 +309,8 @@ router.patch('/:id', authenticate, async (req, res, next) => {
       // recomputing — using tenure status as of THIS edit (freezing again
       // from this point forward), not whatever it was at original creation.
       const employee = await Employee.findById(item.employee);
-      await applyDateChange(item, sibling, nextPayload, employee);
+      const createdAfter = await applyDateChange(item, sibling, nextPayload, employee);
+      if (createdAfter) touched.push(createdAfter);
     } else if (sibling && (sibling.reason !== nextPayload.reason || sibling.type !== nextPayload.type)) {
       // No date change, but a split pair's reason/type stay mirrored — it's
       // one real-life request split only for calculation purposes.
@@ -328,13 +322,8 @@ router.patch('/:id', authenticate, async (req, res, next) => {
     Object.assign(item, nextPayload);
     await item.save();
 
-    // An already-approved leave had its dates marked into AttendanceDaily —
-    // if the dates just changed, that marking is now on the wrong days and
-    // needs moving, the same way /approve marks them the first time.
-    if (wasApproved && datesChanged) {
-      await revertApprovedLeaveDays({ employee: item.employee, startDate: oldStartDate, endDate: oldEndDate });
-      await markApprovedLeaveDays(item);
-    }
+    // ລາ marks moved to the new dates — from the saved state (refreshLeaveDays).
+    if (datesChanged) await refreshLeaveDays(item.employee, [...touched, item]);
 
     const populated = await item.populate([{ path: 'employee', populate: 'department position' }, { path: 'approver' }]);
     res.json(attachDeductionAmount(populated));
@@ -353,7 +342,7 @@ router.patch('/:id/approve', authenticate, requireRole('admin', 'manager'), asyn
     item.approver = req.user.employeeId ? req.user.employeeId._id : undefined;
     item.decidedAt = new Date();
     await item.save();
-    await markApprovedLeaveDays(item);
+    await refreshLeaveDays(item.employee, [item]);
 
     const populated = await item.populate([{ path: 'employee', populate: 'department position' }, { path: 'approver' }]);
     res.json(attachDeductionAmount(populated));
@@ -384,14 +373,15 @@ router.delete('/:id', authenticate, requireRole('admin'), async (req, res, next)
   try {
     const item = await Leave.findByIdAndDelete(req.params.id);
     if (!item) return res.status(404).json({ message: 'Not found' });
-    // Deleting an approved leave shouldn't leave its days stuck showing "leave".
-    if (item.status === 'approved') await revertApprovedLeaveDays(item);
     // A split pair is one logical request — deleting one half without the
     // other would leave a dangling, incomplete record behind.
+    const removed = [item];
     if (item.splitGroupId) {
       const sibling = await Leave.findOneAndDelete({ splitGroupId: item.splitGroupId, _id: { $ne: item._id } });
-      if (sibling && sibling.status === 'approved') await revertApprovedLeaveDays(sibling);
+      if (sibling) removed.push(sibling);
     }
+    // Their days shouldn't stay stuck showing ລາ.
+    await refreshLeaveDays(item.employee, removed);
     res.json({ id: req.params.id });
   } catch (err) {
     next(err);

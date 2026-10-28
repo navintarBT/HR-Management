@@ -107,9 +107,12 @@ function crudRouter(Model, options = {}) {
         const blockMessage = await beforeUpdate(req.params.id, req.body);
         if (blockMessage) return res.status(409).json({ message: blockMessage });
       }
+      // afterUpdate also gets the record as it was, so it can tell what
+      // actually changed rather than guess from the request body.
+      const before = afterUpdate ? await Model.findById(req.params.id).lean() : null;
       const item = await Model.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
       if (!item) return res.status(404).json({ message: 'Not found' });
-      if (afterUpdate) await afterUpdate(item, req.body);
+      if (afterUpdate) await afterUpdate(item, req.body, before);
       res.json(item);
     } catch (err) {
       handleWriteError(err, res, next);

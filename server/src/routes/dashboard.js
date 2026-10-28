@@ -61,8 +61,14 @@ router.get('/summary', authenticate, async (req, res, next) => {
           .limit(6),
       ]);
 
-    const presentToday = todayRows.filter((r) => r.status === 'present' || r.status === 'late').length;
-    const lateToday = todayRows.filter((r) => r.status === 'late').length;
+    // 'incomplete' is everyone still on shift (scanned in, not out yet) —
+    // they came in, and a late scan-in already carries its lateMinutes.
+    // Counting only present/late left the day's numbers at 0 until people
+    // started scanning out.
+    const cameIn = (r) => r.status === 'present' || r.status === 'late' || r.status === 'incomplete';
+    const cameLate = (r) => r.status === 'late' || (r.status === 'incomplete' && r.lateMinutes > 0);
+    const presentToday = todayRows.filter(cameIn).length;
+    const lateToday = todayRows.filter(cameLate).length;
     const onLeaveToday = todayRows.filter((r) => r.status === 'leave').length;
     const absentToday = todayRows.filter((r) => r.status === 'absent').length;
 
@@ -76,10 +82,9 @@ router.get('/summary', authenticate, async (req, res, next) => {
     for (const row of trendRows) {
       const bucket = byDate.get(row.date);
       if (!bucket) continue;
-      if (row.status === 'present') bucket.present += 1;
-      else if (row.status === 'late') {
-        bucket.late += 1;
+      if (cameIn(row)) {
         bucket.present += 1;
+        if (cameLate(row)) bucket.late += 1;
       } else if (row.status === 'absent') bucket.absent += 1;
       else if (row.status === 'leave') bucket.leave += 1;
     }

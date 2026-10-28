@@ -38,7 +38,7 @@ const deviceUserRoutes = require('./routes/deviceUsers');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
 const { runDueScheduledShiftChanges } = require('./utils/scheduledShiftChange');
-const { markAbsentForMissedScans } = require('./utils/attendanceProcessor');
+const { markAbsentForMissedScans, relabelScannedLeaveDays } = require('./utils/attendanceProcessor');
 const { deactivateEndedResignations } = require('./utils/employeeStatus');
 const { lockUnlockedAbsences } = require('./utils/absenceSeverity');
 const { migrateRestDayHistory, applyDueRestDayChanges } = require('./utils/restDaySchedule');
@@ -130,6 +130,11 @@ connectDB()
     lockUnlockedAbsences()
       .then((n) => n && console.log(`[attendance] locked the deduction tier on ${n} earlier absences`))
       .catch((err) => console.error('[attendance] locking absence tiers failed', err));
+    // Leave days a scan had turned into a scan record go back to ລາ (the
+    // scan kept and flagged) — a no-op once done.
+    relabelScannedLeaveDays()
+      .then((n) => n && console.log(`[attendance] put ${n} scanned leave days back to leave`))
+      .catch((err) => console.error('[attendance] relabelling scanned leave days failed', err));
     // A rest-day change whose day has come switches Employee.defaultRestDay
     // (what "today" shows) — same catch-up-on-restart + periodic recheck as
     // the jobs below.

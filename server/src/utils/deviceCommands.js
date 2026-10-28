@@ -7,6 +7,7 @@ const {
   buildQueryAttLogCommand,
   hashText,
 } = require('./zkProtocol');
+const { APPROVED_DEVICE_FILTER } = require('./deviceApproval');
 
 // Queues command strings for one device, handing out consecutive cmdIds in one
 // go (provisioning a terminal can be hundreds of commands). An identical
@@ -52,10 +53,12 @@ async function queueCommandForDevice(device, command, { pin, employeeId } = {}) 
 // per-PIN enrollment map), and a ZKTeco terminal harmlessly no-ops a
 // command for a PIN it doesn't have, so queuing on all of them is the only
 // way to guarantee it reaches wherever that PIN really is.
+// Never to a terminal that isn't approved (utils/deviceApproval.js) — it
+// couldn't collect them anyway.
 async function queueCommandToDevices(command, { pin, employeeId, serialNumbers } = {}) {
   const devices = serialNumbers?.length
-    ? await Device.find({ serialNumber: { $in: serialNumbers } })
-    : await Device.find();
+    ? await Device.find({ serialNumber: { $in: serialNumbers }, ...APPROVED_DEVICE_FILTER })
+    : await Device.find(APPROVED_DEVICE_FILTER);
   const queued = [];
   for (const device of devices) {
     // eslint-disable-next-line no-await-in-loop
