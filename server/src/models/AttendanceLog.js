@@ -8,6 +8,12 @@ const attendanceLogSchema = new mongoose.Schema(
     timestamp: { type: Date, required: true },
     type: { type: String, enum: ['in', 'out', 'auto'], default: 'auto' },
     raw: { type: mongoose.Schema.Types.Mixed },
+    // A punch HR replaced — ແກ້ໄຂເວລາ, a disciplinary ຂາດ, ມາແທນ. Kept rather
+    // than deleted, set aside from every calculation: when the terminal sends
+    // the same punch again (ດຶງການສະແກນຍ້ອນຫຼັງ, a re-sent backlog) it's
+    // recognized as already stored and stays out, instead of coming back as
+    // new and mixing with what HR entered.
+    voided: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

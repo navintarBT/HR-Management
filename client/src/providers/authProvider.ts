@@ -6,6 +6,13 @@ export const authProvider: AuthProvider = {
   login: async ({ email, password }) => {
     try {
       const { data } = await axiosInstance.post(`${API_URL}/auth/login`, { email, password });
+      // An employee's own account only works in their app (/me).
+      if (data.user?.role === 'employee') {
+        return {
+          success: false,
+          error: { name: 'LoginError', message: 'ບັນຊີພະນັກງານ ໃຫ້ເຂົ້າທີ່ແອັບພະນັກງານ (/me)' },
+        };
+      }
       localStorage.setItem('hr_token', data.token);
       localStorage.setItem('hr_identity', JSON.stringify(data.user));
       return { success: true, redirectTo: '/' };

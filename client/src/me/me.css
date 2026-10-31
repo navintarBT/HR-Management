@@ -1,0 +1,105 @@
+/* The employees' app (/me): Ionic components, laid out with Tailwind. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ion-font-family: 'Noto Sans Lao', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --ion-background-color: #faf9f7;
+  --ion-text-color: #1f1a19;
+
+  --ion-color-primary: #9f1239;
+  --ion-color-primary-rgb: 159, 18, 57;
+  --ion-color-primary-contrast: #ffffff;
+  --ion-color-primary-contrast-rgb: 255, 255, 255;
+  --ion-color-primary-shade: #8c1032;
+  --ion-color-primary-tint: #a92a4d;
+
+  --ion-color-success: #15803d;
+  --ion-color-success-rgb: 21, 128, 61;
+  --ion-color-success-contrast: #ffffff;
+  --ion-color-success-contrast-rgb: 255, 255, 255;
+  --ion-color-success-shade: #127136;
+  --ion-color-success-tint: #2c8d50;
+
+  --ion-color-warning: #d97706;
+  --ion-color-warning-rgb: 217, 119, 6;
+  --ion-color-warning-contrast: #ffffff;
+  --ion-color-warning-contrast-rgb: 255, 255, 255;
+  --ion-color-warning-shade: #bf6905;
+  --ion-color-warning-tint: #dd851f;
+}
+
+html,
+body {
+  margin: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Tailwind's own reset is off (Ionic brings one), so plain buttons start
+   from the browser's grey box — cleared here; Tailwind classes still win. */
+@layer base {
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+}
+
+.me-gradient {
+  background: linear-gradient(160deg, #2e1f1d 0%, #4a2e2b 45%, #8f3f49 100%);
+}
+
+/* The shutter: a white ring around a filled button, pressed in on tap. */
+.me-shutter {
+  width: 76px;
+  height: 76px;
+  border-radius: 9999px;
+  border: 4px solid rgba(255, 255, 255, 0.95);
+  background: transparent;
+  padding: 4px;
+  transition: transform 120ms ease;
+}
+.me-shutter > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 9999px;
+  background: #ffffff;
+}
+.me-shutter:active {
+  transform: scale(0.92);
+}
+.me-shutter:disabled {
+  opacity: 0.5;
+}
+
+/* Corner marks over the viewfinder. */
+.me-frame::before,
+.me-frame::after {
+  content: '';
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-color: rgba(255, 255, 255, 0.9);
+  border-style: solid;
+}
+.me-frame::before {
+  top: 14%;
+  left: 10%;
+  border-width: 3px 0 0 3px;
+  border-top-left-radius: 14px;
+}
+.me-frame::after {
+  bottom: 14%;
+  right: 10%;
+  border-width: 0 3px 3px 0;
+  border-bottom-right-radius: 14px;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}

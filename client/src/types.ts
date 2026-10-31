@@ -486,3 +486,21 @@ export interface DashboardDataQuality {
   resignedNoTerminationDate: number;
   missingPayInfo: number;
 }
+
+// An employee's photo evidence for one shift (their app at /me) — one for
+// coming in, one for going out. Image links are signed and short-lived.
+export interface ScanEvidence {
+  _id: string;
+  employee: string;
+  date: string;
+  kind: 'in' | 'out';
+  takenAt?: string;
+  uploadedAt: string;
+  backdated: boolean;
+  duplicate: boolean;
+  note: string;
+  editedAt?: string | null;
+  thumbUrl: string;
+  photoUrl: string;
+  history: { takenAt?: string; uploadedAt?: string; replacedAt?: string; thumbUrl: string; photoUrl: string }[];
+}

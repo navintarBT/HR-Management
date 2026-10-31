@@ -7,6 +7,7 @@ import dayjs from 'dayjs';
 import type { Employee, Shift } from '../../types';
 import { EmployeeStatusTag } from '../../components/StatusTags';
 import { EmployeeScannerStatusSection } from '../../components/EmployeeScannerStatus';
+import { EmployeeAppAccountSection } from '../../components/EmployeeAppAccount';
 import { EmployeeBadge, EMPLOYEE_BADGE_WIDTH_MM, EMPLOYEE_BADGE_HEIGHT_MM } from '../../components/EmployeeBadge';
 import { palette } from '../../theme/palette';
 import { resolvePhotoUrl } from '../../providers/axios';
@@ -129,6 +130,9 @@ export const EmployeeShow: React.FC = () => {
 
       <Divider orientation="left">ເຄື່ອງສະແກນ</Divider>
       <EmployeeScannerStatusSection employee={record} />
+
+      <Divider orientation="left">ບັນຊີແອັບພະນັກງານ</Divider>
+      <EmployeeAppAccountSection employee={record} />
 
       <Modal
         title="ປ້າຍພະນັກງານ"

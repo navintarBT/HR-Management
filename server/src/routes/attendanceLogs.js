@@ -7,6 +7,8 @@ module.exports = crudRouter(AttendanceLog, {
   writeRoles: ['admin'],
   readRoles: ['admin', 'manager', 'employee'],
   scopeQuery: (req, query) => {
+    // A punch HR replaced (AttendanceLog.voided) isn't part of the day any more.
+    query.voided = { $ne: true };
     if (req.user.role === 'employee') {
       query.employee = req.user.employeeId ? req.user.employeeId._id : null;
     }

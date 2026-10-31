@@ -4,7 +4,7 @@ const AttendanceLog = require('../models/AttendanceLog');
 const Device = require('../models/Device');
 const DeviceCommand = require('../models/DeviceCommand');
 const DeviceEnrolledUser = require('../models/DeviceEnrolledUser');
-const { recomputeDay, dayRange, resolveShiftDateKey } = require('../utils/attendanceProcessor');
+const { recomputeDay, dayRange, resolveShiftDateKey, resolveShiftWindow, COUNTED_LOGS } = require('../utils/attendanceProcessor');
 const { splitLines, parseRecordLine, userFromRecord, templateFromRecord, parseDeviceOptions } = require('../utils/zkProtocol');
 const { ingestTemplates } = require('../utils/deviceSync');
 const { isApprovedDevice, NEW_DEVICE_DEFAULTS } = require('../utils/deviceApproval');
@@ -93,22 +93,101 @@ async function inferType(employeeId, timestamp) {
   const last = await AttendanceLog.findOne({
     employee: employeeId,
     timestamp: { $gte: start, $lt: timestamp },
+    ...COUNTED_LOGS,
   }).sort('-timestamp');
   return last && last.type === 'in' ? 'out' : 'in';
 }
 
 // Each line: "PIN\tDateTime\tStatus\tVerifyType\tWorkCode\t..." — one punch
 // per line. DateTime is "YYYY-MM-DD HH:mm:ss" in the terminal's local time.
+// A reply to "DATA QUERY ATTLOG" through /iclock/querydata may name its
+// fields instead ("PIN=…\tTime=…" — key names vary by firmware), so a line
+// with "=" in it is read by name.
 function parseAttLog(body) {
   return (body || '')
     .split(/\r\n|\r|\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
+      if (line.includes('=')) {
+        const { fields } = parseRecordLine(line);
+        const dateTime = fields.time ?? fields.datetime ?? fields.checktime ?? fields.atttime ?? '';
+        return { pin: (fields.pin || '').trim(), dateTime: dateTime.trim(), raw: line };
+      }
       const fields = line.split('\t');
       return { pin: (fields[0] || '').trim(), dateTime: (fields[1] || '').trim(), raw: line };
     })
     .filter((row) => row.pin && row.dateTime);
+}
+
+// Whether HR hand-fixed this punch's shift-day (ແກ້ໄຂເວລາ) after the punch
+// happened. Such a punch — sent again, or arriving late — doesn't reopen the
+// fix: it's stored set aside. Fixes made before punches were set aside
+// deleted the terminal's own punches, so this is also what keeps a re-pull
+// over those days from mixing them back in. A punch from after the fix (the
+// real scan-out later that night) still counts.
+async function fixedByHandAfter(employeeId, dateKey, timestamp) {
+  const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, dateKey);
+  return !!(await AttendanceLog.exists({
+    employee: employeeId,
+    deviceId: 'MANUAL',
+    timestamp: { $gte: windowStart, $lte: windowEnd },
+    createdAt: { $gt: timestamp },
+  }));
+}
+
+// Stores a batch of punches and works out the days they fall on. A punch
+// already stored — the terminal re-sending it (its retry, ດຶງການສະແກນຍ້ອນຫຼັງ)
+// — is left exactly as it is: still with whoever had the PIN when it was
+// first stored (not whoever has it now, if the PIN has been handed on since),
+// and still set aside if HR replaced it (AttendanceLog.voided). Its day is
+// still worked out again, so a batch that failed half-way is completed on
+// the retry. Keyed on (device, PIN, time) — a unique index, so the same punch
+// can never be stored twice.
+async function ingestAttLog(SN, body) {
+  const rows = parseAttLog(body);
+  const affected = new Map();
+  let stored = 0;
+  let unmatched = 0;
+
+  for (const row of rows) {
+    const timestamp = new Date(row.dateTime.replace(' ', 'T'));
+    if (Number.isNaN(timestamp.getTime())) continue;
+    const key = { deviceId: SN, deviceUserId: row.pin, timestamp };
+
+    let employeeId = null;
+    let dateKey = null;
+    const existing = await AttendanceLog.findOne(key, 'employee').lean();
+    if (existing) {
+      employeeId = existing.employee ?? null;
+      if (employeeId) dateKey = await resolveShiftDateKey(employeeId, timestamp);
+    } else {
+      const employee = await Employee.findOne({ deviceUserId: row.pin });
+      employeeId = employee ? employee._id : null;
+      let type = 'auto';
+      let voided = false;
+      if (employeeId) {
+        dateKey = await resolveShiftDateKey(employeeId, timestamp);
+        type = await inferType(employeeId, timestamp);
+        voided = await fixedByHandAfter(employeeId, dateKey, timestamp);
+      }
+      try {
+        await AttendanceLog.create({ ...key, employee: employeeId ?? undefined, type, voided, raw: { line: row.raw } });
+        stored += 1;
+      } catch (err) {
+        // The same punch stored a moment ago by an overlapping request.
+        if (err?.code !== 11000) throw err;
+      }
+    }
+    if (!employeeId) unmatched += 1;
+    else affected.set(`${employeeId}|${dateKey}`, true);
+  }
+
+  for (const key of affected.keys()) {
+    const [employeeId, dateKey] = key.split('|');
+    await recomputeDay(employeeId, dateKey);
+  }
+  return { lines: rows.length, stored, unmatched };
 }
 
 // A real MB10 answers "DATA QUERY USERINFO" inconsistently — sometimes
@@ -233,53 +312,13 @@ router.post('/iclock/cdata', express.text({ type: '*/*', limit: '10mb' }), async
     }
 
     if (table.toUpperCase() === 'ATTLOG') {
-      const rows = parseAttLog(req.body);
-      const affected = new Map();
-      let stored = 0;
-      let unmatched = 0;
-
-      for (const row of rows) {
-        const timestamp = new Date(row.dateTime.replace(' ', 'T'));
-        if (Number.isNaN(timestamp.getTime())) continue;
-
-        const employee = await Employee.findOne({ deviceUserId: row.pin });
-        if (!employee) unmatched += 1;
-        const type = employee ? await inferType(employee._id, timestamp) : 'auto';
-
-        // Upsert on (device, pin, timestamp) so a re-sent/duplicate punch (the
-        // terminal retries if it never saw our "OK") doesn't create a second
-        // log row or double-count worked hours. Checked for existence first
-        // (rather than inspecting the upsert's result metadata, whose shape
-        // isn't stable across mongoose/driver versions) purely so the log
-        // line below can distinguish a genuinely new punch from a resend.
-        const existed = await AttendanceLog.exists({ deviceId: SN, deviceUserId: row.pin, timestamp });
-        await AttendanceLog.findOneAndUpdate(
-          { deviceId: SN, deviceUserId: row.pin, timestamp },
-          {
-            employee: employee ? employee._id : undefined,
-            deviceUserId: row.pin,
-            deviceId: SN,
-            timestamp,
-            type,
-            raw: { line: row.raw },
-          },
-          { upsert: true, setDefaultsOnInsert: true }
-        );
-        if (!existed) stored += 1;
-
-        if (employee) affected.set(`${employee._id}|${await resolveShiftDateKey(employee._id, timestamp)}`, true);
-      }
-
-      for (const key of affected.keys()) {
-        const [employeeId, dateKey] = key.split('|');
-        await recomputeDay(employeeId, dateKey);
-      }
+      const { lines, stored, unmatched } = await ingestAttLog(SN, req.body);
 
       if (Stamp) {
         await Device.updateOne({ serialNumber: SN }, { attStamp: Math.max(device.attStamp, Number(Stamp) || 0) });
       }
 
-      console.log(`[adms] SN=${SN} ATTLOG batch: ${rows.length} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
+      console.log(`[adms] SN=${SN} ATTLOG batch: ${lines} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
     } else if (RECORD_TABLES.includes(table.toUpperCase())) {
       // Users and templates — the reply to a queued "DATA QUERY USERINFO" /
       // "DATA QUERY BIODATA" (a real MB10 answers as either BIODATA or
@@ -421,6 +460,14 @@ router.post('/iclock/querydata', express.text({ type: '*/*', limit: '10mb' }), a
     // terminal never gets — dropped rather than stored.
     if (!isApprovedDevice(device)) return res.type('text/plain').send('OK');
     const tablename = typeof req.query.tablename === 'string' ? req.query.tablename : '';
+    // Punches re-sent for ດຶງການສະແກນຍ້ອນຫຼັງ ("DATA QUERY ATTLOG") — newer
+    // firmware answers here rather than with an ATTLOG upload to /cdata, and
+    // they used to be taken for user records and dropped.
+    if (/^(attlog|transaction)$/i.test(tablename)) {
+      const { lines, stored, unmatched } = await ingestAttLog(SN, req.body);
+      console.log(`[adms] SN=${SN} querydata ${tablename}: ${lines} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
+      return res.type('text/plain').send('OK');
+    }
     const result = await ingestRecordUpload(device, req.body);
     if (!result.pins) {
       await Device.updateOne(

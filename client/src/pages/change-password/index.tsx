@@ -23,10 +23,13 @@ export const ChangePasswordPage: React.FC = () => {
     setError(null);
     setLoading(true);
     try {
-      await axiosInstance.post(`${API_URL}/auth/change-password`, {
+      const { data } = await axiosInstance.post(`${API_URL}/auth/change-password`, {
         currentPassword: values.currentPassword,
         newPassword: values.newPassword,
       });
+      // Changing the password ends every earlier session, this one included —
+      // carry on with the fresh token it hands back.
+      if (data?.token) localStorage.setItem('hr_token', data.token);
 
       const raw = localStorage.getItem('hr_identity');
       if (raw) {

@@ -12,6 +12,10 @@ const { restDaysOn, restDaysOnFor, loadRestDaySchedules } = require('./restDaySc
 const GRACE_MINUTES = 15;
 const SEVERE_LATE_MINUTES = 60;
 const STANDARD_WORK_HOURS = 8;
+// The punches that count: everything except ones HR replaced
+// (AttendanceLog.voided).
+const COUNTED_LOGS = { voided: { $ne: true } };
+
 // How long after the expected shift end a scan-out still counts as part of
 // that same overnight shift (covers reasonable OT/cleanup) before it's
 // instead treated as the start of a new shift-day.
@@ -177,7 +181,7 @@ async function isUnworkedRestNight(employeeId, dateKey, shift) {
   start.setHours(shift.startHour, shift.startMinute, 0, 0);
   const evening = new Date(start.getTime() - OVERNIGHT_BUFFER_HOURS * 3600000);
   const midnight = new Date(`${dateKey}T23:59:59.999`);
-  return !(await AttendanceLog.exists({ employee: employeeId, timestamp: { $gte: evening, $lte: midnight } }));
+  return !(await AttendanceLog.exists({ employee: employeeId, timestamp: { $gte: evening, $lte: midnight }, ...COUNTED_LOGS }));
 }
 
 // The actual scan window for shift-day `dateKey` — widened past plain
@@ -272,6 +276,7 @@ async function recomputeDay(employeeId, dateKey, { force = false } = {}) {
   const logs = await AttendanceLog.find({
     employee: employeeId,
     timestamp: { $gte: windowStart, $lte: windowEnd },
+    ...COUNTED_LOGS,
   }).sort('timestamp');
 
   if (!logs.length) return null;
@@ -734,7 +739,7 @@ async function reprocessFromLogs({ employeeId, dateKey } = {}) {
     match.timestamp = { $gte: start, $lte: end };
   }
 
-  const logs = await AttendanceLog.find(match, 'employee timestamp');
+  const logs = await AttendanceLog.find({ ...match, ...COUNTED_LOGS }, 'employee timestamp');
 
   const pairKeys = new Set();
   for (const log of logs) {
@@ -750,6 +755,16 @@ async function reprocessFromLogs({ employeeId, dateKey } = {}) {
     if (doc) results.push(doc);
   }
   return results;
+}
+
+// HR is replacing what the scans of one shift-day say (ແກ້ໄຂເວລາ, a
+// disciplinary ຂາດ, ມາແທນ): its earlier hand-entered punches go, and the
+// terminal's own are set aside (AttendanceLog.voided) rather than deleted —
+// so the same punches sent again later are recognized and stay out.
+async function setAsideDayScans(employeeId, windowStart, windowEnd) {
+  const window = { employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } };
+  await AttendanceLog.deleteMany({ ...window, deviceId: 'MANUAL' });
+  await AttendanceLog.updateMany({ ...window, deviceId: { $ne: 'MANUAL' } }, { voided: true });
 }
 
 // Punches that arrived while no employee had their PIN (a new hire enrolled
@@ -794,7 +809,9 @@ module.exports = {
   relabelScannedLeaveDays,
   markSubstituted,
   reprocessFromLogs,
+  setAsideDayScans,
   linkUnmatchedScans,
+  COUNTED_LOGS,
   pickDayOverride,
   isLockedByHand,
   GRACE_MINUTES,

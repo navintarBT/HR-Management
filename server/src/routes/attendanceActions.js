@@ -16,6 +16,8 @@ const {
   markSubstituted,
   markAbsent,
   bulkMarkPresentForOutage,
+  setAsideDayScans,
+  COUNTED_LOGS,
 } = require('../utils/attendanceProcessor');
 
 const router = express.Router();
@@ -30,6 +32,7 @@ async function inferType(employeeId, timestamp) {
   const last = await AttendanceLog.findOne({
     employee: employeeId,
     timestamp: { $gte: start, $lt: timestamp },
+    ...COUNTED_LOGS,
   }).sort('-timestamp');
   return last && last.type === 'in' ? 'out' : 'in';
 }
@@ -144,7 +147,7 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
       return res.status(400).json({ message: 'ເວລາອອກຕ້ອງຢູ່ຫຼັງເວລາເຂົ້າ' });
     }
 
-    // Must clear the SAME window recomputeDay will read back from below — for
+    // Must set aside the SAME window recomputeDay will read back from below — for
     // an overnight shift that window extends past plain calendar-day midnight
     // (see resolveShiftWindow). Deleting only this literal calendar day would
     // leave an old scan-out from the small hours of the NEXT day behind: it
@@ -152,7 +155,7 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     // like it silently did nothing (e.g. clearing checkOut to downgrade to a
     // single scan never actually takes, because the stale checkout persists).
     const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
-    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } });
+    await setAsideDayScans(employeeId, windowStart, windowEnd);
 
     const raw = { manual: true, note: note || undefined, editedBy: req.user?.email };
     await AttendanceLog.create({
@@ -210,7 +213,7 @@ router.post('/mark-substituted', authenticate, requireRole('admin', 'manager'), 
     // day would leave a genuine scan-out from the small hours of the next day
     // behind, which a later reprocess could still pick up and attribute here.
     const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
-    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } });
+    await setAsideDayScans(employeeId, windowStart, windowEnd);
     await Shift.deleteMany({ employee: employeeId, date });
 
     const daily = await markSubstituted(employeeId, date);
@@ -240,7 +243,7 @@ router.post('/cancel-substituted', authenticate, requireRole('admin', 'manager')
 // Deliberately forces status='absent' on a day as a disciplinary action — e.g.
 // the employee did come in and scan, but broke a rule serious enough that
 // management wants it to count (and cost) the same as a no-show. A reason is
-// required so it reads back as "why" later, and this clears that day's raw
+// required so it reads back as "why" later, and this sets aside that day's raw
 // scan logs the same way mark-substituted does: otherwise a later /reprocess
 // would re-derive from the real logs and silently undo the override.
 router.post('/mark-absent', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
@@ -254,7 +257,7 @@ router.post('/mark-absent', authenticate, requireRole('admin', 'manager'), async
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
     const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
-    await AttendanceLog.deleteMany({ employee: employeeId, timestamp: { $gte: windowStart, $lte: windowEnd } });
+    await setAsideDayScans(employeeId, windowStart, windowEnd);
 
     const daily = await markAbsent(employeeId, date);
     daily.disciplinaryNote = note;
@@ -268,7 +271,7 @@ router.post('/mark-absent', authenticate, requireRole('admin', 'manager'), async
 // Reverts a disciplinary absence back to blank — guarded to only ever touch a
 // day this same action created (disciplinaryNote set), never a genuine
 // no-show the automatic sweep found on its own. Like cancel-substituted,
-// there's no raw scan left to recompute from (mark-absent deleted it), so
+// there's no raw scan left to recompute from (mark-absent set it aside), so
 // this removes the record rather than deriving a new one; the day goes back
 // to blank, not to whatever the original scan actually was.
 router.post('/cancel-absent-override', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {

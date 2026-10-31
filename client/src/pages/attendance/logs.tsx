@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm, message } from 'antd';
-import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { CameraFilled, LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type {
   AttendanceDaily,
@@ -14,6 +14,7 @@ import type {
   ScheduledPositionSwap,
   ShiftChangeLogEntry,
   RestDayScheduleRow,
+  ScanEvidence,
 } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { API_URL, axiosInstance } from '../../providers/axios';
@@ -21,6 +22,7 @@ import { lateLabel } from '../../utils/lateSeverity';
 import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { ScanEvidenceView } from '../../components/ScanEvidenceView';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -182,6 +184,24 @@ const AttendanceSummaryGrid: React.FC = () => {
   const restRowsByEmployee = useMemo(() => groupRestRowsByEmployee(restScheduleData?.data), [restScheduleData?.data]);
   const isRecurringRestDay = (emp: Employee, dateKey: string, day: Dayjs) =>
     restDaysOn(restRowsByEmployee.get(emp._id), emp.defaultRestDay, dateKey).includes(day.day());
+
+  // Employees' photo evidence (their app at /me), by employee + shift-day.
+  const { data: evidenceData } = useCustom<ScanEvidence[]>({
+    url: `${API_URL}/evidence`,
+    method: 'get',
+    config: { query: { from: rangeStartKey, to: rangeEndKey } },
+  });
+  const evidenceByEmpDate = useMemo(() => {
+    const map: Record<string, Partial<Record<'in' | 'out', ScanEvidence>>> = {};
+    for (const e of evidenceData?.data ?? []) {
+      const key = `${e.employee}_${e.date}`;
+      map[key] = { ...map[key], [e.kind]: e };
+    }
+    return map;
+  }, [evidenceData?.data]);
+  // A day with photos that can't be edited here (a rest day, a swap day) still
+  // opens to show them.
+  const [viewingEvidence, setViewingEvidence] = useState<{ employee: Employee; dateKey: string } | null>(null);
 
   const byEmpDate = useMemo(() => {
     const map: Record<string, AttendanceDaily> = {};
@@ -573,7 +593,9 @@ const AttendanceSummaryGrid: React.FC = () => {
                 // A swapped-blank day has no expected shift either (see
                 // positionSwap.js) — nothing for manual-fix to correct, same
                 // reasoning as a rest day.
-                const clickable = isManager && !isRestDay(emp, dateKey, day) && !swappedByEmpDate[`${emp._id}_${dateKey}`];
+                const editable = isManager && !isRestDay(emp, dateKey, day) && !swappedByEmpDate[`${emp._id}_${dateKey}`];
+                const hasEvidence = !!evidenceByEmpDate[`${emp._id}_${dateKey}`];
+                const clickable = editable || hasEvidence;
                 const pendingSwapWith = pendingSwapByPositionDate[`${idOf(emp.position)}_${dateKey}`];
                 const style: React.CSSProperties = {};
                 if (clickable) style.cursor = 'pointer';
@@ -582,104 +604,139 @@ const AttendanceSummaryGrid: React.FC = () => {
                   style.outlineOffset = -2;
                 }
                 return {
-                  ...(clickable ? { onClick: () => openEdit(emp, dateKey) } : {}),
+                  ...(clickable
+                    ? { onClick: () => (editable ? openEdit(emp, dateKey) : setViewingEvidence({ employee: emp, dateKey })) }
+                    : {}),
                   style,
                   title: pendingSwapWith ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້` : undefined,
                 };
               }}
               render={(_, emp: Employee) => {
-                const row = byEmpDate[`${emp._id}_${dateKey}`];
-                // A lone late-arriving scan can land as lastOut with no
-                // firstIn at all now (see attendanceProcessor.js's
-                // shift-midpoint check) — show that one time too instead of
-                // silently dropping it just because it's not firstIn.
-                const timeText = (r: AttendanceDaily) =>
-                  r.firstIn
-                    ? `${dayjs(r.firstIn).format('HH:mm')}${r.lastOut ? `-${dayjs(r.lastOut).format('HH:mm')}` : ''}`
-                    : r.lastOut
-                      ? dayjs(r.lastOut).format('HH:mm')
-                      : '';
+                const renderDay = () => {
+                  const row = byEmpDate[`${emp._id}_${dateKey}`];
+                  // A lone late-arriving scan can land as lastOut with no
+                  // firstIn at all now (see attendanceProcessor.js's
+                  // shift-midpoint check) — show that one time too instead of
+                  // silently dropping it just because it's not firstIn.
+                  const timeText = (r: AttendanceDaily) =>
+                    r.firstIn
+                      ? `${dayjs(r.firstIn).format('HH:mm')}${r.lastOut ? `-${dayjs(r.lastOut).format('HH:mm')}` : ''}`
+                      : r.lastOut
+                        ? dayjs(r.lastOut).format('HH:mm')
+                        : '';
 
-                const style = row ? CELL_STYLE[row.status] : undefined;
-                if (style) {
-                  const time = timeText(row!);
-                  const severity = row!.status === 'absent' ? absentSeverity(emp, day, row!) : null;
-                  // Still ລາ — the leave decides — but scanned anyway, so HR
-                  // checks it and corrects the leave if they really came in.
-                  const scannedOnLeave = row!.status === 'leave' && !!(row!.firstIn || row!.lastOut);
-                  const label =
-                    row!.status === 'late'
-                      ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
-                      : row!.status === 'absent'
-                        ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
-                        : `${style.label}${scannedOnLeave ? ' ⚠' : ''}${row!.autoFilledReason ? ' ↺' : ''}`;
-                  const cellTitle = row!.disciplinaryNote
-                    ? `ລົງໂທດ: ${row!.disciplinaryNote}`
-                    : scannedOnLeave
-                      ? 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ'
-                      : row!.autoFilledReason
-                        ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
-                        : undefined;
-                  return (
-                    <div
-                      title={cellTitle}
-                      style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}
+                  const style = row ? CELL_STYLE[row.status] : undefined;
+                  if (style) {
+                    const time = timeText(row!);
+                    const severity = row!.status === 'absent' ? absentSeverity(emp, day, row!) : null;
+                    // Still ລາ — the leave decides — but scanned anyway, so HR
+                    // checks it and corrects the leave if they really came in.
+                    const scannedOnLeave = row!.status === 'leave' && !!(row!.firstIn || row!.lastOut);
+                    const label =
+                      row!.status === 'late'
+                        ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
+                        : row!.status === 'absent'
+                          ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
+                          : `${style.label}${scannedOnLeave ? ' ⚠' : ''}${row!.autoFilledReason ? ' ↺' : ''}`;
+                    const cellTitle = row!.disciplinaryNote
+                      ? `ລົງໂທດ: ${row!.disciplinaryNote}`
+                      : scannedOnLeave
+                        ? 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ'
+                        : row!.autoFilledReason
+                          ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
+                          : undefined;
+                    return (
+                      <div
+                        title={cellTitle}
+                        style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 500 }}>{label}</div>
+                        {time && <div style={{ fontSize: 11 }}>{time}</div>}
+                      </div>
+                    );
+                  }
+                  if (row?.firstIn) {
+                    return <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{timeText(row)}</span>;
+                  }
+                  // No AttendanceDaily row at all — a real queued shift always
+                  // wins first (that's what a swap/stand-in override means, even
+                  // on what's otherwise this employee's day off), shown plain
+                  // since nothing has actually been scanned against it yet.
+                  // Otherwise check for a real "rest" Shift override (a company
+                  // holiday shows its occasion name; a personal one-off rest day
+                  // just shows "ພັກ"), then finally the recurring weekly day off.
+                  const queuedShift = scheduledByEmpDate[`${emp._id}_${dateKey}`];
+                  if (queuedShift) {
+                    return (
+                      <span style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>
+                        {queuedShift.startTime}-{queuedShift.endTime}
+                      </span>
+                    );
+                  }
+                  const swappedShift = swappedByEmpDate[`${emp._id}_${dateKey}`];
+                  if (swappedShift) {
+                    const swapped = CELL_STYLE.swapped;
+                    return (
+                      <div style={{ background: swapped.bg, color: swapped.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
+                        {swapped.label}
+                      </div>
+                    );
+                  }
+                  const restShift = restByEmpDate[`${emp._id}_${dateKey}`];
+                  if (restShift) {
+                    const holiday = restShift.holiday;
+                    const isHoliday = holiday && typeof holiday === 'object';
+                    const rest = CELL_STYLE.rest;
+                    return (
+                      <div
+                        title={isHoliday ? holiday.name : undefined}
+                        style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}
+                      >
+                        {isHoliday ? 'ຮ້ານປິດ' : rest.label}
+                      </div>
+                    );
+                  }
+                  if (isRecurringRestDay(emp, dateKey, day)) {
+                    const rest = CELL_STYLE.rest;
+                    return (
+                      <div style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
+                        {rest.label}
+                      </div>
+                    );
+                  }
+                  return <span style={{ color: '#bfbfbf' }}>-</span>;
+                };
+                const content = renderDay();
+                const slots = evidenceByEmpDate[`${emp._id}_${dateKey}`];
+                if (!slots) return content;
+                const count = (slots.in ? 1 : 0) + (slots.out ? 1 : 0);
+                const flagged = [slots.in, slots.out].some((e) => e && (e.backdated || e.duplicate));
+                return (
+                  <div style={{ position: 'relative' }}>
+                    {content}
+                    <span
+                      title={`ມີຮູບຫຼັກຖານ ${count} ຮູບ — ກົດເພື່ອເບິ່ງ`}
+                      style={{
+                        position: 'absolute',
+                        top: -6,
+                        right: -6,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 2,
+                        padding: '0 4px',
+                        borderRadius: 8,
+                        fontSize: 10,
+                        lineHeight: '15px',
+                        color: '#fff',
+                        background: flagged ? '#d46b08' : '#9F1239',
+                        boxShadow: '0 0 0 1px #fff',
+                      }}
                     >
-                      <div style={{ fontSize: 11, fontWeight: 500 }}>{label}</div>
-                      {time && <div style={{ fontSize: 11 }}>{time}</div>}
-                    </div>
-                  );
-                }
-                if (row?.firstIn) {
-                  return <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{timeText(row)}</span>;
-                }
-                // No AttendanceDaily row at all — a real queued shift always
-                // wins first (that's what a swap/stand-in override means, even
-                // on what's otherwise this employee's day off), shown plain
-                // since nothing has actually been scanned against it yet.
-                // Otherwise check for a real "rest" Shift override (a company
-                // holiday shows its occasion name; a personal one-off rest day
-                // just shows "ພັກ"), then finally the recurring weekly day off.
-                const queuedShift = scheduledByEmpDate[`${emp._id}_${dateKey}`];
-                if (queuedShift) {
-                  return (
-                    <span style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>
-                      {queuedShift.startTime}-{queuedShift.endTime}
+                      <CameraFilled style={{ fontSize: 9 }} />
+                      {count}
                     </span>
-                  );
-                }
-                const swappedShift = swappedByEmpDate[`${emp._id}_${dateKey}`];
-                if (swappedShift) {
-                  const swapped = CELL_STYLE.swapped;
-                  return (
-                    <div style={{ background: swapped.bg, color: swapped.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
-                      {swapped.label}
-                    </div>
-                  );
-                }
-                const restShift = restByEmpDate[`${emp._id}_${dateKey}`];
-                if (restShift) {
-                  const holiday = restShift.holiday;
-                  const isHoliday = holiday && typeof holiday === 'object';
-                  const rest = CELL_STYLE.rest;
-                  return (
-                    <div
-                      title={isHoliday ? holiday.name : undefined}
-                      style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}
-                    >
-                      {isHoliday ? 'ຮ້ານປິດ' : rest.label}
-                    </div>
-                  );
-                }
-                if (isRecurringRestDay(emp, dateKey, day)) {
-                  const rest = CELL_STYLE.rest;
-                  return (
-                    <div style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
-                      {rest.label}
-                    </div>
-                  );
-                }
-                return <span style={{ color: '#bfbfbf' }}>-</span>;
+                  </div>
+                );
               }}
             />
           );
@@ -698,6 +755,14 @@ const AttendanceSummaryGrid: React.FC = () => {
         confirmLoading={submitting}
         destroyOnClose
       >
+        {editing && evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`] && (
+          <>
+            <Typography.Text strong>ຮູບຫຼັກຖານຈາກແອັບພະນັກງານ</Typography.Text>
+            <div style={{ margin: '8px 0 16px' }}>
+              <ScanEvidenceView slots={evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`]} />
+            </div>
+          </>
+        )}
         <Form form={form} layout="vertical" onFinish={submitFix}>
           <Form.Item label="ເວລາເຂົ້າ" name="checkIn" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາເຂົ້າ' }]}>
             <TimePicker style={{ width: '100%' }} format="HH:mm" minuteStep={5} />
@@ -761,6 +826,20 @@ const AttendanceSummaryGrid: React.FC = () => {
             </Popconfirm>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        title={
+          viewingEvidence
+            ? `ຮູບຫຼັກຖານ - ${viewingEvidence.employee.firstName ?? ''} ${viewingEvidence.employee.lastName ?? ''} (${dayjs(viewingEvidence.dateKey).format('DD/MM/YYYY')})`
+            : ''
+        }
+        open={!!viewingEvidence}
+        onCancel={() => setViewingEvidence(null)}
+        footer={null}
+        destroyOnClose
+      >
+        {viewingEvidence && <ScanEvidenceView slots={evidenceByEmpDate[`${viewingEvidence.employee._id}_${viewingEvidence.dateKey}`] ?? {}} />}
       </Modal>
 
       <Modal

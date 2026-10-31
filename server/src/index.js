@@ -35,12 +35,17 @@ const payrollCommentRoutes = require('./routes/payrollComments');
 const scheduledShiftChangeRoutes = require('./routes/scheduledShiftChanges');
 const shiftChangeLogRoutes = require('./routes/shiftChangeLogs');
 const deviceUserRoutes = require('./routes/deviceUsers');
+const employeeAccountRoutes = require('./routes/employeeAccounts');
+const meEvidenceRoutes = require('./routes/meEvidence');
+const evidenceRoutes = require('./routes/evidence');
+const evidencePhotoRoutes = require('./routes/evidencePhoto');
 const admsRoutes = require('./routes/adms');
 const { runDueScheduledSwaps } = require('./utils/positionSwap');
 const { runDueScheduledShiftChanges } = require('./utils/scheduledShiftChange');
 const { markAbsentForMissedScans, relabelScannedLeaveDays } = require('./utils/attendanceProcessor');
 const { deactivateEndedResignations } = require('./utils/employeeStatus');
 const { lockUnlockedAbsences } = require('./utils/absenceSeverity');
+const { migrateUserEmailIndex } = require('./utils/accounts');
 const { migrateRestDayHistory, applyDueRestDayChanges } = require('./utils/restDaySchedule');
 
 const app = express();
@@ -90,6 +95,10 @@ app.use('/api/payroll-comments', payrollCommentRoutes);
 app.use('/api/scheduled-shift-changes', scheduledShiftChangeRoutes);
 app.use('/api/shift-change-logs', shiftChangeLogRoutes);
 app.use('/api/device-users', deviceUserRoutes);
+app.use('/api/employee-accounts', employeeAccountRoutes);
+app.use('/api/me', meEvidenceRoutes);
+app.use('/api/evidence', evidenceRoutes);
+app.use('/api/evidence-photo', evidencePhotoRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -100,7 +109,9 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 if (process.env.CLIENT_DIST) {
   const clientDist = path.resolve(__dirname, '..', process.env.CLIENT_DIST);
   app.use(express.static(clientDist));
-  // Any other page path is the single-page app's own route.
+  // The employees' own app (/me) is a page of its own; any other page path is
+  // the HR app's own route.
+  app.get(/^\/me(\/.*)?$/, (req, res) => res.sendFile(path.join(clientDist, 'me', 'index.html')));
   app.get(/^\/(?!api\/|iclock\/).*/, (req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 }
 
@@ -125,6 +136,11 @@ connectDB()
     await migrateRestDayHistory()
       .then((n) => n && console.log(`[rest-days] dated ${n} earlier rest-day changes`))
       .catch((err) => console.error('[rest-days] dating earlier changes failed', err));
+    // Employees' own accounts have no email — the email index becomes unique
+    // only among accounts that have one. A no-op once done.
+    await migrateUserEmailIndex()
+      .then((changed) => changed && console.log('[accounts] email index now allows accounts without an email'))
+      .catch((err) => console.error('[accounts] updating the email index failed', err));
     // Absences recorded before tiers were stored on them get locked at the
     // tier the pages already showed — a no-op once that's done.
     lockUnlockedAbsences()
