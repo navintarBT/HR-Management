@@ -83,6 +83,7 @@ export const EmployeeScannerStatusSection: React.FC<{ employee?: Employee }> = (
               </Typography.Text>
               {d.enrolled ? <Tag color="green">ມີ</Tag> : <Tag>ບໍ່ພົບ</Tag>}
               {d.syncEnabled && <Tag color="blue">ຊິງ</Tag>}
+              {!d.allowed && <Tag color="orange">ບໍ່ມີສິດໃຊ້ເຄື່ອງນີ້</Tag>}
               {d.reportedAt && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   ດຶງລ່າສຸດ {dayjs(d.reportedAt).format('DD/MM/YYYY HH:mm')}

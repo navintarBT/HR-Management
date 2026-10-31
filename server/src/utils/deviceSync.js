@@ -4,11 +4,13 @@ const BiometricTemplate = require('../models/BiometricTemplate');
 const { queueCommandsForDevice } = require('./deviceCommands');
 const { buildUserInfoCommand, buildBiodataCommand, canReceiveTemplate, hashText } = require('./zkProtocol');
 const { APPROVED_DEVICE_FILTER } = require('./deviceApproval');
+const { allowsScanner } = require('./scannerAccess');
 
 // Keeps every sync-enabled terminal holding the same people: an employee added
 // here is pushed to them (so they only need to enroll a face/finger at the
 // scanner), and a fingerprint/face enrolled on any terminal is pushed to the
-// others. Only terminals with Device.syncEnabled take part.
+// others. Only terminals with Device.syncEnabled take part, and each person
+// only goes to the ones they're allowed on (utils/scannerAccess.js).
 
 // A template that changes again this soon after its last change, coming from
 // a different terminal, is almost certainly that terminal echoing back what
@@ -51,7 +53,7 @@ function commandsForEmployee(device, employee, templates) {
 
 async function pushEmployeeToDevices(employee, { devices } = {}) {
   if (!employee?.deviceUserId || employee.status !== 'active') return 0;
-  const targets = devices ?? (await syncTargets());
+  const targets = (devices ?? (await syncTargets())).filter((device) => allowsScanner(employee, device.serialNumber));
   if (!targets.length) return 0;
   const templates = await BiometricTemplate.find({ pin: employee.deviceUserId }).select('+tmp');
   let queued = 0;
@@ -65,7 +67,9 @@ async function pushEmployeeToDevices(employee, { devices } = {}) {
 // Everyone active, onto one terminal — used when a terminal is first switched
 // to sync (or replaced) so it starts out holding the same people as the rest.
 async function provisionDevice(device) {
-  const employees = await Employee.find({ status: 'active', deviceUserId: { $nin: [null, ''] } });
+  const employees = (await Employee.find({ status: 'active', deviceUserId: { $nin: [null, ''] } })).filter((e) =>
+    allowsScanner(e, device.serialNumber)
+  );
   const templates = await BiometricTemplate.find({ pin: { $in: employees.map((e) => e.deviceUserId) } }).select('+tmp');
   const templatesByPin = new Map();
   for (const t of templates) {
@@ -122,7 +126,7 @@ async function ingestTemplates(serialNumber, templates) {
     const entries = [];
     for (const { template } of toPass) {
       const employee = employeeByPin.get(template.pin);
-      if (!employee || !canReceiveTemplate(device.info, template)) continue;
+      if (!employee || !allowsScanner(employee, device.serialNumber) || !canReceiveTemplate(device.info, template)) continue;
       const context = { pin: template.pin, employeeId: employee._id };
       entries.push({ command: buildUserInfoCommand({ pin: template.pin, name: deviceNameFor(employee) }), ...context });
       entries.push({ command: buildBiodataCommand(template), ...context });

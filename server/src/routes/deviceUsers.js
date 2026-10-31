@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const Device = require('../models/Device');
 const DeviceCommand = require('../models/DeviceCommand');
 const DeviceEnrolledUser = require('../models/DeviceEnrolledUser');
@@ -8,7 +9,8 @@ const { authenticate, requireRole } = require('../middleware/auth');
 const { queueQueryUsersCommand, queueDeletePinCommand, queueQueryAttLogCommand } = require('../utils/deviceCommands');
 const { provisionDevice, pushEmployeeToDevices } = require('../utils/deviceSync');
 const { BIO_TYPE } = require('../utils/zkProtocol');
-const { isApprovedDevice } = require('../utils/deviceApproval');
+const { isApprovedDevice, APPROVED_DEVICE_FILTER } = require('../utils/deviceApproval');
+const { allowsScanner } = require('../utils/scannerAccess');
 
 const router = express.Router();
 
@@ -133,7 +135,7 @@ router.post('/devices/:serial/pull-attlog', authenticate, requireRole('admin', '
 // data itself), and how many commands for them are still waiting.
 router.get('/employee/:id', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const employee = await Employee.findById(req.params.id, 'deviceUserId status');
+    const employee = await Employee.findById(req.params.id, 'deviceUserId status allowedScanners');
     if (!employee) return res.status(404).json({ message: 'Not found' });
     const pin = employee.deviceUserId;
     if (!pin) return res.json({ pin: null, devices: [], templates: [], pendingCommands: 0 });
@@ -151,6 +153,7 @@ router.get('/employee/:id', authenticate, requireRole('admin', 'manager'), async
           serialNumber: d.serialNumber,
           deviceName: d.info?.deviceName,
           syncEnabled: !!d.syncEnabled,
+          allowed: allowsScanner(employee, d.serialNumber),
           enrolled: !!row,
           nameOnDevice: row?.name,
           reportedAt: row?.lastSeenAt,
@@ -177,6 +180,81 @@ router.post('/employee/:id/push', authenticate, requireRole('admin'), async (req
     if (!employee.deviceUserId) return res.status(400).json({ message: 'ພະນັກງານຄົນນີ້ຍັງບໍ່ມີລະຫັດເຄື່ອງສະແກນ' });
     if (employee.status !== 'active') return res.status(400).json({ message: 'ສົ່ງໄດ້ສະເພາະພະນັກງານທີ່ສະຖານະ "ໃຊ້ງານ"' });
     res.json({ queued: await pushEmployeeToDevices(employee) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ສິດໃຊ້ເຄື່ອງສະແກນ: sets which scanners a person may be on — null for every
+// scanner, or a list of serial numbers — and applies it to the sync-enabled
+// ones right away: put on the scanners just allowed (with their face/finger),
+// taken off the ones just removed. Others follow when their sync is switched on.
+async function setAllowedScanners(employee, nextList, synced) {
+  const before = { allowedScanners: employee.allowedScanners ? [...employee.allowedScanners] : undefined };
+  await Employee.updateOne({ _id: employee._id }, nextList ? { $set: { allowedScanners: nextList } } : { $unset: { allowedScanners: 1 } });
+  const after = await Employee.findById(employee._id);
+  const added = synced.filter((d) => !allowsScanner(before, d.serialNumber) && allowsScanner(after, d.serialNumber));
+  const removed = synced.filter((d) => allowsScanner(before, d.serialNumber) && !allowsScanner(after, d.serialNumber));
+  let queued = 0;
+  if (after.deviceUserId) {
+    if (added.length) queued += await pushEmployeeToDevices(after, { devices: added });
+    for (const device of removed) {
+      // eslint-disable-next-line no-await-in-loop
+      queued += (await queueDeletePinCommand(after.deviceUserId, device.serialNumber)).length;
+    }
+  }
+  return { added: added.map((d) => d.serialNumber), removed: removed.map((d) => d.serialNumber), queued };
+}
+
+const syncedScanners = () => Device.find({ syncEnabled: true, ...APPROVED_DEVICE_FILTER });
+
+router.put('/employee/:id/scanners', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const { allowedScanners } = req.body;
+    const isList = Array.isArray(allowedScanners) && allowedScanners.every((s) => typeof s === 'string');
+    if (allowedScanners !== null && !isList) return res.status(400).json({ message: 'allowedScanners ຕ້ອງເປັນ null ຫຼື ລາຍການ serial' });
+    const employee = await Employee.findById(req.params.id);
+    if (!employee) return res.status(404).json({ message: 'Not found' });
+
+    let nextList = null;
+    if (isList) {
+      const known = await Device.find({ serialNumber: { $in: allowedScanners } }, 'serialNumber');
+      nextList = [...new Set(known.map((d) => d.serialNumber))];
+    }
+    res.json({ allowedScanners: nextList, ...(await setAllowedScanners(employee, nextList, await syncedScanners())) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// One scanner for many people at once (the ສິດໃຊ້ເຄື່ອງສະແກນ page's column
+// menu): allowed adds it to each one's list; not allowed takes it off — someone
+// on "every scanner" moves to every approved scanner but this one.
+router.post('/devices/:serial/access', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const device = await findDevice(req.params.serial);
+    if (!device) return res.status(404).json({ message: 'Not found' });
+    const { employeeIds, allowed } = req.body;
+    if (!Array.isArray(employeeIds) || typeof allowed !== 'boolean') {
+      return res.status(400).json({ message: 'ຕ້ອງມີ employeeIds ແລະ allowed (true/false)' });
+    }
+    const [employees, approved, synced] = await Promise.all([
+      Employee.find({ _id: { $in: employeeIds.filter((id) => mongoose.isValidObjectId(id)) } }),
+      Device.find(APPROVED_DEVICE_FILTER, 'serialNumber'),
+      syncedScanners(),
+    ]);
+    const serial = device.serialNumber;
+    let changed = 0;
+    let queued = 0;
+    for (const employee of employees) {
+      if (allowsScanner(employee, serial) === allowed) continue;
+      const current = Array.isArray(employee.allowedScanners) ? [...employee.allowedScanners] : approved.map((d) => d.serialNumber);
+      const nextList = allowed ? [...new Set([...current, serial])] : current.filter((s) => s !== serial);
+      // eslint-disable-next-line no-await-in-loop
+      queued += (await setAllowedScanners(employee, nextList, synced)).queued;
+      changed += 1;
+    }
+    res.json({ changed, queued });
   } catch (err) {
     next(err);
   }

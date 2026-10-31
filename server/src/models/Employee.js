@@ -18,6 +18,10 @@ const employeeSchema = new mongoose.Schema(
     employmentType: { type: mongoose.Schema.Types.ObjectId, ref: 'EmploymentType' },
     status: { type: String, enum: ['draft', 'active', 'inactive', 'resigned', 'suspended'], default: 'active' },
     deviceUserId: { type: String, trim: true, unique: true, sparse: true },
+    // Which scanners this person may be on (utils/scannerAccess.js): unset is
+    // every scanner, a list is only those (ສິດໃຊ້ເຄື່ອງສະແກນ). No default, so
+    // "every scanner" stays distinguishable from an empty list.
+    allowedScanners: { type: [String], default: undefined },
     email: { type: String, trim: true, lowercase: true },
     phone: { type: String, trim: true },
     photoUrl: { type: String, trim: true },

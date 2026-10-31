@@ -103,6 +103,8 @@ export interface Employee {
   firstName?: string;
   lastName?: string;
   nameEn?: string;
+  // Scanners this person may be on (ສິດໃຊ້ເຄື່ອງສະແກນ) — unset means every scanner.
+  allowedScanners?: string[] | null;
   department?: Department | string;
   position?: Position | string;
   supervisor?: Employee | string;
@@ -290,6 +292,8 @@ export interface EmployeeScannerStatus {
     serialNumber: string;
     deviceName?: string;
     syncEnabled: boolean;
+    // ສິດໃຊ້ເຄື່ອງສະແກນ: whether this person may be on this scanner.
+    allowed: boolean;
     enrolled: boolean;
     nameOnDevice?: string;
     reportedAt?: string;

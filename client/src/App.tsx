@@ -33,6 +33,7 @@ import {
   PauseCircleOutlined,
   StopOutlined,
   ScanOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons';
 
 import { dataProvider } from './providers/dataProvider';
@@ -65,6 +66,7 @@ import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
 import { RestDayPlanPage } from './pages/schedule/restDayPlan';
 import { DeviceUsersPage } from './pages/schedule/deviceUsers';
 import { ScannerDevicesPage } from './pages/schedule/devices';
+import { ScannerAccessPage } from './pages/schedule/scannerAccess';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
@@ -182,6 +184,11 @@ function RootLayout() {
             name: 'scanner-devices',
             list: '/schedule/devices',
             meta: { label: 'ເຄື່ອງສະແກນ', icon: <ScanOutlined />, parent: 'schedule' },
+          },
+          {
+            name: 'scanner-access',
+            list: '/schedule/scanner-access',
+            meta: { label: 'ສິດໃຊ້ເຄື່ອງສະແກນ', icon: <SafetyCertificateOutlined />, parent: 'schedule' },
           },
           {
             name: 'device-users',
@@ -310,6 +317,7 @@ export const appRoutes = (
         <Route path="rest-day-plan" element={<RestDayPlanPage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
         <Route path="devices" element={<ScannerDevicesPage />} />
+        <Route path="scanner-access" element={<ScannerAccessPage />} />
         <Route path="device-users" element={<DeviceUsersPage />} />
       </Route>
 

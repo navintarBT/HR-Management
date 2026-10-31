@@ -8,6 +8,7 @@ const { englishNameFor } = require('./utils/laoRomanize');
 const { buildUserInfoCommand } = require('./utils/zkProtocol');
 const { queueCommandsForDevice } = require('./utils/deviceCommands');
 const { APPROVED_DEVICE_FILTER } = require('./utils/deviceApproval');
+const { allowsScanner } = require('./utils/scannerAccess');
 
 // Gives everyone without an English name (Employee.nameEn) one written from
 // their Lao name, karaoke style — the scanners can't display Lao. Looks before
@@ -23,7 +24,7 @@ async function main() {
 
   const [total, active] = await Promise.all([Employee.countDocuments(), Employee.countDocuments({ status: 'active' })]);
   const missing = await Employee.find({ $or: [{ nameEn: { $exists: false } }, { nameEn: null }, { nameEn: '' }] })
-    .select('employeeCode deviceUserId firstName lastName status')
+    .select('employeeCode deviceUserId firstName lastName status allowedScanners')
     .sort({ employeeCode: 1 })
     .lean();
   const rows = missing.map((e) => ({ employee: e, nameEn: englishNameFor(e.firstName, e.lastName) }));
@@ -66,14 +67,14 @@ async function main() {
   console.log('');
   console.log(`บันทึกชื่ออังกฤษแล้ว ${result.modifiedCount} คน`);
 
-  // Just the name on each scanner — the person's face/finger there stays as it is.
+  // Just the name on each scanner they're allowed on — the face/finger there stays as it is.
   const onScanners = named.filter(({ employee: e }) => e.status === 'active' && e.deviceUserId);
   const devices = await Device.find({ syncEnabled: true, ...APPROVED_DEVICE_FILTER });
   for (const device of devices) {
     // eslint-disable-next-line no-await-in-loop
     const queued = await queueCommandsForDevice(
       device,
-      onScanners.map(({ employee: e, nameEn }) => ({
+      onScanners.filter(({ employee: e }) => allowsScanner(e, device.serialNumber)).map(({ employee: e, nameEn }) => ({
         command: buildUserInfoCommand({ pin: e.deviceUserId, name: nameEn }),
         pin: e.deviceUserId,
         employeeId: e._id,
