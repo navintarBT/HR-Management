@@ -16,8 +16,10 @@ const { APPROVED_DEVICE_FILTER } = require('./deviceApproval');
 // can never bounce one template between themselves.
 const ECHO_WINDOW_MS = 5 * 60 * 1000;
 
+// Scanners only display Latin letters, so they get the English name; the Lao
+// name stays the fallback for someone not given one yet.
 function deviceNameFor(employee) {
-  return [employee.firstName, employee.lastName].filter(Boolean).join(' ') || employee.employeeCode || '';
+  return employee.nameEn || [employee.firstName, employee.lastName].filter(Boolean).join(' ') || employee.employeeCode || '';
 }
 
 function templateKey(t) {

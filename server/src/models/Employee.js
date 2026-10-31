@@ -5,6 +5,9 @@ const employeeSchema = new mongoose.Schema(
     employeeCode: { type: String, unique: true, sparse: true, trim: true },
     firstName: { type: String, trim: true },
     lastName: { type: String, trim: true },
+    // The name the scanners show (utils/deviceSync.js deviceNameFor) — they
+    // only display Latin letters, so the Lao name above can't go on them.
+    nameEn: { type: String, trim: true },
     department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
     position: { type: mongoose.Schema.Types.ObjectId, ref: 'Position' },
     supervisor: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },

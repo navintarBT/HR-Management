@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
-    "create-user": "node src/createUser.js"
+    "create-user": "node src/createUser.js",
+    "fill-english-names": "node src/fillEnglishNames.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

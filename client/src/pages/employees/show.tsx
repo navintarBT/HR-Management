@@ -64,6 +64,7 @@ export const EmployeeShow: React.FC = () => {
         <Descriptions.Item label="ລະຫັດເຄື່ອງສະແກນ">{record?.deviceUserId || '-'}</Descriptions.Item>
         <Descriptions.Item label="ຊື່">{record?.firstName || '-'}</Descriptions.Item>
         <Descriptions.Item label="ນາມສະກຸນ">{record?.lastName || '-'}</Descriptions.Item>
+        <Descriptions.Item label="ຊື່ພາສາອັງກິດ (ເຄື່ອງສະແກນ)">{record?.nameEn || '-'}</Descriptions.Item>
         <Descriptions.Item label="ເບີໂທ">{record?.phone || '-'}</Descriptions.Item>
       </Descriptions>
 

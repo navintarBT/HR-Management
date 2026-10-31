@@ -2,6 +2,8 @@ node_modules/
 dist/
 build/
 server/uploads/
+# Employee names listed by server/src/fillEnglishNames.js for checking
+english-names.csv
 .env
 .env.local
 *.log

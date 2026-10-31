@@ -13,6 +13,7 @@ const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule')
 const { resolveRestDayForEmployee } = require('../utils/restDayRules');
 const { queueDeleteUserCommand } = require('../utils/deviceCommands');
 const { pushEmployeeToDevices, removeStoredTemplates, moveStoredTemplates } = require('../utils/deviceSync');
+const { OPTIONAL_UNIQUE_KEYS } = require('../utils/employeeKeys');
 const { shiftFieldsDiffer, recordShiftChange } = require('../utils/shiftHistory');
 const { toDateKey, linkUnmatchedScans } = require('../utils/attendanceProcessor');
 
@@ -147,7 +148,7 @@ function buildListQuery(req) {
   }
 
   if (q) {
-    query.$or = ['firstName', 'lastName', 'employeeCode', 'email', 'phone'].map((field) => ({
+    query.$or = ['firstName', 'lastName', 'nameEn', 'employeeCode', 'email', 'phone'].map((field) => ({
       [field]: { $regex: q, $options: 'i' },
     }));
   }
@@ -175,6 +176,10 @@ function cleanEmployeePayload(body) {
   }
   if (!employeePayload.terminationDate) delete employeePayload.terminationDate;
   if (!employeePayload.supervisor) delete employeePayload.supervisor;
+  if (typeof employeePayload.nameEn === 'string') {
+    employeePayload.nameEn = employeePayload.nameEn.replace(/\s+/g, ' ').trim();
+    if (!employeePayload.nameEn) delete employeePayload.nameEn;
+  }
 
   return {
     employeePayload,
@@ -269,6 +274,23 @@ function validateEmployee(payload, partial = false) {
   }
 }
 
+// The English name goes on the scanners as is: Latin letters only, and no
+// longer than their name field (utils/zkProtocol.js DEVICE_NAME_MAX_BYTES).
+// Required wherever the form's name section is saved; staff from before the
+// field existed keep working until someone edits them.
+function validateNameEn(payload, required) {
+  if (required && payload.status !== 'draft' && !payload.nameEn) {
+    const err = new Error('ກະລຸນາປ້ອນຊື່ພາສາອັງກິດ (ສຳລັບເຄື່ອງສະແກນ)');
+    err.status = 400;
+    throw err;
+  }
+  if (payload.nameEn && !/^[A-Za-z0-9 .'-]{1,24}$/.test(payload.nameEn)) {
+    const err = new Error('ຊື່ພາສາອັງກິດໃຊ້ໄດ້ສະເພາະຕົວອັກສອນ A-Z, ຕົວເລກ ແລະ ຍະຫວ່າງ — ບໍ່ເກີນ 24 ຕົວ');
+    err.status = 400;
+    throw err;
+  }
+}
+
 router.post('/upload-photo', authenticate, requireRole('admin'), uploadPhoto, (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
   const filename = savePhotoBuffer(req.file);
@@ -323,6 +345,7 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
     // own numbering, say).
     if (!employeePayload.deviceUserId) employeePayload.deviceUserId = employeePayload.employeeCode;
     validateEmployee(employeePayload);
+    validateNameEn(employeePayload, true);
     await ensureUniqueEmployeeFields(employeePayload);
     await syncSubstituteShiftTime(null, employeePayload);
     const restFallbackError = validateEmployeeRestDayFallback(employeePayload.restrictedRestDays, employeePayload.restDayFallback);
@@ -389,6 +412,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       ...employeePayload,
     };
     validateEmployee(nextPayload);
+    validateNameEn(nextPayload, 'firstName' in employeePayload || 'lastName' in employeePayload);
     await ensureUniqueEmployeeFields(employeePayload, req.params.id);
     await syncSubstituteShiftTime(current, employeePayload);
 
@@ -423,7 +447,16 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       delete employeePayload.defaultRestDay;
     }
 
-    const item = await Employee.findByIdAndUpdate(req.params.id, employeePayload, {
+    // A cleared code comes off the record rather than being stored as null
+    // (utils/employeeKeys.js).
+    const update = { ...employeePayload };
+    for (const field of OPTIONAL_UNIQUE_KEYS) {
+      if (update[field] === null) {
+        delete update[field];
+        update.$unset = { ...update.$unset, [field]: 1 };
+      }
+    }
+    const item = await Employee.findByIdAndUpdate(req.params.id, update, {
       new: true,
       runValidators: true,
     }).populate(POPULATE);
@@ -462,7 +495,8 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     const oldPin = current.deviceUserId || null;
     const newPin = item.deviceUserId || null;
     const pinChanged = oldPin !== newPin;
-    const nameChanged = current.firstName !== item.firstName || current.lastName !== item.lastName;
+    const nameChanged =
+      current.firstName !== item.firstName || current.lastName !== item.lastName || current.nameEn !== item.nameEn;
     const becameActive = current.status !== 'active' && item.status === 'active';
     await runAfterSave('update employee on scanners', async () => {
       if (pinChanged && oldPin) {
@@ -519,7 +553,7 @@ router.post('/:id/clear-device', authenticate, requireRole('admin'), async (req,
     }
     const queued = await queueDeleteUserCommand(existing);
     await removeStoredTemplates(existing.deviceUserId);
-    await Employee.updateOne({ _id: existing._id }, { deviceUserId: null });
+    await Employee.updateOne({ _id: existing._id }, { $unset: { deviceUserId: 1 } });
     res.json({ id: existing._id, queuedCommands: queued.length });
   } catch (err) {
     next(err);

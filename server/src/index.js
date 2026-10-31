@@ -46,6 +46,7 @@ const { markAbsentForMissedScans, relabelScannedLeaveDays } = require('./utils/a
 const { deactivateEndedResignations } = require('./utils/employeeStatus');
 const { lockUnlockedAbsences } = require('./utils/absenceSeverity');
 const { migrateUserEmailIndex } = require('./utils/accounts');
+const { unsetNullEmployeeKeys } = require('./utils/employeeKeys');
 const { migrateRestDayHistory, applyDueRestDayChanges } = require('./utils/restDaySchedule');
 
 const app = express();
@@ -141,6 +142,11 @@ connectDB()
     await migrateUserEmailIndex()
       .then((changed) => changed && console.log('[accounts] email index now allows accounts without an email'))
       .catch((err) => console.error('[accounts] updating the email index failed', err));
+    // Scanner/employee codes cleared to null clash with each other on the
+    // unique index — removed instead. A no-op once done.
+    unsetNullEmployeeKeys()
+      .then((n) => n && console.log(`[employees] removed ${n} empty (null) employee/scanner codes`))
+      .catch((err) => console.error('[employees] removing null codes failed', err));
     // Absences recorded before tiers were stored on them get locked at the
     // tier the pages already showed — a no-op once that's done.
     lockUnlockedAbsences()

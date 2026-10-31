@@ -8,6 +8,7 @@ import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
 import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { NAME_EN_MAX, NAME_EN_RULES } from '../../utils/nameEn';
 import { useAbsenceSeverityPrompt } from '../../components/AbsenceSeverityPrompt';
 
 export const EmployeeEdit: React.FC = () => {
@@ -115,6 +116,7 @@ export const EmployeeEdit: React.FC = () => {
       deviceUserId: record.deviceUserId,
       firstName: record.firstName,
       lastName: record.lastName,
+      nameEn: record.nameEn,
       phone: record.phone,
       status: record.status,
       photoUrl: record.photoUrl,
@@ -203,6 +205,16 @@ export const EmployeeEdit: React.FC = () => {
           <Col xs={24} md={12}>
             <Form.Item label="ນາມສະກຸນ" name="lastName" rules={[{ required: true }]}>
               <Input />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item
+              label="ຊື່ພາສາອັງກິດ (ສະແດງໃນເຄື່ອງສະແກນ)"
+              name="nameEn"
+              rules={NAME_EN_RULES}
+              extra="ເຄື່ອງສະແກນສະແດງໄດ້ສະເພາະຕົວອັກສອນອັງກິດ — ປ່ຽນແລ້ວຈະສົ່ງໄປເຄື່ອງທີ່ເປີດຊິງເອງ"
+            >
+              <Input maxLength={NAME_EN_MAX} showCount />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>

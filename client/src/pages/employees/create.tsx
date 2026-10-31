@@ -7,6 +7,7 @@ import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
 import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { NAME_EN_MAX, NAME_EN_RULES } from '../../utils/nameEn';
 
 export const EmployeeCreate: React.FC = () => {
   const { formProps, saveButtonProps, form } = useForm({ resource: 'employees' });
@@ -123,6 +124,16 @@ export const EmployeeCreate: React.FC = () => {
           <Col xs={24} md={12}>
             <Form.Item label="ນາມສະກຸນ" name="lastName" rules={[{ required: true }]}>
               <Input />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item
+              label="ຊື່ພາສາອັງກິດ (ສະແດງໃນເຄື່ອງສະແກນ)"
+              name="nameEn"
+              rules={NAME_EN_RULES}
+              extra="ເຄື່ອງສະແກນສະແດງໄດ້ສະເພາະຕົວອັກສອນອັງກິດ — ຕົວຢ່າງ: Somphone K"
+            >
+              <Input maxLength={NAME_EN_MAX} showCount />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>

@@ -102,6 +102,7 @@ export interface Employee {
   employeeCode?: string;
   firstName?: string;
   lastName?: string;
+  nameEn?: string;
   department?: Department | string;
   position?: Position | string;
   supervisor?: Employee | string;
