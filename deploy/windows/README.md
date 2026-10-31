@@ -23,7 +23,7 @@
 | Node.js (LTS) | ແລ່ນລະບົບ | nodejs.org |
 | Git | ດຶງ ແລະ ອັບເດດໂຄດ | git-scm.com |
 | NSSM | ໃຫ້ລະບົບແລ່ນເປັນ service | nssm.cc — ວາງ `nssm.exe` ໄວ້ທີ່ `C:\nssm\nssm.exe` |
-| MongoDB Community Server | ຖານຂໍ້ມູນ | ເລືອກ "Install MongoD as a Service" |
+| MongoDB Community Server | ຖານຂໍ້ມູນ | ເລືອກ "Install MongoD as a Service". MongoDB 5.0 ຂຶ້ນໄປຕ້ອງການ CPU ທີ່ມີ AVX — ຖ້າ service MongoDB ບໍ່ຍອມເປີດ (ເຄື່ອງເກົ່າຫຼາຍ) ໃຫ້ໃຊ້ MongoDB 4.4 |
 | MongoDB Database Tools | ສຳຮອງ ແລະ ຍ້າຍຂໍ້ມູນ | ມີ `mongodump`, `mongorestore` |
 
 ຖ້າຈະໃຊ້ MongoDB Atlas ຕໍ່ (ບໍ່ມີຖານຂໍ້ມູນໃນເຄື່ອງ): ຂ້າມ MongoDB Community Server ແລະ ຂັ້ນຕອນທີ 4 — ແຕ່ server ຕ້ອງມີອິນເຕີເນັດຕະຫຼອດ.
@@ -44,6 +44,8 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 - port 80 ມີໂປຣແກຣມອື່ນໃຊ້ແລ້ວ: ເພີ່ມ `-Port 4000`
 
 ສະຄຣິບຈະສ້າງ `server\.env` (ພ້ອມ `JWT_SECRET` ໃໝ່), ຕິດຕັ້ງ service, ເປີດ Firewall ແລະ ບອກທີ່ຢູ່ສຳລັບເປີດໜ້າເວັບ ແລະ ຕັ້ງເຄື່ອງສະແກນ. ແລ່ນຊ້ຳໄດ້ — `.env` ທີ່ມີຢູ່ແລ້ວຈະບໍ່ຖືກແທນທີ່.
+
+ເມື່ອໃຊ້ຖານຂໍ້ມູນໃນເຄື່ອງ ສະຄຣິບຈະເພີ່ມ `EVIDENCE_DB_LIMIT_MB=0` ໃຫ້ (ຮູບຫຼັກຖານຈາກແອັບພະນັກງານບໍ່ມີເພດານ — ຄ່າເລີ່ມຕົ້ນ 450MB ມີໄວ້ສຳລັບ Atlas ຟຣີ) ແລະ ຕັ້ງໃຫ້ service ລໍຖ້າ MongoDB ເປີດກ່ອນ ຫຼັງ restart ເຄື່ອງ.
 
 ## 4. ຍ້າຍຂໍ້ມູນຈາກ Atlas
 
@@ -86,12 +88,17 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\migrate-from-atlas.ps1 `
 powershell -ExecutionPolicy Bypass -File deploy\windows\backup.ps1 -BackupDir D:\ROMEO-backup -Register
 ```
 
-ສຳຮອງຖານຂໍ້ມູນ ແລະ ຮູບພະນັກງານທຸກມື້ເວລາ 03:30, ເກັບໄວ້ 30 ມື້. **ຄວນສຳເນົາໂຟນເດີ backup ອອກນອກເຄື່ອງເປັນປະຈຳ** (USB ຫຼື Google Drive) — ຖ້າ disk ເສຍ ຂໍ້ມູນທີ່ຢູ່ໃນເຄື່ອງດຽວຈະຫາຍໝົດ.
+ສຳຮອງຖານຂໍ້ມູນ (ລວມຮູບຫຼັກຖານຈາກແອັບພະນັກງານ) ແລະ ຮູບພະນັກງານທຸກມື້ເວລາ 03:30, ເກັບໄວ້ 30 ມື້.
+
+- **disk ໃກ້ເຕັມ:** ລຶບ backup ເກົ່າສຸດອອກກ່ອນໃຫ້ເອງ (ເກັບອັນລ່າສຸດໄວ້ສະເໝີ) ເພື່ອໃຫ້ຍັງເຫຼືອບ່ອນວ່າງ `-MinFreeGB` (ຄ່າເລີ່ມຕົ້ນ 10 GB). ຖ້າລຶບແລ້ວຍັງບໍ່ພໍ ຈະຂ້າມມື້ນັ້ນ ແທນທີ່ຈະຂຽນຈົນ disk ເຕັມ (disk ເຕັມ MongoDB ຈະຢຸດເຮັດວຽກ)
+- ເກີດຫຍັງຂຶ້ນແຕ່ລະມື້ ເບິ່ງໄດ້ທີ່ `backup.log` ໃນໂຟນເດີ backup
+- backup ແຕ່ລະຊຸດໃຫຍ່ຂຶ້ນເລື້ອຍໆ ຕາມຮູບຫຼັກຖານ (ປະມານ 3 GB/ເດືອນ) — ໃຊ້ disk ທີ່ກວ້າງພໍ. ເຄື່ອງທີ່ບໍ່ມີ drive D: ໃຫ້ໃຊ້ `-BackupDir C:\ROMEO-backup`
+- **ຄວນສຳເນົາໂຟນເດີ backup ອອກນອກເຄື່ອງເປັນປະຈຳ** (USB ຫຼື Google Drive) — ຖ້າ disk ເສຍ ຂໍ້ມູນທີ່ຢູ່ໃນເຄື່ອງດຽວຈະຫາຍໝົດ
 
 ກູ້ຄືນ (ແທນທີ່ຂໍ້ມູນປັດຈຸບັນທັງໝົດ):
 
 ```powershell
-mongorestore --uri mongodb://127.0.0.1:27017 --drop D:\ROMEO-backup\<ວັນທີ>\db
+mongorestore --uri mongodb://127.0.0.1:27017 --gzip --drop D:\ROMEO-backup\<ວັນທີ>\db
 ```
 
 ແລ້ວສຳເນົາໂຟນເດີ `uploads` ຈາກ backup ຄືນໄປໄວ້ທີ່ `server\uploads`.
@@ -114,3 +121,5 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\update.ps1
 - Log: `server\logs\server.log`
 - Restart: `C:\nssm\nssm.exe restart ROMEO-HR` (ຫຼື Services → ROMEO HR server)
 - ເຄື່ອງສະແກນບໍ່ເຂົ້າ: ກວດ IP ແລະ port ໃນເຄື່ອງ, Firewall, ແລະ ວ່າ server ກັບເຄື່ອງສະແກນຢູ່ວົງ LAN ດຽວກັນ
+  - ທົດລອງຈາກມືຖືໃນວົງດຽວກັນ: ເປີດ `http://<IP server>/api/health` — ເປີດໄດ້ = server ຮັບການເຊື່ອມຕໍ່ແລ້ວ ບັນຫາຢູ່ທີ່ເຄື່ອງສະແກນ
+- ການສຳຮອງຂໍ້ມູນ: ເບິ່ງ `backup.log` ໃນໂຟນເດີ backup

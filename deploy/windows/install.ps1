@@ -70,6 +70,14 @@ if (-not (Test-Path $envFile)) {
 }
 $portLine = Get-Content $envFile | Where-Object { $_ -match '^PORT=' } | Select-Object -First 1
 if ($portLine) { $Port = [int]($portLine -replace '^PORT=', '') }
+$uriLine = Get-Content $envFile | Where-Object { $_ -match '^MONGO_URI=' } | Select-Object -First 1
+$localDb = [bool]($uriLine -match '^MONGO_URI=mongodb://(127\.0\.0\.1|localhost)[:/]')
+# The employees' photo evidence stops at 450MB by default — sized for MongoDB
+# Atlas's free tier. A database on this server's own disk has no such limit.
+if ($localDb -and -not (Get-Content $envFile | Where-Object { $_ -match '^EVIDENCE_DB_LIMIT_MB=' })) {
+  Add-Content -Path $envFile -Value 'EVIDENCE_DB_LIMIT_MB=0' -Encoding ASCII
+  Write-Host 'Photo evidence: no size limit (database on this server)'
+}
 
 Step "Windows service '$ServiceName'"
 New-Item -ItemType Directory -Force -Path (Join-Path $server 'logs') | Out-Null
@@ -86,7 +94,12 @@ if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
 & $Nssm set $ServiceName AppStdout $log | Out-Null
 & $Nssm set $ServiceName AppStderr $log | Out-Null
 & $Nssm set $ServiceName AppRotateFiles 1 | Out-Null
+& $Nssm set $ServiceName AppRotateOnline 1 | Out-Null
 & $Nssm set $ServiceName AppRotateBytes 10485760 | Out-Null
+# After a restart, wait for the local MongoDB instead of failing until it's up.
+if ($localDb -and (Get-Service -Name 'MongoDB' -ErrorAction SilentlyContinue)) {
+  & $Nssm set $ServiceName DependOnService MongoDB | Out-Null
+}
 if ((Get-Service -Name $ServiceName).Status -eq 'Running') { & $Nssm restart $ServiceName | Out-Null } else { & $Nssm start $ServiceName | Out-Null }
 
 Step "Firewall (inbound TCP $Port)"

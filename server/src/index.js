@@ -3,10 +3,11 @@
 // keys, shift start/end and lateness are built with new Date('…T08:00:00') /
 // setHours (utils/attendanceProcessor.js). On a host running UTC every one of
 // those lands 7 hours off — a 21:05 scan showed as 04:05 the next day. Pin
-// the process to Lao time before anything touches a Date.
-process.env.TZ = process.env.APP_TZ || 'Asia/Vientiane';
-
+// the process to Lao time before anything touches a Date (after .env, so its
+// APP_TZ counts).
 require('dotenv').config();
+
+process.env.TZ = process.env.APP_TZ || 'Asia/Vientiane';
 const path = require('path');
 const express = require('express');
 const cors = require('cors');
