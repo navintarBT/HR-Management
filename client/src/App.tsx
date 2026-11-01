@@ -64,9 +64,9 @@ import { HolidayListPage } from './pages/schedule/holidays';
 import { SubstituteRulePage, RestDayRulePage, NoAbsenceRulePage } from './pages/schedule/substituteRule';
 import { RestDayHistoryPage } from './pages/schedule/restDayHistory';
 import { RestDayPlanPage } from './pages/schedule/restDayPlan';
-import { DeviceUsersPage } from './pages/schedule/deviceUsers';
-import { ScannerDevicesPage } from './pages/schedule/devices';
-import { ScannerAccessPage } from './pages/schedule/scannerAccess';
+import { DeviceUsersPage } from './pages/scanners/deviceUsers';
+import { ScannerDevicesPage } from './pages/scanners/devices';
+import { ScannerAccessPage } from './pages/scanners/access';
 import { MedicineExpenseListPage } from './pages/medicine-expenses';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import type { Identity } from './types';
@@ -181,24 +181,29 @@ function RootLayout() {
             meta: { label: 'ປະຫວັດປ່ຽນວັນພັກ', icon: <HistoryOutlined />, parent: 'schedule' },
           },
           {
-            name: 'scanner-devices',
-            list: '/schedule/devices',
-            meta: { label: 'ເຄື່ອງສະແກນ', icon: <ScanOutlined />, parent: 'schedule' },
-          },
-          {
-            name: 'scanner-access',
-            list: '/schedule/scanner-access',
-            meta: { label: 'ສິດໃຊ້ເຄື່ອງສະແກນ', icon: <SafetyCertificateOutlined />, parent: 'schedule' },
-          },
-          {
-            name: 'device-users',
-            list: '/schedule/device-users',
-            meta: { label: 'ໄອດີທີ່ບໍ່ກົງກັບລະບົບ', icon: <IdcardOutlined />, parent: 'schedule' },
-          },
-          {
             name: 'holidays',
             list: '/schedule/holidays',
             meta: { label: 'ວັນພັກຮ້ານ', icon: <ShopOutlined />, parent: 'schedule' },
+          },
+          // Everything about the scanners themselves, in a group of its own.
+          {
+            name: 'scanner-settings',
+            meta: { label: 'ຕັ້ງຄ່າເຄື່ອງສະແກນ', icon: <ScanOutlined /> },
+          },
+          {
+            name: 'scanner-devices',
+            list: '/scanners/devices',
+            meta: { label: 'ເຄື່ອງສະແກນ', icon: <ScanOutlined />, parent: 'scanner-settings' },
+          },
+          {
+            name: 'scanner-access',
+            list: '/scanners/access',
+            meta: { label: 'ສິດໃຊ້ເຄື່ອງສະແກນ', icon: <SafetyCertificateOutlined />, parent: 'scanner-settings' },
+          },
+          {
+            name: 'device-users',
+            list: '/scanners/device-users',
+            meta: { label: 'ໄອດີທີ່ບໍ່ກົງກັບລະບົບ', icon: <IdcardOutlined />, parent: 'scanner-settings' },
           },
           {
             name: 'shift-settings',
@@ -316,13 +321,23 @@ export const appRoutes = (
         <Route path="no-absence-rule" element={<NoAbsenceRulePage />} />
         <Route path="rest-day-plan" element={<RestDayPlanPage />} />
         <Route path="rest-day-history" element={<RestDayHistoryPage />} />
+      </Route>
+
+      <Route path="/scanners">
+        <Route index element={<Navigate to="/scanners/devices" replace />} />
         <Route path="devices" element={<ScannerDevicesPage />} />
-        <Route path="scanner-access" element={<ScannerAccessPage />} />
+        <Route path="access" element={<ScannerAccessPage />} />
         <Route path="device-users" element={<DeviceUsersPage />} />
       </Route>
 
       <Route path="*" element={<ErrorComponent />} />
     </Route>
+
+    {/* The scanner pages' old addresses (bookmarks, notes), now under /scanners —
+        redirected before the layout mounts, so the menu opens the right group. */}
+    <Route path="/schedule/devices" element={<Navigate to="/scanners/devices" replace />} />
+    <Route path="/schedule/scanner-access" element={<Navigate to="/scanners/access" replace />} />
+    <Route path="/schedule/device-users" element={<Navigate to="/scanners/device-users" replace />} />
 
     <Route
       element={

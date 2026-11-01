@@ -81,7 +81,7 @@
 | อัปเดตระบบ | `git push` ไปที่ `main` → Render และ Vercel deploy เอง → ดูผลใน Render → Events / Logs |
 | ตรวจว่าระบบทำงาน | `https://backendhr.minnyone.com/api/health` → `{"ok":true,"mode":"online"}` |
 | ดู error | Render → service → **Logs** |
-| เครื่องสแกนยังส่งข้อมูลไหม | หน้าเว็บ **ຕັ້ງຄ່າແຜນວຽກ → ເຄື່ອງສະແກນ** |
+| เครื่องสแกนยังส่งข้อมูลไหม | หน้าเว็บ **ຕັ້ງຄ່າເຄື່ອງສະແກນ → ເຄື່ອງສະແກນ** |
 | แก้ข้อมูลพนักงาน | หน้าเว็บ HR ตามปกติ (เข้าได้จากทุกที่) |
 | สคริปต์กับข้อมูลจริง (เช่น ใส่ชื่ออังกฤษ) | รันจากคอมที่พัฒนา ซึ่ง `server\.env` ชี้ไปที่ Atlas: `cd server` → `npm run fill-english-names` |
 
