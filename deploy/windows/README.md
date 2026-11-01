@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 
 ສະຄຣິບຈະສ້າງ `server\.env` (ພ້ອມ `JWT_SECRET` ໃໝ່), ຕິດຕັ້ງ service, ເປີດ Firewall ແລະ ບອກທີ່ຢູ່ສຳລັບເປີດໜ້າເວັບ ແລະ ຕັ້ງເຄື່ອງສະແກນ. ແລ່ນຊ້ຳໄດ້ — `.env` ທີ່ມີຢູ່ແລ້ວຈະບໍ່ຖືກແທນທີ່.
 
-ເມື່ອໃຊ້ຖານຂໍ້ມູນໃນເຄື່ອງ ສະຄຣິບຈະເພີ່ມ `EVIDENCE_DB_LIMIT_MB=0` ໃຫ້ (ຮູບຫຼັກຖານຈາກແອັບພະນັກງານບໍ່ມີເພດານ — ຄ່າເລີ່ມຕົ້ນ 450MB ມີໄວ້ສຳລັບ Atlas ຟຣີ) ແລະ ຕັ້ງໃຫ້ service ລໍຖ້າ MongoDB ເປີດກ່ອນ ຫຼັງ restart ເຄື່ອງ.
+ສະຄຣິບຈະຕັ້ງ `DEPLOY_MODE=local` ໃນ `server\.env` (server ແຈກໜ້າເວັບເອງ ແລະ ຮູບຫຼັກຖານຈາກແອັບພະນັກງານບໍ່ມີເພດານ — ທຽບກັບໂໝດ online ໄດ້ທີ່ `deploy/README.md`) ແລະ ຕັ້ງໃຫ້ service ລໍຖ້າ MongoDB ເປີດກ່ອນ ຫຼັງ restart ເຄື່ອງ.
 
 ## 4. ຍ້າຍຂໍ້ມູນຈາກ Atlas
 

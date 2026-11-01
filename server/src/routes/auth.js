@@ -1,21 +1,16 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Employee = require('../models/Employee');
 const { authenticate } = require('../middleware/auth');
 const { samePhone, employeeAccountOf } = require('../utils/accounts');
 const { blockedFor, recordFailure, clearFailures } = require('../utils/loginLimiter');
+// `tv` in the token ties it to the password it was signed in with (see
+// middleware/auth.js) — changing or resetting the password ends it.
+const { signToken } = require('../utils/tokens');
 
 const router = express.Router();
 
-// `tv` ties the token to the password it was signed in with (see
-// middleware/auth.js) — changing or resetting the password ends it.
-function signToken(user) {
-  return jwt.sign({ sub: user._id.toString(), role: user.role, tv: user.tokenVersion ?? 0 }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  });
-}
 
 function serializeUser(user) {
   return {

@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
+const { EVIDENCE_LIMIT_DEFAULT_MB } = require('../config/deployMode');
 
 // Links to an evidence image carry their own short-lived signed token, so an
 // <img> can load it without the Authorization header a browser won't send
@@ -31,10 +32,11 @@ function isJpeg(buffer) {
 
 // Photos live in the same database as everything else — they must never
 // fill it: when it nears EVIDENCE_DB_LIMIT_MB, new photos are refused and
-// scans, leave and the rest of HR keep working. The default suits MongoDB
-// Atlas's free tier (512MB); set it to the real plan's size, or 0 for no
-// limit (a database on the shop's own server).
-const DEFAULT_LIMIT_MB = 450;
+// scans, leave and the rest of HR keep working. The default follows the
+// deploy mode (config/deployMode.js): MongoDB Atlas's free tier (512MB)
+// online, no limit on the shop's own server. Set it to the real plan's size
+// when Atlas is upgraded.
+const DEFAULT_LIMIT_MB = EVIDENCE_LIMIT_DEFAULT_MB;
 const STATS_TTL_MS = 5 * 60 * 1000;
 let cachedStats = null;
 

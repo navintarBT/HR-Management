@@ -15,8 +15,12 @@
 ```
 /server              Express API + Mongoose models
 /client              React + Vite + Refine + Ant Design
-/deploy/windows      ຕິດຕັ້ງທັງລະບົບໃນເຄື່ອງ server Windows ທີ່ຮ້ານ (ເບິ່ງ deploy/windows/README.md)
+/deploy              ການຕິດຕັ້ງ 2 ໂໝດ — ເບິ່ງ deploy/README.md
+/deploy/online       ໂໝດ online: Render + Vercel + MongoDB Atlas
+/deploy/windows      ໂໝດ local: ທັງລະບົບໃນເຄື່ອງ server Windows ທີ່ຮ້ານ
 ```
+
+ໂຄດຊຸດດຽວກັນໃຊ້ໄດ້ທັງ 2 ໂໝດ — ສະຫຼັບດ້ວຍຄ່າ `DEPLOY_MODE` (`online` / `local`) ໃນ `.env` ຂອງ server ບໍ່ຕ້ອງແກ້ໂຄດ
 
 ## ວິທີແລ່ນ
 

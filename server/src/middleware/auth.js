@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { signToken, shouldRenew } = require('../utils/tokens');
 
 // An employee's own account (the ROMEO app at /me) reaches only these: its
 // own sign-in endpoints and the app's own API. Everything else — every HR
@@ -25,6 +26,8 @@ async function authenticate(req, res, next) {
     // Signed in before the password last changed or was reset.
     if ((payload.tv ?? 0) !== (user.tokenVersion ?? 0)) return res.status(401).json({ message: 'Session ended — sign in again' });
     if (user.role === 'employee' && !employeeMayUse(req)) return res.status(403).json({ message: 'Forbidden' });
+    // Keeps an employee's app signed in for as long as they use it (utils/tokens.js).
+    if (shouldRenew(user, payload)) res.set('X-Renewed-Token', signToken(user));
     req.user = user;
     next();
   } catch (err) {

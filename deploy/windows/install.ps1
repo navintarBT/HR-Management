@@ -53,6 +53,7 @@ if (-not (Test-Path $envFile)) {
   $secret = [Convert]::ToBase64String($bytes)
   # ASCII on purpose: PowerShell 5's UTF-8 adds a byte-order mark that breaks the first key.
   @(
+    'DEPLOY_MODE=local',
     "MONGO_URI=$MongoUri",
     "JWT_SECRET=$secret",
     'JWT_EXPIRES_IN=7d',
@@ -62,6 +63,12 @@ if (-not (Test-Path $envFile)) {
   ) | Set-Content -Path $envFile -Encoding ASCII
   Write-Host "Created $envFile with a new JWT_SECRET"
 } else {
+  # The local mode (server/src/config/deployMode.js): this server hands out the
+  # web app itself and the photo evidence has no size limit.
+  if (-not (Get-Content $envFile | Where-Object { $_ -match '^DEPLOY_MODE=' })) {
+    Add-Content -Path $envFile -Value 'DEPLOY_MODE=local' -Encoding ASCII
+    Write-Host 'Added DEPLOY_MODE=local to the existing .env'
+  }
   if (-not (Get-Content $envFile | Where-Object { $_ -match '^CLIENT_DIST=' })) {
     Add-Content -Path $envFile -Value 'CLIENT_DIST=../client/dist' -Encoding ASCII
     Write-Host 'Added CLIENT_DIST to the existing .env'
@@ -72,12 +79,6 @@ $portLine = Get-Content $envFile | Where-Object { $_ -match '^PORT=' } | Select-
 if ($portLine) { $Port = [int]($portLine -replace '^PORT=', '') }
 $uriLine = Get-Content $envFile | Where-Object { $_ -match '^MONGO_URI=' } | Select-Object -First 1
 $localDb = [bool]($uriLine -match '^MONGO_URI=mongodb://(127\.0\.0\.1|localhost)[:/]')
-# The employees' photo evidence stops at 450MB by default — sized for MongoDB
-# Atlas's free tier. A database on this server's own disk has no such limit.
-if ($localDb -and -not (Get-Content $envFile | Where-Object { $_ -match '^EVIDENCE_DB_LIMIT_MB=' })) {
-  Add-Content -Path $envFile -Value 'EVIDENCE_DB_LIMIT_MB=0' -Encoding ASCII
-  Write-Host 'Photo evidence: no size limit (database on this server)'
-}
 
 Step "Windows service '$ServiceName'"
 New-Item -ItemType Directory -Force -Path (Join-Path $server 'logs') | Out-Null

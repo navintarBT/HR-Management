@@ -27,7 +27,13 @@ export function whenSignedOut(handler: () => void) {
 }
 
 meApi.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // Signed in until signing out: the server swaps in a fresh token while the
+    // app is in use (server: utils/tokens.js).
+    const renewed = res.headers?.['x-renewed-token'];
+    if (renewed && localStorage.getItem(TOKEN_KEY)) localStorage.setItem(TOKEN_KEY, renewed);
+    return res;
+  },
   (error) => {
     // Session ended (password reset by HR, account closed, token expired).
     if (error?.response?.status === 401 && localStorage.getItem(TOKEN_KEY)) {

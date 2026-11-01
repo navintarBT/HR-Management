@@ -9,6 +9,7 @@ require('dotenv').config();
 
 process.env.TZ = process.env.APP_TZ || 'Asia/Vientiane';
 const path = require('path');
+const { MODE: DEPLOY_MODE, clientDist } = require('./config/deployMode');
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -55,7 +56,7 @@ const app = express();
 app.use(
   cors({
     origin: process.env.CLIENT_ORIGIN || '*',
-    exposedHeaders: ['X-Total-Count'],
+    exposedHeaders: ['X-Total-Count', 'X-Renewed-Token'],
   })
 );
 app.use(morgan('dev'));
@@ -102,14 +103,13 @@ app.use('/api/me', meEvidenceRoutes);
 app.use('/api/evidence', evidenceRoutes);
 app.use('/api/evidence-photo', evidencePhotoRoutes);
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', (req, res) => res.json({ ok: true, mode: DEPLOY_MODE }));
 
 // Self-hosted install (deploy/windows): the same process also serves the built
 // web app, so the whole system is one address on the shop network. Off unless
-// CLIENT_DIST points at a client build (relative to the server folder, e.g.
-// ../client/dist) — the Render deploy never sets it.
-if (process.env.CLIENT_DIST) {
-  const clientDist = path.resolve(__dirname, '..', process.env.CLIENT_DIST);
+// The built web app, handed out by this server itself in the local mode
+// (config/deployMode.js) — online it's on Vercel.
+if (clientDist) {
   app.use(express.static(clientDist));
   // The employees' own app (/me) is a page of its own; any other page path is
   // the HR app's own route.
@@ -131,6 +131,7 @@ connectDB()
   .then(async () => {
     app.listen(PORT, () => console.log(`[server] listening on http://localhost:${PORT}`));
     console.log(`[server] timezone ${Intl.DateTimeFormat().resolvedOptions().timeZone}, now ${new Date().toString()}`);
+    console.log(`[server] mode ${DEPLOY_MODE}${clientDist ? ` — web app served from ${clientDist}` : ''}`);
     // Rest-day changes recorded before they carried their own effective date
     // get dated (the day each was made; someone's first setup applies from
     // the start) before anything reads them — the absence sweep below judges
