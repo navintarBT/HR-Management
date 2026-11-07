@@ -22,6 +22,10 @@ const employeeSchema = new mongoose.Schema(
     // every scanner, a list is only those (ສິດໃຊ້ເຄື່ອງສະແກນ). No default, so
     // "every scanner" stays distinguishable from an empty list.
     allowedScanners: { type: [String], default: undefined },
+    // An admin of the scanners they're on, who may open a scanner's own menu
+    // (ສິດໃຊ້ເຄື່ອງສະແກນ); unset is an ordinary user. Has nothing to do with what
+    // they may do on this website, which is User.role.
+    scannerAdmin: { type: Boolean },
     email: { type: String, trim: true, lowercase: true },
     phone: { type: String, trim: true },
     photoUrl: { type: String, trim: true },

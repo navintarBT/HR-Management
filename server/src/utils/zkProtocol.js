@@ -194,12 +194,15 @@ function truncateUtf8(text, maxBytes) {
 }
 
 // Same fields and defaults the terminal reports in its own USER lines
-// (Grp=1, TZ=0000000100000000, Verify=0 …). Pri=0 is an ordinary user —
-// admin rights are never pushed from here.
-function buildUserInfoCommand({ pin, name }) {
+// (Grp=1, TZ=0000000100000000, Verify=0 …). Pri=0 is an ordinary user, 14 the
+// terminal's super admin. Every command sets it, so each one must say what the
+// person really is, or sending someone's name would take their admin away.
+const PRI_USER = 0;
+const PRI_ADMIN = 14;
+function buildUserInfoCommand({ pin, name, admin }) {
   const safeName = truncateUtf8(sanitizeValue(name), DEVICE_NAME_MAX_BYTES);
   return (
-    `DATA UPDATE USERINFO PIN=${sanitizeValue(pin)}\tName=${safeName}\tPri=0\tPasswd=\tCard=\tGrp=1` +
+    `DATA UPDATE USERINFO PIN=${sanitizeValue(pin)}\tName=${safeName}\tPri=${admin ? PRI_ADMIN : PRI_USER}\tPasswd=\tCard=\tGrp=1` +
     '\tTZ=0000000100000000\tVerify=0\tViceCard=\tStartDatetime=0\tEndDatetime=0'
   );
 }

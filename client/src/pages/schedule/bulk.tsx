@@ -17,7 +17,7 @@ function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
 
-// Same resolution rule as ຕາຕະລາງວັນພັກ and the employee show page — a linked
+// Same resolution rule as ຕັ້ງຄ່າແຜນວຽກ and the employee show page — a linked
 // category is a live reference (editing the category later updates this too),
 // defaultShiftStart/End is the fallback for a manual time with no category.
 function resolveDefaultShiftTime(employee: Employee): { start: string; end: string } | null {
@@ -30,7 +30,7 @@ function resolveDefaultShiftTime(employee: Employee): { start: string; end: stri
 // This page manages employees in GROUPS — permanently moving them to a
 // different department/position/recurring shift, or scheduling a one-off
 // shift swap ahead of time. Day-to-day per-person adjustments (a single rest
-// day, a one-off time change) belong on ຕາຕະລາງວັນພັກ instead.
+// day, a one-off time change) belong on ຕັ້ງຄ່າແຜນວຽກ instead.
 export const BulkShiftEditPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>();

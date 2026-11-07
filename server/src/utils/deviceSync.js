@@ -1,6 +1,7 @@
 const Device = require('../models/Device');
 const Employee = require('../models/Employee');
 const BiometricTemplate = require('../models/BiometricTemplate');
+const DeviceCommand = require('../models/DeviceCommand');
 const { queueCommandsForDevice } = require('./deviceCommands');
 const { buildUserInfoCommand, buildBiodataCommand, canReceiveTemplate, hashText } = require('./zkProtocol');
 const { APPROVED_DEVICE_FILTER } = require('./deviceApproval');
@@ -24,6 +25,10 @@ function deviceNameFor(employee) {
   return employee.nameEn || [employee.firstName, employee.lastName].filter(Boolean).join(' ') || employee.employeeCode || '';
 }
 
+function userRecordCommand(employee) {
+  return buildUserInfoCommand({ pin: employee.deviceUserId, name: deviceNameFor(employee), admin: employee.scannerAdmin });
+}
+
 function templateKey(t) {
   return { pin: t.pin, type: t.type, no: t.no ?? 0, index: t.index ?? 0, majorVer: t.majorVer ?? null };
 }
@@ -44,7 +49,7 @@ async function syncTargets(excludeSerial) {
 function commandsForEmployee(device, employee, templates) {
   const pin = employee.deviceUserId;
   const context = { pin, employeeId: employee._id };
-  const entries = [{ command: buildUserInfoCommand({ pin, name: deviceNameFor(employee) }), ...context }];
+  const entries = [{ command: userRecordCommand(employee), ...context }];
   for (const template of templates) {
     if (canReceiveTemplate(device.info, template)) entries.push({ command: buildBiodataCommand(template), ...context });
   }
@@ -62,6 +67,24 @@ async function pushEmployeeToDevices(employee, { devices } = {}) {
     queued += (await queueCommandsForDevice(device, commandsForEmployee(device, employee, templates))).length;
   }
   return queued;
+}
+
+// Just the person's record, their name and role, on these terminals; the
+// face/finger there stays as it is. One still waiting is rewritten where it
+// stands: queued behind it, going back to an earlier role would be dropped as a
+// duplicate of a command still waiting, and the terminal would end on the wrong one.
+async function pushUserRecord(employee, devices) {
+  const command = userRecordCommand(employee);
+  const pin = employee.deviceUserId;
+  for (const device of devices) {
+    // eslint-disable-next-line no-await-in-loop
+    const waiting = await DeviceCommand.updateMany(
+      { serialNumber: device.serialNumber, deviceUserId: pin, status: 'pending', command: /^DATA UPDATE USERINFO / },
+      { command, commandHash: hashText(command) }
+    );
+    // eslint-disable-next-line no-await-in-loop
+    if (!waiting.matchedCount) await queueCommandsForDevice(device, [{ command, pin, employeeId: employee._id }]);
+  }
 }
 
 // Everyone active, onto one terminal — used when a terminal is first switched
@@ -128,7 +151,7 @@ async function ingestTemplates(serialNumber, templates) {
       const employee = employeeByPin.get(template.pin);
       if (!employee || !allowsScanner(employee, device.serialNumber) || !canReceiveTemplate(device.info, template)) continue;
       const context = { pin: template.pin, employeeId: employee._id };
-      entries.push({ command: buildUserInfoCommand({ pin: template.pin, name: deviceNameFor(employee) }), ...context });
+      entries.push({ command: userRecordCommand(employee), ...context });
       entries.push({ command: buildBiodataCommand(template), ...context });
     }
     // eslint-disable-next-line no-await-in-loop
@@ -163,6 +186,7 @@ async function moveStoredTemplates(oldPin, newPin) {
 module.exports = {
   deviceNameFor,
   pushEmployeeToDevices,
+  pushUserRecord,
   provisionDevice,
   ingestTemplates,
   removeStoredTemplates,

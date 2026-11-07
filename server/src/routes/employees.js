@@ -162,6 +162,8 @@ function buildListQuery(req) {
 
 function cleanEmployeePayload(body) {
   const { createUser, userEmail, userPassword, userRole, mustChangePassword, ...employeePayload } = body;
+  // Set only by routes/deviceUsers.js, which also sends it to the scanners.
+  delete employeePayload.scannerAdmin;
 
   for (const field of ['employeeCode', 'email', 'phone', 'deviceUserId', 'defaultShiftStart', 'defaultShiftEnd']) {
     if (employeePayload[field] === '') delete employeePayload[field];
@@ -430,7 +432,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     }
 
     // A recurring rest day isn't overwritten here — that re-read every earlier
-    // day as the new rest day. It's scheduled like ຕາຕະລາງວັນພັກ does
+    // day as the new rest day. It's scheduled like ຕັ້ງຄ່າແຜນວຽກ does
     // (routes/restDayHistory.js), from startOfChange's default day: the first
     // Monday of the next month (sooner for someone with no rest day yet).
     // 'defaultRestDay' in employeePayload (rather than a truthy check) also

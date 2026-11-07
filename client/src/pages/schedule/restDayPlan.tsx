@@ -1,45 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
-import { useCustom, useInvalidate, useList, useNotification, useWarnAboutChange } from '@refinedev/core';
-import { Table, Select, Input, Space, Typography, Tag, Button, Modal, Alert, Checkbox } from 'antd';
+import { useList, useNotification, useWarnAboutChange } from '@refinedev/core';
+import { Table, Select, Input, Space, Typography, Tag, Button, Checkbox } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { Department, Employee, Position, RestDayPlanPreview, RestDayPlanResult, RestDayPlanRow, RestDayScheduleRow } from '../../types';
-import { API_URL, axiosInstance } from '../../providers/axios';
+import type { Department, Employee, Position } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
-import {
-  effectiveRestrictedRestDays,
-  firstMondayOfMonthAfter,
-  groupRestRowsByEmployee,
-  mondayOptionLabel,
-  restDaysOn,
-  upcomingMondays,
-} from '../../utils/restDays';
+import { effectiveRestrictedRestDays, firstMondayOfMonthAfter, mondayOptionLabel, upcomingMondays } from '../../utils/restDays';
+import { restDaysLabel, sameDays, useRestDayPlanReview, useRestDayPlanSchedule } from './restDayPlanShared';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
 }
-
-const sameDays = (a: number[], b: number[]) => a.length === b.length && a.every((d) => b.includes(d));
-
-// Monday first, the way the week is counted for rest days.
-const restDaysLabel = (days: number[] | undefined) =>
-  days?.length
-    ? [...days]
-        .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
-        .map((d) => WEEKDAY_OPTIONS[d].label)
-        .join(', ')
-    : 'ບໍ່ມີ';
-
-const ACTION_TAG: Record<Exclude<RestDayPlanRow['action'], 'none'>, { color: string; label: string }> = {
-  change: { color: 'blue', label: 'ປ່ຽນ' },
-  replace: { color: 'blue', label: 'ແທນແຜນເດີມ' },
-  cancel: { color: 'orange', label: 'ຍົກເລີກແຜນເດີມ' },
-};
-
-const personLabel = (row: RestDayPlanRow) => `${row.employeeCode ?? ''} ${row.name ?? ''}`.trim();
 
 // ວາງແຜນວັນພັກ — HR sets the coming month's recurring rest days for many
 // people at once, all starting on one Monday (by default the first Monday of
@@ -51,7 +25,6 @@ const personLabel = (row: RestDayPlanRow) => `${row.employeeCode ?? ''} ${row.na
 // keep the rest day they had.
 export const RestDayPlanPage: React.FC = () => {
   const [start, setStart] = useState(() => firstMondayOfMonthAfter(dayjs()).format('YYYY-MM-DD'));
-  const dayBefore = dayjs(start).subtract(1, 'day').format('YYYY-MM-DD');
   // employee id → the days picked here.
   const [edits, setEdits] = useState<Record<string, number[]>>({});
   const [search, setSearch] = useState('');
@@ -60,11 +33,7 @@ export const RestDayPlanPage: React.FC = () => {
   const [onlyChanged, setOnlyChanged] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkDays, setBulkDays] = useState<number[]>([]);
-  const [review, setReview] = useState<RestDayPlanPreview | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [saving, setSaving] = useState(false);
   const { open: notify } = useNotification();
-  const invalidate = useInvalidate();
 
   const { selectProps: departmentSelect } = useSelect<Department>({
     resource: 'departments',
@@ -94,25 +63,8 @@ export const RestDayPlanPage: React.FC = () => {
   });
   const employees = useMemo(() => employeesData?.data ?? [], [employeesData?.data]);
 
-  // Just the changes around the Monday: what applies the day before it, and
-  // any already waiting on it (utils/restDays.ts).
-  const {
-    data: scheduleData,
-    isLoading: scheduleLoading,
-    refetch: refetchSchedule,
-  } = useCustom<RestDayScheduleRow[]>({
-    url: `${API_URL}/rest-day-history/schedule`,
-    method: 'get',
-    config: { query: { from: dayBefore, to: start } },
-  });
-  const rowsByEmployee = useMemo(() => groupRestRowsByEmployee(scheduleData?.data), [scheduleData?.data]);
-  const beforeOf = (emp: Employee) => restDaysOn(rowsByEmployee.get(emp._id), emp.defaultRestDay, dayBefore);
-  const waitingOf = (emp: Employee) =>
-    (rowsByEmployee.get(emp._id) ?? [])
-      .filter((r) => r.effectiveDate === start)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .pop();
-  const plannedOf = (emp: Employee) => waitingOf(emp)?.newRestDay ?? beforeOf(emp);
+  // Just the changes around the Monday.
+  const { rowsByEmployee, isLoading: scheduleLoading, refetch: refetchSchedule, beforeOf, waitingOf, plannedOf } = useRestDayPlanSchedule(start);
   const pickedOf = (emp: Employee) => edits[emp._id] ?? plannedOf(emp);
   const isChanged = (emp: Employee) => !!edits[emp._id] && !sameDays(edits[emp._id], plannedOf(emp));
 
@@ -167,63 +119,18 @@ export const RestDayPlanPage: React.FC = () => {
 
   const changes = changedEmployees.map((emp) => ({ employee: emp._id, restDays: edits[emp._id] }));
 
-  const checkPlan = async () => {
-    setChecking(true);
-    try {
-      const { data } = await axiosInstance.post<RestDayPlanPreview>(`${API_URL}/rest-day-history/bulk/preview`, {
-        effectiveDate: start,
-        changes,
-      });
-      setReview(data);
-    } catch (err: any) {
-      notify?.({ type: 'error', message: err?.response?.data?.message || 'ກວດແຜນວັນພັກບໍ່ສຳເລັດ' });
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  const savePlan = async () => {
-    setSaving(true);
-    try {
-      const { data } = await axiosInstance.post<RestDayPlanResult>(`${API_URL}/rest-day-history/bulk`, { effectiveDate: start, changes });
-      notify?.({
-        type: 'success',
-        message: [
-          `ບັນທຶກແຜນວັນພັກແລ້ວ — ມີຜົນແຕ່ ${dayjs(data.effectiveDate).format('DD/MM/YYYY')}`,
-          `ປ່ຽນ ${data.changed} ຄົນ`,
-          data.cancelled ? `ຍົກເລີກແຜນເດີມ ${data.cancelled} ຄົນ` : '',
-          data.leavesRecalculated ? `ຄິດໃບລາໃໝ່ ${data.leavesRecalculated} ໃບ` : '',
-        ]
-          .filter(Boolean)
-          .join(' · '),
-      });
-      setReview(null);
-      setEdits({});
-      setSelectedIds([]);
-      setBulkDays([]);
-      refetchSchedule();
-      invalidate({ resource: 'rest-day-history', invalidates: ['list'] });
-      invalidate({ resource: 'leaves', invalidates: ['list'] });
-    } catch (err: any) {
-      const errors = err?.response?.data?.errors as RestDayPlanRow[] | undefined;
-      if (errors?.length) setReview((r) => (r ? { ...r, errors } : r));
-      notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
-    } finally {
-      setSaving(false);
-    }
-  };
+  const { checkPlan, checking, reviewModal } = useRestDayPlanReview(start, () => {
+    setEdits({});
+    setSelectedIds([]);
+    setBulkDays([]);
+    refetchSchedule();
+  });
 
   const mondayOptions = useMemo(
     () => upcomingMondays(dayjs()).map((monday) => ({ value: monday.format('YYYY-MM-DD'), label: mondayOptionLabel(monday) })),
     []
   );
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
-
-  const reviewRows = review?.rows.filter((r) => r.action !== 'none') ?? [];
-  const redirected = reviewRows.filter((r) => r.redirected);
-  const withConflicts = reviewRows.filter((r) => r.conflicts?.length);
-  const leavesToRecalculate = reviewRows.reduce((sum, r) => sum + (r.leavesAffected ?? 0), 0);
-  const cancelCount = reviewRows.filter((r) => r.action === 'cancel').length;
 
   return (
     <List
@@ -234,7 +141,7 @@ export const RestDayPlanPage: React.FC = () => {
           <Button disabled={!changedEmployees.length} onClick={() => setEdits({})}>
             ລ້າງການແກ້ໄຂ
           </Button>
-          <Button type="primary" disabled={!changedEmployees.length} loading={checking} onClick={checkPlan}>
+          <Button type="primary" disabled={!changedEmployees.length} loading={checking} onClick={() => checkPlan(changes)}>
             ກວດ ແລະ ບັນທຶກ ({changedEmployees.length} ຄົນ)
           </Button>
         </Space>
@@ -357,79 +264,7 @@ export const RestDayPlanPage: React.FC = () => {
         />
       </Table>
 
-      <Modal
-        title={`ກວດແຜນວັນພັກ — ມີຜົນແຕ່ ${dayjs(start).format('dddd DD/MM/YYYY')}`}
-        open={!!review}
-        width={760}
-        onCancel={() => setReview(null)}
-        onOk={savePlan}
-        confirmLoading={saving}
-        okText="ບັນທຶກ"
-        cancelText="ກັບໄປແກ້"
-        okButtonProps={{ disabled: !!review?.errors.length || !reviewRows.length }}
-        destroyOnClose
-      >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Typography.Text>
-            {[
-              `ຈະປ່ຽນ ${reviewRows.length - cancelCount} ຄົນ`,
-              cancelCount ? `ຍົກເລີກແຜນເດີມ ${cancelCount} ຄົນ` : '',
-              leavesToRecalculate ? `ໃບລາຈະຖືກຄິດມື້ລາໃໝ່ ${leavesToRecalculate} ໃບ` : '',
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Typography.Text>
-          {!!review?.errors.length && (
-            <Alert
-              type="error"
-              showIcon
-              message="ບັນທຶກບໍ່ໄດ້ — ແກ້ແຖວເຫຼົ່ານີ້ກ່ອນ (ຍັງບໍ່ໄດ້ບັນທຶກຫຍັງ)"
-              description={review.errors.map((r) => (
-                <div key={r.employee}>
-                  {personLabel(r)}: {r.error}
-                </div>
-              ))}
-            />
-          )}
-          {redirected.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              message="ຕຳແໜ່ງຫ້າມພັກບາງວັນທີ່ເລືອກ — ຈະບັນທຶກເປັນວັນສຳຮອງຂອງຕຳແໜ່ງ"
-              description={redirected.map((r) => (
-                <div key={r.employee}>
-                  {personLabel(r)}: {restDaysLabel(r.restDays)}
-                </div>
-              ))}
-            />
-          )}
-          {withConflicts.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              message="ມີຄິວເຮັດວຽກຈັດໄວ້ໃນວັນພັກໃໝ່ — ຈະບໍ່ໄດ້ພັກມື້ນັ້ນຈົນກວ່າຈະລຶບຄິວອອກ"
-              description={withConflicts.map((r) => (
-                <div key={r.employee}>
-                  {personLabel(r)}: {r.conflicts!.map((c) => dayjs(c.date).format('DD/MM')).join(', ')}
-                </div>
-              ))}
-            />
-          )}
-          <Table dataSource={reviewRows} rowKey="employee" size="small" pagination={{ pageSize: 10, hideOnSinglePage: true }}>
-            <Table.Column title="ລະຫັດ" dataIndex="employeeCode" width={80} />
-            <Table.Column title="ຊື່" dataIndex="name" />
-            <Table.Column title="ກ່ອນ" width={120} render={(_, r: RestDayPlanRow) => restDaysLabel(r.before)} />
-            <Table.Column title="ແຕ່ວັນຈັນນັ້ນ" width={120} render={(_, r: RestDayPlanRow) => <Typography.Text strong>{restDaysLabel(r.restDays)}</Typography.Text>} />
-            <Table.Column
-              title=""
-              width={130}
-              render={(_, r: RestDayPlanRow) =>
-                r.action !== 'none' ? <Tag color={ACTION_TAG[r.action].color}>{ACTION_TAG[r.action].label}</Tag> : null
-              }
-            />
-          </Table>
-        </Space>
-      </Modal>
+      {reviewModal}
     </List>
   );
 };

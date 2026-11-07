@@ -24,7 +24,7 @@ async function main() {
 
   const [total, active] = await Promise.all([Employee.countDocuments(), Employee.countDocuments({ status: 'active' })]);
   const missing = await Employee.find({ $or: [{ nameEn: { $exists: false } }, { nameEn: null }, { nameEn: '' }] })
-    .select('employeeCode deviceUserId firstName lastName status allowedScanners')
+    .select('employeeCode deviceUserId firstName lastName status allowedScanners scannerAdmin')
     .sort({ employeeCode: 1 })
     .lean();
   const rows = missing.map((e) => ({ employee: e, nameEn: englishNameFor(e.firstName, e.lastName) }));
@@ -75,7 +75,7 @@ async function main() {
     const queued = await queueCommandsForDevice(
       device,
       onScanners.filter(({ employee: e }) => allowsScanner(e, device.serialNumber)).map(({ employee: e, nameEn }) => ({
-        command: buildUserInfoCommand({ pin: e.deviceUserId, name: nameEn }),
+        command: buildUserInfoCommand({ pin: e.deviceUserId, name: nameEn, admin: e.scannerAdmin }),
         pin: e.deviceUserId,
         employeeId: e._id,
       }))

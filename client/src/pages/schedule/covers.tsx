@@ -1,8 +1,8 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useDeferredValue, useMemo, useState, type CSSProperties } from 'react';
 import { useSelect } from '@refinedev/antd';
 import { useList, useCustom, useCreate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker, Segmented, Grid } from 'antd';
-import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker, Segmented, Grid, Tooltip, Alert } from 'antd';
+import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined, LinkOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Department, Employee, Leave, Position, RestDayScheduleRow, Shift, ShiftChangeLogEntry } from '../../types';
 import { API_URL } from '../../providers/axios';
@@ -113,7 +113,7 @@ type CoverView = 'month' | 'week';
 // Monday first, the way the week is counted everywhere else.
 const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
-// Someone's own day, worked out the way ຕາຕະລາງວັນພັກ does it (monthly.tsx
+// Someone's own day, worked out the way ຕັ້ງຄ່າແຜນວຽກ does it (monthly.tsx
 // computeCell): approved leave first, then a one-off day off / blank swap day /
 // queued shift, then the recurring rest day in force, then the regular shift.
 // The covers they do for others aren't part of it — those show as cards.
@@ -154,6 +154,8 @@ const OFF_STYLE: Record<'rest' | 'leave', CSSProperties> = {
   rest: { background: 'rgba(128, 128, 128, 0.12)' },
   leave: { background: '#fffbe6' },
 };
+// A normal working day someone else is covering.
+const COVERED_WORK_STYLE: CSSProperties = { background: 'rgba(22, 119, 255, 0.08)' };
 
 function groupRepeats(shifts: Shift[], keyOf: (s: Shift) => string): WeekdayCover[] {
   const list: WeekdayCover[] = [];
@@ -166,13 +168,22 @@ function groupRepeats(shifts: Shift[], keyOf: (s: Shift) => string): WeekdayCove
   return list.sort((a, b) => (a.shift.startTime ?? '').localeCompare(b.shift.startTime ?? ''));
 }
 
+// On every ordinary cell of the month, thousands with everyone showing, so a
+// plain button: antd's Button and Tooltip there made drawing the table far slower.
+const AddCoverButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
+  <button type="button" className="covers-add-work" aria-label="ຫາຄົນແທນ" title="ຫາຄົນແທນ" onClick={onClick} />
+);
+
 // ການເຮັດແທນ — an overview of a department or position for the month: everyone
 // in it, one row each, with the days they're off (rest or leave) and who
-// covers them, and the covers they do for others. A day off can be handed to
-// someone from right there (ຫາຄົນແທນ) — every employee is offered, each with
-// what their own day looks like, and HR picks. The weekly roster shows the
-// same month by weekday with no dates, to read only. Covers are also created
-// from ຕາຕະລາງວັນພັກ (click a day → ໄປເຮັດແທນຄົນອື່ນ) or with ມອບໝາຍການເຮັດແທນ.
+// covers them, and the covers they do for others. Any day off or normal working
+// day can be handed to someone from right there (ຫາຄົນແທນ) — every employee is
+// offered, each with what their own day looks like, and HR picks. Someone who
+// goes to cover leaves their own shift for that day and scans by the cover's
+// time (attendanceProcessor's resolveExpectedShift), so their shift may need
+// covering in turn: C covers B covers A. The weekly roster shows the same month
+// by weekday with no dates, to read only. Covers are also created from
+// ຕັ້ງຄ່າແຜນວຽກ (click a day → ໄປເຮັດແທນຄົນອື່ນ) or with ມອບໝາຍການເຮັດແທນ.
 export const ScheduleCoversGrid: React.FC = () => {
   const [view, setView] = useState<CoverView>('month');
   const [monthStart, setMonthStart] = useState(() => dayjs().startOf('month'));
@@ -230,7 +241,7 @@ export const ScheduleCoversGrid: React.FC = () => {
   });
   const allEmployees = useMemo(() => allEmployeesData?.data ?? [], [allEmployeesData?.data]);
 
-  // What each day is for each person — the same sources ຕາຕະລາງວັນພັກ reads.
+  // What each day is for each person — the same sources ຕັ້ງຄ່າແຜນວຽກ reads.
   const { data: restScheduleData } = useCustom<RestDayScheduleRow[]>({
     url: `${API_URL}/rest-day-history/schedule`,
     method: 'get',
@@ -312,6 +323,14 @@ export const ScheduleCoversGrid: React.FC = () => {
     return time ? { kind: 'work', ...time } : { kind: 'unset' };
   };
 
+  // What a cover of this person takes on: their own shift that day — a one-off
+  // time if they have one, never a cover they're doing themselves (those aren't
+  // in statusOn) — or on a day off, the regular shift they'd have worked.
+  const ownTimeOn = (emp: Employee, dateKey: string) => {
+    const status = statusOn(emp, dateKey);
+    return status.kind === 'work' ? { start: status.start, end: status.end } : regularTimeOn(emp, dateKey);
+  };
+
   // Same choices as ສະຫຼຸບເງິນເດືອນ's ກອງຕາມບຸກຄົນ — narrowed by the other two.
   const personOptions = useMemo(
     () =>
@@ -352,6 +371,40 @@ export const ScheduleCoversGrid: React.FC = () => {
   }, [rows, rangeDays, shiftIndex, leaveRanges, restRowsByEmployee, shiftLogsByEmployee]);
   const infoOn = (emp: Employee, dateKey: string) =>
     dayInfo.get(`${emp._id}_${dateKey}`) ?? { status: { kind: 'unset' } as DayStatus, covering: [], coveredBy: [] };
+
+  // The line of covers someone's day is part of, first to last: C covers B
+  // covers A gives [C, B, A]. Only worth spelling out from two covers on — one
+  // cover reads plainly from the lines in the cell. Follows the first cover each
+  // way when someone has several, and stops at anyone already in the line.
+  const coverChain = (emp: Employee, dateKey: string): Employee[] | null => {
+    const seen = new Set([emp._id]);
+    const walk = (index: Map<string, Shift[]>, personOf: (s: Shift) => Employee | string | null | undefined) => {
+      const line: Employee[] = [];
+      let cursor = emp._id;
+      for (;;) {
+        const shift = index.get(`${cursor}_${dateKey}`)?.[0];
+        const next = shift ? personOf(shift) : null;
+        if (!next || typeof next !== 'object' || seen.has(next._id)) return line;
+        seen.add(next._id);
+        line.push(next);
+        cursor = next._id;
+      }
+    };
+    const before = walk(shiftIndex.coveredBy, (s) => s.employee as Employee).reverse();
+    const after = walk(shiftIndex.covering, (s) => s.coveringFor as Employee);
+    const chain = [...before, emp, ...after];
+    return chain.length >= 3 ? chain : null;
+  };
+  // Two people covering each other that day.
+  const swappedWith = (emp: Employee, dateKey: string): Employee | null => {
+    const coveredBy = shiftIndex.coveredBy.get(`${emp._id}_${dateKey}`) ?? [];
+    const covering = shiftIndex.covering.get(`${emp._id}_${dateKey}`) ?? [];
+    for (const s of coveredBy) {
+      const other = s.employee;
+      if (other && typeof other === 'object' && covering.some((c) => idOf(c.coveringFor as Employee) === other._id)) return other;
+    }
+    return null;
+  };
 
   // The weekly roster — each person's rest day as it stands today, and this
   // month's covers by weekday.
@@ -446,9 +499,33 @@ export const ScheduleCoversGrid: React.FC = () => {
   // the shift the person off would have worked.
   const [assignFor, setAssignFor] = useState<{ employee: Employee; dateKey: string } | null>(null);
   const [assignForm] = Form.useForm();
+  const assignCovererId = Form.useWatch('coverer', assignForm);
+  // The picked coverer's own shift that day, which they'd be leaving.
+  const assignCovererShift = (() => {
+    if (!assignFor || !assignCovererId) return null;
+    const coverer = allEmployees.find((e) => e._id === assignCovererId);
+    const status = coverer ? statusOn(coverer, assignFor.dateKey) : null;
+    return status?.kind === 'work' ? status : null;
+  })();
+  const [modalApi, modalContext] = Modal.useModal();
+  // Whoever just went to cover has left their own shift empty — offered the
+  // next link of the chain straight away, unless someone's already on it.
+  const offerNextCover = (covererId: string, dateKey: string) => {
+    const coverer = allEmployees.find((e) => e._id === covererId);
+    if (!coverer) return;
+    const status = statusOn(coverer, dateKey);
+    if (status.kind !== 'work' || shiftIndex.coveredBy.get(`${covererId}_${dateKey}`)?.length) return;
+    modalApi.confirm({
+      title: `ກະ ${status.start}-${status.end} ຂອງ ${codeOf(coverer)} ${fullName(coverer)} ຫວ່າງແລ້ວ`,
+      content: 'ຄົນນີ້ໄປເຮັດແທນ ກະຂອງຕົນເອງໃນມື້ນີ້ຈຶ່ງບໍ່ມີຄົນເຮັດ — ຕ້ອງການຫາຄົນແທນກະນີ້ຕໍ່ບໍ?',
+      okText: 'ຫາຄົນແທນຕໍ່',
+      cancelText: 'ບໍ່ຕ້ອງ',
+      onOk: () => setAssignFor({ employee: coverer, dateKey }),
+    });
+  };
   const assignTime = (() => {
     if (!assignFor) return undefined;
-    const time = regularTimeOn(assignFor.employee, assignFor.dateKey);
+    const time = ownTimeOn(assignFor.employee, assignFor.dateKey);
     return time ? [dayjs(`${assignFor.dateKey}T${time.start}`), dayjs(`${assignFor.dateKey}T${time.end}`)] : undefined;
   })();
   const assignOptions = useMemo(() => {
@@ -494,12 +571,16 @@ export const ScheduleCoversGrid: React.FC = () => {
         startTime: (values.time as [Dayjs, Dayjs])[0].format('HH:mm'),
         endTime: (values.time as [Dayjs, Dayjs])[1].format('HH:mm'),
       },
-      () => setAssignFor(null)
+      () => {
+        const { dateKey } = assignFor;
+        setAssignFor(null);
+        offerNextCover(values.coverer, dateKey);
+      }
     );
   };
 
   // ມອບໝາຍການເຮັດແທນ — the same, with the coverer, date and covered person all
-  // picked by hand; mirrors ຕາຕະລາງວັນພັກ's own "ໄປເຮັດແທນຄົນອື່ນ" flow
+  // picked by hand; mirrors ຕັ້ງຄ່າແຜນວຽກ's own "ໄປເຮັດແທນຄົນອື່ນ" flow
   // (monthly.tsx's handleCover).
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm] = Form.useForm();
@@ -538,7 +619,7 @@ export const ScheduleCoversGrid: React.FC = () => {
     const date = createForm.getFieldValue('date') as Dayjs | undefined;
     if (!date) return;
     const covered = allEmployees.find((e) => e._id === coveredId);
-    const time = covered ? regularTimeOn(covered, date.format('YYYY-MM-DD')) : null;
+    const time = covered ? ownTimeOn(covered, date.format('YYYY-MM-DD')) : null;
     if (time) createForm.setFieldValue('time', [dayjs(`${date.format('YYYY-MM-DD')}T${time.start}`), dayjs(`${date.format('YYYY-MM-DD')}T${time.end}`)]);
   };
   const submitCreateCover = async () => {
@@ -561,6 +642,7 @@ export const ScheduleCoversGrid: React.FC = () => {
       () => {
         setCreateOpen(false);
         createForm.resetFields();
+        offerNextCover(values.coverer, (values.date as Dayjs).format('YYYY-MM-DD'));
       }
     );
   };
@@ -617,22 +699,71 @@ export const ScheduleCoversGrid: React.FC = () => {
       )}
     </div>
   );
-  const offStyle = (status: DayStatus) => (status.kind === 'rest' || status.kind === 'leave' ? { style: OFF_STYLE[status.kind] } : {});
+  const dayCellStyle = (info: DayInfo) => {
+    if (info.status.kind === 'rest' || info.status.kind === 'leave') return { style: OFF_STYLE[info.status.kind] };
+    return info.status.kind === 'work' && info.coveredBy.length ? { style: COVERED_WORK_STYLE } : {};
+  };
+
+  // Who covers whom along the line this day is part of — this person in bold.
+  const chainLine = (emp: Employee, dateKey: string) => {
+    const swapped = swappedWith(emp, dateKey);
+    const chain = swapped ? [emp, swapped] : coverChain(emp, dateKey);
+    if (!chain) return null;
+    const separator = swapped ? ' ⇄ ' : ' → ';
+    const names = chain.map((p) => `${codeOf(p)} ${fullName(p)}`.trim()).join(separator);
+    return (
+      <Tooltip title={swapped ? `ແທນກັນ: ${names}` : `ສາຍການແທນ (ຄົນທາງຊ້າຍໄປແທນຄົນຖັດໄປ): ${names}`}>
+        <div style={{ fontSize: 11, color: '#8c8c8c', textAlign: 'left' }}>
+          <LinkOutlined />{' '}
+          {chain.map((p, i) => (
+            <span key={p._id}>
+              {i > 0 && separator}
+              <span style={p._id === emp._id ? { fontWeight: 700, color: '#434343' } : undefined}>{codeOf(p) || fullName(p)}</span>
+            </span>
+          ))}
+        </div>
+      </Tooltip>
+    );
+  };
 
   const dateCell = (emp: Employee, dateKey: string) => {
     const info = infoOn(emp, dateKey);
     const off = isOff(info.status);
-    if (!off && !info.covering.length && !info.coveredBy.length) return <span style={{ color: '#bfbfbf' }}>-</span>;
+    const working = info.status.kind === 'work';
+    const openAssign = () => setAssignFor({ employee: emp, dateKey });
+    if (!off && !info.covering.length && !info.coveredBy.length) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+          <span style={{ color: '#bfbfbf' }}>-</span>
+          {working && <AddCoverButton onClick={openAssign} />}
+        </div>
+      );
+    }
+    // Off, or gone to cover someone with nobody on their own shift yet: someone
+    // is needed, so the button stays visible. Otherwise it waits for the pointer.
+    const needsCover = off || (working && info.covering.length > 0 && !info.coveredBy.length);
     return (
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
         {off && <div style={{ color: '#8c8c8c', fontSize: 12 }}>{dayStatusLabel(info.status)}</div>}
+        {info.status.kind === 'work' && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
+            <span
+              style={{ color: '#8c8c8c', fontSize: 12, textDecoration: info.covering.length ? 'line-through' : undefined }}
+              title={info.covering.length ? 'ມື້ນີ້ໄປເຮັດແທນ — ຕ້ອງສະແກນຕາມເວລາຂອງການແທນ ບໍ່ແມ່ນກະນີ້' : undefined}
+            >
+              ກະ {info.status.start}-{info.status.end}
+            </span>
+            {!needsCover && <AddCoverButton onClick={openAssign} />}
+          </div>
+        )}
         {info.coveredBy.map((s) => coveredByLine(s, s._id))}
-        {off && (
-          <Button size="small" type="link" icon={<PlusOutlined />} style={{ padding: 0, height: 'auto' }} onClick={() => setAssignFor({ employee: emp, dateKey })}>
+        {needsCover && (
+          <Button size="small" type="link" icon={<PlusOutlined />} style={{ padding: 0, height: 'auto' }} onClick={openAssign}>
             ຫາຄົນແທນ
           </Button>
         )}
         {info.covering.map((s) => coverCard(s, s._id))}
+        {chainLine(emp, dateKey)}
       </Space>
     );
   };
@@ -649,18 +780,22 @@ export const ScheduleCoversGrid: React.FC = () => {
     );
   };
 
-  // Header line for each column: how many in the group are off, and how many
-  // of them have someone covering.
+  // Header lines for each column: how many in the group are off, how many of
+  // them have someone covering, and how many normal working days are covered.
   const dateSummary = (dateKey: string) => {
     let off = 0;
     let covered = 0;
+    let workCovered = 0;
     for (const emp of rows) {
       const info = infoOn(emp, dateKey);
-      if (!isOff(info.status)) continue;
+      if (!isOff(info.status)) {
+        if (info.status.kind === 'work' && info.coveredBy.length) workCovered += 1;
+        continue;
+      }
       off += 1;
       if (info.coveredBy.length) covered += 1;
     }
-    return { off, covered };
+    return { off, covered, workCovered };
   };
   const restingOnWeekday = (dow: number) => rows.filter((emp) => weekInfoOf(emp, dow).resting).length;
 
@@ -680,11 +815,115 @@ export const ScheduleCoversGrid: React.FC = () => {
     return { covered, covering, hours };
   };
 
+  // The dialogs' state sits on this component, and with everyone showing this
+  // table is thousands of cells: without this, every click in ຫາຄົນແທນ draws all
+  // of it again and takes seconds. Lists what the cells show; the handlers they
+  // call read no page state.
+  const employeeTable = useMemo(
+    () => (
+      <Table<Employee>
+        className="covers-no-print"
+        dataSource={rows}
+        rowKey="_id"
+        loading={isLoading || employeesLoading}
+        pagination={false}
+        scroll={{ x: 'max-content' }}
+        size="small"
+        sticky={{ offsetHeader: pinToolbar ? offsetHeader : stackTop }}
+        locale={{ emptyText: 'ບໍ່ມີພະນັກງານໃນພະແນກ / ຕຳແໜ່ງນີ້' }}
+      >
+        <Table.Column
+          title="ພະນັກງານ"
+          fixed="left"
+          width={200}
+          render={(_, emp: Employee) => (
+            <>
+              <div style={{ fontWeight: 600 }}>
+                {emp.employeeCode} {fullName(emp)}
+              </div>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  ກະ: {shiftLabel(emp)}
+                </Typography.Text>
+              </div>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  ວັນພັກ: {restDaysLabel(emp.defaultRestDay ?? [])}
+                </Typography.Text>
+              </div>
+            </>
+          )}
+        />
+        <Table.Column title="ພະແນກ" width={130} render={(_, emp: Employee) => deptOf(emp)} />
+        <Table.Column title="ຕຳແໜ່ງ" width={130} render={(_, emp: Employee) => positionOf(emp)} />
+        {view === 'week'
+          ? WEEK_ORDER.map((dow) => (
+              <Table.Column
+                key={`dow-${dow}`}
+                width={150}
+                title={
+                  <div style={{ textAlign: 'center' }}>
+                    <div>{WEEKDAY_OPTIONS[dow].label}</div>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      ພັກ {restingOnWeekday(dow)} ຄົນ
+                    </Typography.Text>
+                  </div>
+                }
+                onCell={(emp: Employee) => (weekInfoOf(emp, dow).resting ? { style: OFF_STYLE.rest } : {})}
+                render={(_, emp: Employee) => weekdayCell(emp, dow)}
+              />
+            ))
+          : rangeDays.map((day) => {
+              const dateKey = day.format('YYYY-MM-DD');
+              const summary = dateSummary(dateKey);
+              return (
+                <Table.Column
+                  key={dateKey}
+                  width={150}
+                  title={
+                    <div style={{ textAlign: 'center' }}>
+                      <div>{day.format('D')}</div>
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        {day.format('ddd')}
+                      </Typography.Text>
+                      {summary.off > 0 && (
+                        <div style={{ fontSize: 11, fontWeight: 400, color: summary.covered < summary.off ? '#d46b08' : '#389e0d' }}>
+                          ພັກ/ລາ {summary.off} · ແທນ {summary.covered}
+                        </div>
+                      )}
+                      {summary.workCovered > 0 && (
+                        <div style={{ fontSize: 11, fontWeight: 400, color: '#0958d9' }}>ແທນມື້ປົກກະຕິ {summary.workCovered}</div>
+                      )}
+                    </div>
+                  }
+                  onCell={(emp: Employee) => dayCellStyle(infoOn(emp, dateKey))}
+                  render={(_, emp: Employee) => dateCell(emp, dateKey)}
+                />
+              );
+            })}
+      </Table>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [view, rows, rangeDays, dayInfo, weekInfo, shiftIndex, isLoading, employeesLoading, pinToolbar, offsetHeader, stackTop]
+  );
+  // New data draws it in the background, so ຫາຄົນແທນຕໍ່ right after saving doesn't
+  // wait for the reload that the save set off.
+  const shownTable = useDeferredValue(employeeTable);
+
   return (
     <div>
+      {modalContext}
       <style>{`
         .covers-print-only { display: none; }
         .covers-print-table { display: none; }
+        /* The ຫາຄົນແທນ on a normal working day: on every cell it would swamp
+           the grid, so it shows with the pointer (or keyboard focus) — and
+           faintly always where there's no pointer to hover with. */
+        .covers-add-work { opacity: 0; transition: opacity 0.15s; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+        .covers-add-work::before { content: '+'; }
+        .covers-add-work:hover { background: rgba(128, 128, 128, 0.2); }
+        .ant-table-cell:hover .covers-add-work, .covers-add-work:focus-visible { opacity: 1; }
+        @media (hover: none) { .covers-add-work { opacity: 0.5; } }
         @media print {
           @page { size: A4 landscape; margin: 5mm; }
           .covers-no-print { display: none !important; }
@@ -787,7 +1026,7 @@ export const ScheduleCoversGrid: React.FC = () => {
       <Typography.Paragraph type="secondary" className="covers-no-print">
         {view === 'week'
           ? 'ວັນພັກຂອງແຕ່ລະຄົນຕາມທີ່ເປັນຢູ່ຕອນນີ້ ແລະ ການເຮັດແທນຂອງເດືອນນີ້ ຈັດຕາມວັນໃນອາທິດ — ແທນຄົນດຽວກັນ ເວລາດຽວກັນ ລວມເປັນລາຍການດຽວ (×ຈຳນວນຄັ້ງໃນເດືອນ). ມອບໝາຍຄົນແທນໄດ້ໃນແບບລາຍເດືອນ'
-          : 'ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ — ມື້ພັກ ແລະ ມື້ລາ ຂອງແຕ່ລະຄົນ ແລະ ໃຜແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ'}
+          : 'ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ — ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ ບໍ່ແມ່ນກະປົກກະຕິຂອງຕົນເອງ'}
       </Typography.Paragraph>
 
       {/* Only the weekly roster prints. */}
@@ -918,84 +1157,7 @@ export const ScheduleCoversGrid: React.FC = () => {
         </>
       )}
 
-      <Table<Employee>
-        className="covers-no-print"
-        dataSource={rows}
-        rowKey="_id"
-        loading={isLoading || employeesLoading}
-        pagination={false}
-        scroll={{ x: 'max-content' }}
-        size="small"
-        sticky={{ offsetHeader: pinToolbar ? offsetHeader : stackTop }}
-        locale={{ emptyText: 'ບໍ່ມີພະນັກງານໃນພະແນກ / ຕຳແໜ່ງນີ້' }}
-      >
-        <Table.Column
-          title="ພະນັກງານ"
-          fixed="left"
-          width={200}
-          render={(_, emp: Employee) => (
-            <>
-              <div style={{ fontWeight: 600 }}>
-                {emp.employeeCode} {fullName(emp)}
-              </div>
-              <div>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  ກະ: {shiftLabel(emp)}
-                </Typography.Text>
-              </div>
-              <div>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  ວັນພັກ: {restDaysLabel(emp.defaultRestDay ?? [])}
-                </Typography.Text>
-              </div>
-            </>
-          )}
-        />
-        <Table.Column title="ພະແນກ" width={130} render={(_, emp: Employee) => deptOf(emp)} />
-        <Table.Column title="ຕຳແໜ່ງ" width={130} render={(_, emp: Employee) => positionOf(emp)} />
-        {view === 'week'
-          ? WEEK_ORDER.map((dow) => (
-              <Table.Column
-                key={`dow-${dow}`}
-                width={150}
-                title={
-                  <div style={{ textAlign: 'center' }}>
-                    <div>{WEEKDAY_OPTIONS[dow].label}</div>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                      ພັກ {restingOnWeekday(dow)} ຄົນ
-                    </Typography.Text>
-                  </div>
-                }
-                onCell={(emp: Employee) => (weekInfoOf(emp, dow).resting ? { style: OFF_STYLE.rest } : {})}
-                render={(_, emp: Employee) => weekdayCell(emp, dow)}
-              />
-            ))
-          : rangeDays.map((day) => {
-              const dateKey = day.format('YYYY-MM-DD');
-              const summary = dateSummary(dateKey);
-              return (
-                <Table.Column
-                  key={dateKey}
-                  width={150}
-                  title={
-                    <div style={{ textAlign: 'center' }}>
-                      <div>{day.format('D')}</div>
-                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                        {day.format('ddd')}
-                      </Typography.Text>
-                      {summary.off > 0 && (
-                        <div style={{ fontSize: 11, fontWeight: 400, color: summary.covered < summary.off ? '#d46b08' : '#389e0d' }}>
-                          ພັກ/ລາ {summary.off} · ແທນ {summary.covered}
-                        </div>
-                      )}
-                    </div>
-                  }
-                  onCell={(emp: Employee) => offStyle(infoOn(emp, dateKey).status)}
-                  render={(_, emp: Employee) => dateCell(emp, dateKey)}
-                />
-              );
-            })}
-      </Table>
+      {shownTable}
 
       <Modal
         title={assignFor ? `ຫາຄົນແທນ — ${assignFor.employee.employeeCode ?? ''} ${fullName(assignFor.employee)}` : ''}
@@ -1010,14 +1172,14 @@ export const ScheduleCoversGrid: React.FC = () => {
         {assignFor && (
           <>
             <Typography.Paragraph>
-              {dayjs(assignFor.dateKey).format('dddd DD/MM/YYYY')} · {dayStatusLabel(infoOn(assignFor.employee, assignFor.dateKey).status)} ·{' '}
+              {dayjs(assignFor.dateKey).format('dddd DD/MM/YYYY')} · {dayStatusLabel(statusOn(assignFor.employee, assignFor.dateKey))} ·{' '}
               {positionOf(assignFor.employee)}
             </Typography.Paragraph>
-            {infoOn(assignFor.employee, assignFor.dateKey).coveredBy.length > 0 && (
+            {(shiftIndex.coveredBy.get(`${assignFor.employee._id}_${assignFor.dateKey}`)?.length ?? 0) > 0 && (
               <Typography.Paragraph type="secondary">
                 ມີຄົນແທນແລ້ວ:{' '}
-                {infoOn(assignFor.employee, assignFor.dateKey)
-                  .coveredBy.map((s) => `${codeOf(s.employee as Employee)} ${fullName(s.employee as Employee)} ${s.startTime}-${s.endTime}`)
+                {(shiftIndex.coveredBy.get(`${assignFor.employee._id}_${assignFor.dateKey}`) ?? [])
+                  .map((s) => `${codeOf(s.employee as Employee)} ${fullName(s.employee as Employee)} ${s.startTime}-${s.endTime}`)
                   .join(', ')}
               </Typography.Paragraph>
             )}
@@ -1041,7 +1203,15 @@ export const ScheduleCoversGrid: React.FC = () => {
                   )}
                 />
               </Form.Item>
-              <Form.Item name="time" label="ເວລາ" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
+              {assignCovererShift && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message={`ຄົນນີ້ມີກະ ${assignCovererShift.start}-${assignCovererShift.end} ໃນມື້ນີ້ — ຈະຍ້າຍມາເຮັດກະນີ້ແທນ ແລະ ຕ້ອງສະແກນຕາມເວລາດ້ານລຸ່ມ. ກະເດີມຈະຫວ່າງ`}
+                />
+              )}
+              <Form.Item name="time" label="ເວລາ (ຄົນແທນຕ້ອງສະແກນຕາມເວລານີ້)" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາ' }]}>
                 <TimePicker.RangePicker format="HH:mm" minuteStep={15} order={false} style={{ width: '100%' }} />
               </Form.Item>
             </Form>

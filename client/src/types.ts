@@ -105,6 +105,8 @@ export interface Employee {
   nameEn?: string;
   // Scanners this person may be on (ສິດໃຊ້ເຄື່ອງສະແກນ) — unset means every scanner.
   allowedScanners?: string[] | null;
+  // An admin of the scanners, who may open their menu (ສິດໃຊ້ເຄື່ອງສະແກນ). Not the same as `role` on this website.
+  scannerAdmin?: boolean;
   department?: Department | string;
   position?: Position | string;
   supervisor?: Employee | string;

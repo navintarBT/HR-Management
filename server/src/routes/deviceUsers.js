@@ -6,9 +6,9 @@ const DeviceEnrolledUser = require('../models/DeviceEnrolledUser');
 const BiometricTemplate = require('../models/BiometricTemplate');
 const Employee = require('../models/Employee');
 const { authenticate, requireRole } = require('../middleware/auth');
-const { queueQueryUsersCommand, queueDeletePinCommand, queueQueryAttLogCommand } = require('../utils/deviceCommands');
-const { provisionDevice, pushEmployeeToDevices } = require('../utils/deviceSync');
-const { BIO_TYPE } = require('../utils/zkProtocol');
+const { queueCommandsForDevice, queueQueryUsersCommand, queueDeletePinCommand, queueQueryAttLogCommand } = require('../utils/deviceCommands');
+const { provisionDevice, pushEmployeeToDevices, pushUserRecord } = require('../utils/deviceSync');
+const { BIO_TYPE, buildDeleteUserCommand, canReceiveTemplate } = require('../utils/zkProtocol');
 const { isApprovedDevice, APPROVED_DEVICE_FILTER } = require('../utils/deviceApproval');
 const { allowsScanner } = require('../utils/scannerAccess');
 
@@ -140,7 +140,7 @@ router.get('/employee/:id', authenticate, requireRole('admin', 'manager'), async
     const pin = employee.deviceUserId;
     if (!pin) return res.json({ pin: null, devices: [], templates: [], pendingCommands: 0 });
     const [devices, enrolled, templates, pendingCommands] = await Promise.all([
-      Device.find({}, 'serialNumber info.deviceName syncEnabled lastSeenAt').sort({ serialNumber: 1 }),
+      Device.find({}, 'serialNumber info syncEnabled lastSeenAt').sort({ serialNumber: 1 }),
       DeviceEnrolledUser.find({ pin }),
       BiometricTemplate.find({ pin }, 'type no majorVer sourceSerial updatedAt').sort({ type: 1, no: 1 }),
       DeviceCommand.countDocuments({ deviceUserId: pin, status: 'pending' }),
@@ -157,6 +157,8 @@ router.get('/employee/:id', authenticate, requireRole('admin', 'manager'), async
           enrolled: !!row,
           nameOnDevice: row?.name,
           reportedAt: row?.lastSeenAt,
+          // A face/finger this terminal can use, so they could prove who they are on it.
+          canVerify: templates.some((t) => canReceiveTemplate(d.info, t)),
         };
       }),
       templates: templates.map((t) => ({
@@ -227,6 +229,28 @@ router.put('/employee/:id/scanners', authenticate, requireRole('admin'), async (
   }
 });
 
+// ສິດໃຊ້ເຄື່ອງສະແກນ: an admin of the scanners, who may open their menu, or an
+// ordinary user. Goes to the sync-enabled scanners they're allowed on right away;
+// the others get it with the person's record once their sync is switched on.
+router.put('/employee/:id/scanner-admin', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const { admin } = req.body;
+    if (typeof admin !== 'boolean') return res.status(400).json({ message: 'admin ຕ້ອງເປັນ true ຫຼື false' });
+    const employee = await Employee.findById(req.params.id);
+    if (!employee) return res.status(404).json({ message: 'Not found' });
+    const onScanners = employee.status === 'active' && !!employee.deviceUserId;
+    if (admin && !onScanners) return res.status(400).json({ message: 'ຕ້ອງເປັນພະນັກງານທີ່ຍັງເຮັດວຽກ ແລະ ມີລະຫັດເຄື່ອງສະແກນ' });
+
+    await Employee.updateOne({ _id: employee._id }, admin ? { $set: { scannerAdmin: true } } : { $unset: { scannerAdmin: 1 } });
+    employee.scannerAdmin = admin;
+    const targets = onScanners ? (await syncedScanners()).filter((d) => allowsScanner(employee, d.serialNumber)) : [];
+    await pushUserRecord(employee, targets);
+    res.json({ scannerAdmin: admin, sentTo: targets.map((d) => d.serialNumber) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // One scanner for many people at once (the ສິດໃຊ້ເຄື່ອງສະແກນ page's column
 // menu): allowed adds it to each one's list; not allowed takes it off — someone
 // on "every scanner" moves to every approved scanner but this one.
@@ -264,7 +288,7 @@ router.post('/devices/:serial/access', authenticate, requireRole('admin'), async
 // doesn't matter — even a resigned/inactive employee still "exists" here;
 // this is only for PINs with nothing behind them at all: someone long
 // deleted from the system, a prior test enrollment, etc.) — grouped by
-// serial so ຕາຕະລາງວັນພັກ's "ລາຍການ ID" page can label each by device.
+// serial so ຕັ້ງຄ່າແຜນວຽກ's "ລາຍການ ID" page can label each by device.
 router.get('/orphaned', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
     const [enrolled, employees] = await Promise.all([
@@ -287,15 +311,67 @@ router.get('/orphaned', authenticate, requireRole('admin', 'manager'), async (re
   }
 });
 
-// Asks every known device to re-report its enrolled users and their
-// fingerprint/face templates (see utils/deviceCommands.js / routes/adms.js)
-// — the "ດຶງ" button. Delivery/response isn't synchronous with this request:
-// the device answers whenever it next polls GET /iclock/getrequest, so this
-// just confirms the request was queued, not that fresh data has arrived yet.
+// Asks every known device — or just the one in `serialNumber` — to re-report
+// its enrolled users and their fingerprint/face templates (see
+// utils/deviceCommands.js / routes/adms.js) — the "ດຶງ" button. Delivery/response
+// isn't synchronous with this request: the device answers whenever it next polls
+// GET /iclock/getrequest, so this just confirms the request was queued, not that
+// fresh data has arrived yet. First the orphaned list for those devices is
+// emptied, here only (nothing is deleted on a device): a report only ever adds
+// rows, so a PIN already gone from the device used to stay listed for good.
+// Rows for PINs that are someone's stay, as the employee page reads them.
 router.post('/pull', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const queued = await queueQueryUsersCommand();
-    res.json({ queued: new Set(queued.map((c) => c.serialNumber)).size });
+    const serialNumber = req.body?.serialNumber;
+    if (serialNumber != null && !isApprovedDevice(await findDevice(serialNumber))) {
+      return res.status(400).json({ message: 'ບໍ່ພົບເຄື່ອງນີ້ ຫຼື ເຄື່ອງນີ້ຍັງບໍ່ໄດ້ອະນຸມັດ' });
+    }
+    const [devices, employeePins] = await Promise.all([
+      Device.find(serialNumber != null ? { serialNumber } : APPROVED_DEVICE_FILTER, 'serialNumber'),
+      Employee.distinct('deviceUserId', { deviceUserId: { $nin: [null, ''] } }),
+    ]);
+    const cleared = await DeviceEnrolledUser.deleteMany({ serialNumber: { $in: devices.map((d) => d.serialNumber) }, pin: { $nin: employeePins } });
+    const queued = await queueQueryUsersCommand(serialNumber != null ? [serialNumber] : undefined);
+    res.json({ queued: new Set(queued.map((c) => c.serialNumber)).size, cleared: cleared.deletedCount });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Many orphaned PINs at once: the ticked rows, or every row shown (ລຶບທັງໝົດ).
+// Each is checked again here, so one given to an employee since the list was
+// loaded is left alone instead of wiping that person's face/finger off the
+// scanner; so is one on a scanner that isn't approved, which couldn't collect
+// the command. Both are counted in the answer. Must stay ahead of /:id/delete,
+// which would otherwise take "orphaned" for an id.
+const MAX_ORPHANS_PER_DELETE = 5000;
+router.post('/orphaned/delete', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || !ids.length || ids.length > MAX_ORPHANS_PER_DELETE || !ids.every((id) => mongoose.isValidObjectId(id))) {
+      return res.status(400).json({ message: `ຕ້ອງມີລາຍການ id 1-${MAX_ORPHANS_PER_DELETE} ລາຍການ` });
+    }
+    const records = await DeviceEnrolledUser.find({ _id: { $in: ids } });
+    const [employees, devices] = await Promise.all([
+      Employee.find({ deviceUserId: { $in: records.map((r) => r.pin) } }, 'deviceUserId'),
+      Device.find({ serialNumber: { $in: [...new Set(records.map((r) => r.serialNumber))] }, ...APPROVED_DEVICE_FILTER }),
+    ]);
+    const takenPins = new Set(employees.map((e) => e.deviceUserId));
+    const approved = new Map(devices.map((d) => [d.serialNumber, d]));
+    const toDelete = records.filter((r) => !takenPins.has(r.pin) && approved.has(r.serialNumber));
+    for (const [serial, device] of approved) {
+      const pins = toDelete.filter((r) => r.serialNumber === serial).map((r) => r.pin);
+      // eslint-disable-next-line no-await-in-loop
+      if (pins.length) await queueCommandsForDevice(device, pins.map((pin) => ({ command: buildDeleteUserCommand(pin), pin })));
+    }
+    await DeviceEnrolledUser.deleteMany({ _id: { $in: toDelete.map((r) => r._id) } });
+    res.json({
+      deleted: toDelete.length,
+      devices: [...new Set(toDelete.map((r) => r.serialNumber))],
+      nowAnEmployee: records.filter((r) => takenPins.has(r.pin)).length,
+      notApproved: records.filter((r) => !takenPins.has(r.pin) && !approved.has(r.serialNumber)).length,
+      notFound: ids.length - records.length,
+    });
   } catch (err) {
     next(err);
   }

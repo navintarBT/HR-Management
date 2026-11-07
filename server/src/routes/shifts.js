@@ -5,6 +5,7 @@ const Leave = require('../models/Leave');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { resolveRestDayForEmployee, nearestDateForWeekday } = require('../utils/restDayRules');
 const { followsIrregularRule } = require('../utils/substituteRule');
+const { rejudgeAroundDay } = require('../utils/attendanceProcessor');
 
 const router = express.Router();
 
@@ -27,7 +28,7 @@ function timesOverlap(startA, endA, startB, endB) {
 
 // One person's date is either a rest day or a work day, never both — a second
 // row of the other kind (e.g. a cover added on top of their own ພັກ) left every
-// page and the absence sweep to pick one of the two their own way. ຕາຕະລາງວັນພັກ
+// page and the absence sweep to pick one of the two their own way. ຕັ້ງຄ່າແຜນວຽກ
 // already makes you ຄືນຄ່າປົກກະຕິ first; this holds the same rule for every
 // other way in (ການເຮັດແທນ, ຕາຕະລາງກະ, the API). A company holiday is exempt —
 // it overwrites one existing row by design (utils/holidayShifts.ts).
@@ -90,6 +91,24 @@ async function ensurePersonalRestDayAllowed(employeeId, date, holidayId) {
   return resolvedDow === dayOfWeek ? date : nearestDateForWeekday(date, resolvedDow);
 }
 
+// Scans are judged by the time set for that day, so when it's set, changed or
+// removed the scans already in are judged again. Never fails the save itself —
+// the shift is the thing HR asked for, and the next scan judges the day anyway.
+async function rejudgeDays(...rows) {
+  const seen = new Set();
+  for (const { employee, date } of rows) {
+    const key = `${employee}_${date}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await rejudgeAroundDay(employee, date);
+    } catch (err) {
+      console.error('[shifts] re-judging scans failed', key, err);
+    }
+  }
+}
+
 // Shared by the single PATCH and the bulk PATCH below: applies `changes` to
 // one shift after checking it won't overlap another scheduled shift for the
 // same employee/day. Throws { status, message } on conflict/not-found so both
@@ -132,8 +151,10 @@ async function applyShiftUpdate(id, changes) {
     if (effectiveDate !== date) effectiveChanges = { ...changes, date: effectiveDate };
   }
 
+  const before = { employee: current.employee, date: current.date };
   Object.assign(current, effectiveChanges);
   await current.save();
+  await rejudgeDays(before, { employee: current.employee, date: current.date });
   return current;
 }
 
@@ -214,6 +235,7 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
       }
     }
     const item = await Shift.create({ ...req.body, date: effectiveDate });
+    await rejudgeDays({ employee: item.employee, date: item.date });
     const populated = await item.populate(SHIFT_POPULATE);
     res.status(201).json(populated);
   } catch (err) {
@@ -256,6 +278,7 @@ router.delete('/:id', authenticate, requireRole('admin', 'manager'), async (req,
   try {
     const item = await Shift.findByIdAndDelete(req.params.id);
     if (!item) return res.status(404).json({ message: 'Not found' });
+    await rejudgeDays({ employee: item.employee, date: item.date });
     res.json({ id: req.params.id });
   } catch (err) {
     next(err);

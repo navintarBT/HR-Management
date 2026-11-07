@@ -58,7 +58,7 @@ const MAX_RANGE_DAYS = 62;
 
 // Background/text pair per AttendanceDaily.status, plus a "rest day" look-alike
 // for days with no record at all that match the employee's recurring day off
-// (ຕາຕະລາງວັນພັກ's defaultRestDay) — distinguishes "scheduled off" from a
+// (ຕັ້ງຄ່າແຜນວຽກ's defaultRestDay) — distinguishes "scheduled off" from a
 // genuinely blank/unprocessed day, which otherwise both show as "-".
 const CELL_STYLE: Record<string, { bg: string; text: string; label: string }> = {
   late: { bg: '#fff7e6', text: '#d46b08', label: 'ຊ້າ' },
@@ -284,7 +284,7 @@ const AttendanceSummaryGrid: React.FC = () => {
   // ສະຫຼັບຕຳແໜ່ງ — a pending ScheduledPositionSwap doesn't touch anyone's
   // position/shift until its own effectiveDate arrives (see positionSwap.js),
   // so there's nothing in the attendance data to reflect yet. This is purely
-  // a heads-up overlay on the day it WILL happen — same marker as ຕາຕະລາງວັນພັກ.
+  // a heads-up overlay on the day it WILL happen — same marker as ຕັ້ງຄ່າແຜນວຽກ.
   const { data: positionSwapsData } = useCustom<ScheduledPositionSwap[]>({
     url: `${API_URL}/position-swaps`,
     method: 'get',

@@ -190,7 +190,7 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
 // as covered rather than a scan that failed, so it isn't judged an absence.
 // Gated server-side by the position flag, not just hidden in the UI. Also
 // clears any queued Shift for that day in the same action — otherwise HR
-// would have to separately remember to go delete it on ຕາຕະລາງວັນພັກ, and a
+// would have to separately remember to go delete it on ຕັ້ງຄ່າແຜນວຽກ, and a
 // leftover queue would keep showing this employee as still scheduled there.
 router.post('/mark-substituted', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {

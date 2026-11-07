@@ -58,11 +58,21 @@ function isOvernightShift(expected) {
   );
 }
 
+// The category of the regular shift this employee had on this day, or null
+// when that shift has none — same "in force on that day" order as the
+// fallbacks in resolveExpectedShift below.
+async function regularCategoryOn(employeeId, dateKey) {
+  const historical = shiftOnDate(await shiftLogsFor(employeeId), dateKey);
+  if (historical) return historical.category ? ShiftCategory.findById(historical.category) : null;
+  const employee = await Employee.findById(employeeId).populate('defaultShiftCategory');
+  return employee?.defaultShiftCategory ?? null;
+}
+
 // Resolves what shift this employee is expected to work on this day — both
 // ends of it, and the late-arrival policy to judge the start against. A
 // day-specific Shift row (bulk schedule, a position swap, standing in for
 // someone else) always wins when one exists; otherwise falls back to the
-// employee's own recurring shift — the same default ຕາຕະລາງວັນພັກ itself
+// employee's own recurring shift — the same default ຕັ້ງຄ່າແຜນວຽກ itself
 // falls back to when rendering a day with no override (see monthly.tsx's
 // computeCell). Returns null when an employee has neither (e.g. DJ/housekeeper
 // positions whose hours genuinely vary day to day and so can never have one
@@ -75,14 +85,18 @@ async function resolveExpectedShift(employeeId, dateKey) {
   if (shift) {
     const [startHour, startMinute] = shift.startTime.split(':').map(Number);
     const [endHour, endMinute] = shift.endTime.split(':').map(Number);
+    // The day's row sets the hours; the late rules stay the person's own, so
+    // a cover or a one-off time with no category of its own is judged the
+    // same way as every other day they work.
+    const category = shift.category ?? (await regularCategoryOn(employeeId, dateKey));
     return {
       startHour,
       startMinute,
       endHour,
       endMinute,
-      graceMinutes: shift.category?.graceMinutes ?? GRACE_MINUTES,
-      autoAbsentMinutes: shift.category?.autoAbsentMinutes ?? null,
-      severeLateMinutes: shift.category?.severeLateMinutes ?? SEVERE_LATE_MINUTES,
+      graceMinutes: category?.graceMinutes ?? GRACE_MINUTES,
+      autoAbsentMinutes: category?.autoAbsentMinutes ?? null,
+      severeLateMinutes: category?.severeLateMinutes ?? SEVERE_LATE_MINUTES,
       // Marks that this came from a day-specific override rather than the
       // employee's regular shift — resolveShiftWindow uses this to keep a
       // back-to-back day's own check-in inside its window (see there).
@@ -376,6 +390,26 @@ async function recomputeDay(employeeId, dateKey, { force = false } = {}) {
 
 // Used by the absence sweep and by a deliberate (disciplinary) ຂາດ — either
 // way the tier is locked here, from the rules in force now.
+// Judges scans already in again after a day's time was set, changed or removed
+// (routes/shifts.js) — the same as another scan arriving, so a day locked by hand
+// stays as it is. The days either side too: where one day's scan window ends
+// depends on the next day's shift, so a new time can hand a scan to a neighbour.
+// A day left with no scans at all loses the record those scans made, and the
+// absence sweep judges it like any other — unless that record isn't from scans
+// (an outage fill-in), or it's a leave day, which the leave decides.
+async function rejudgeAroundDay(employeeId, dateKey) {
+  for (const day of [addDays(dateKey, -1), dateKey, addDays(dateKey, 1)]) {
+    // eslint-disable-next-line no-await-in-loop
+    const judged = await recomputeDay(employeeId, day);
+    if (judged) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const leftover = await AttendanceDaily.findOne({ employee: employeeId, date: day });
+    const fromScans = leftover && (leftover.firstIn || leftover.lastOut) && !leftover.autoFilledReason;
+    // eslint-disable-next-line no-await-in-loop
+    if (fromScans && leftover.status !== 'leave' && !isLockedByHand(leftover)) await leftover.deleteOne();
+  }
+}
+
 async function markAbsent(employeeId, dateKey) {
   const expected = await resolveExpectedShift(employeeId, dateKey);
   const severity = await severityFieldsForAbsence(employeeId, dateKey);
@@ -800,6 +834,7 @@ module.exports = {
   resolveShiftWindow,
   isOvernightShift,
   recomputeDay,
+  rejudgeAroundDay,
   markAbsent,
   markPresentFromShift,
   bulkMarkPresentForOutage,

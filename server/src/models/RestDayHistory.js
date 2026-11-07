@@ -22,7 +22,7 @@ const restDayHistorySchema = new mongoose.Schema(
     // existed got the (local) day they were made, except the ones that first
     // set someone's rest day up: FROM_THE_START (restDaySchedule.js).
     effectiveDate: { type: String, trim: true },
-    // 'manual' (ຕາຕະລາງວັນພັກ / the employee record), 'plan' (ວາງແຜນວັນພັກ),
+    // 'manual' (ຕັ້ງຄ່າແຜນວຽກ / the employee record), 'plan' (ວາງແຜນວັນພັກ),
     // 'position-swap', or 'migration' for rows recorded before
     // effectiveDate existed.
     source: { type: String, trim: true },
