@@ -320,17 +320,17 @@ router.get('/orphaned', authenticate, requireRole('admin', 'manager'), async (re
 // emptied, here only (nothing is deleted on a device): a report only ever adds
 // rows, so a PIN already gone from the device used to stay listed for good.
 // Rows for PINs that are someone's stay, as the employee page reads them.
+// Without a device picked that's every row, a blocked scanner's too: it is never
+// asked and its uploads are refused, so what it reported before being blocked
+// would otherwise stay listed, and undeletable, for good.
 router.post('/pull', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
     const serialNumber = req.body?.serialNumber;
     if (serialNumber != null && !isApprovedDevice(await findDevice(serialNumber))) {
       return res.status(400).json({ message: 'ບໍ່ພົບເຄື່ອງນີ້ ຫຼື ເຄື່ອງນີ້ຍັງບໍ່ໄດ້ອະນຸມັດ' });
     }
-    const [devices, employeePins] = await Promise.all([
-      Device.find(serialNumber != null ? { serialNumber } : APPROVED_DEVICE_FILTER, 'serialNumber'),
-      Employee.distinct('deviceUserId', { deviceUserId: { $nin: [null, ''] } }),
-    ]);
-    const cleared = await DeviceEnrolledUser.deleteMany({ serialNumber: { $in: devices.map((d) => d.serialNumber) }, pin: { $nin: employeePins } });
+    const employeePins = await Employee.distinct('deviceUserId', { deviceUserId: { $nin: [null, ''] } });
+    const cleared = await DeviceEnrolledUser.deleteMany({ ...(serialNumber != null ? { serialNumber } : {}), pin: { $nin: employeePins } });
     const queued = await queueQueryUsersCommand(serialNumber != null ? [serialNumber] : undefined);
     res.json({ queued: new Set(queued.map((c) => c.serialNumber)).size, cleared: cleared.deletedCount });
   } catch (err) {

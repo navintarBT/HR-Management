@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState, type CSSProperties } from 'react';
+import { useDeferredValue, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useSelect } from '@refinedev/antd';
 import { useList, useCustom, useCreate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
 import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker, Segmented, Grid, Tooltip, Alert } from 'antd';
@@ -66,8 +66,8 @@ function hoursBetween(start?: string, end?: string): number {
 
 // The print is ສະຫຼຸບເງິນເດືອນ's (payroll-summary/index.tsx) layout as is —
 // the page, the header row, the column-header colours, the legend and the
-// signature lines — holding the weekly roster: this page's own columns and
-// the seven weekdays, no dates.
+// signature lines — the same for both views: this page's own columns, then the
+// seven weekdays of the weekly roster, or the dates picked in the month view.
 const PRINT_TH: CSSProperties = {
   border: '1px solid #999',
   padding: '2px 3px',
@@ -87,24 +87,33 @@ const PRINT_TD: CSSProperties = {
 // A4 landscape printable width at the 96dpi CSS reference pixel, minus a 5mm
 // @page margin on each side.
 const PRINT_PAGE_WIDTH_PX = ((297 - 10) / 25.4) * 96;
-// Every print column except the seven weekdays (ລ/ດ 22 + ລະຫັດ 42 + ຊື່ 110 +
-// ຕຳແໜ່ງ 70 + ກະ 62 + ມີຄົນແທນ 52 + ໄປແທນ 40 + ຊມ.ແທນ 44) — the weekdays
-// split what's left of the page width.
-const PRINT_FIXED_COLS_WIDTH_PX = 22 + 42 + 110 + 70 + 62 + 52 + 40 + 44;
-const PRINT_DAY_COL_WIDTH_PX = (PRINT_PAGE_WIDTH_PX - PRINT_FIXED_COLS_WIDTH_PX) / 7;
+// Every print column before the days: ລ/ດ, ລະຫັດ, ຊື່, ຕຳແໜ່ງ, ກະ. The days split
+// what's left of the page width.
+const PRINT_FIXED_COLS = [22, 42, 160, 126, 92];
+const PRINT_FIXED_COLS_WIDTH_PX = PRINT_FIXED_COLS.reduce((sum, width) => sum + width, 0);
+// The most dates the month view prints: more and each day is too narrow to read.
+const MAX_PRINT_DAYS = 14;
 // Day-cell colours in print, and the legend above the table.
 const PRINT_TONE = {
   rest: { bg: '#d9d9d9', text: '#434343' },
+  leave: { bg: '#fffbe6', text: '#ad6800' },
   covering: { bg: '#f9f0ff', text: '#531dab' },
   coveredBy: { bg: '#f6ffed', text: '#237804' },
 };
-const PRINT_LEGEND: { label: string; tone: keyof typeof PRINT_TONE; text: string }[] = [
+type PrintLegendItem = { label: string; tone: keyof typeof PRINT_TONE; text: string };
+const PRINT_LEGEND_WEEK: PrintLegendItem[] = [
   { label: 'ພ', tone: 'rest', text: 'ພັກ' },
   { label: 'ແທນ', tone: 'covering', text: 'ໄປເຮັດແທນຄົນອື່ນ' },
   { label: 'ແທນໂດຍ', tone: 'coveredBy', text: 'ມີຄົນມາແທນ (×ຈຳນວນຄັ້ງໃນເດືອນ)' },
 ];
-const printToneStyle = (value: number, tone: keyof typeof PRINT_TONE) =>
-  value > 0 ? { background: PRINT_TONE[tone].bg, color: PRINT_TONE[tone].text, fontWeight: 600 } : undefined;
+const PRINT_LEGEND_DATES: PrintLegendItem[] = [
+  { label: 'ພ', tone: 'rest', text: 'ພັກ' },
+  { label: 'ລາ', tone: 'leave', text: 'ລາ' },
+  { label: 'ແທນ', tone: 'covering', text: 'ໄປເຮັດແທນຄົນອື່ນ' },
+  { label: 'ແທນໂດຍ', tone: 'coveredBy', text: 'ມີຄົນມາແທນ' },
+];
+// One printed day column: its header and what each person's cell holds.
+type PrintDay = { key: string; header: ReactNode; cell: (emp: Employee) => { tone?: { bg: string; text: string }; lines: ReactNode } };
 
 
 // 'month': one column per date. 'week': the same month by weekday, with no
@@ -187,13 +196,24 @@ const AddCoverButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
 export const ScheduleCoversGrid: React.FC = () => {
   const [view, setView] = useState<CoverView>('month');
   const [monthStart, setMonthStart] = useState(() => dayjs().startOf('month'));
-  const rangeStart = monthStart;
-  const dayCount = monthStart.daysInMonth();
-  const rangeEnd = rangeStart.add(dayCount - 1, 'day');
-  const rangeDays = useMemo(() => Array.from({ length: monthStart.daysInMonth() }, (_, i) => monthStart.add(i, 'day')), [monthStart]);
-  const periodText = 'ໃນເດືອນນີ້';
+  // Dates picked in the month view, up to MAX_PRINT_DAYS and across a month end
+  // if need be: the table shows just those, and they're what prints. The weekly
+  // roster always reads the whole month.
+  const [dayRange, setDayRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const usingRange = view === 'month' && !!dayRange;
+  const rangeStart = usingRange ? dayRange[0].startOf('day') : monthStart;
+  const rangeEnd = usingRange ? dayRange[1].startOf('day') : monthStart.endOf('month').startOf('day');
+  const periodText = usingRange ? 'ໃນຊ່ວງທີ່ເລືອກ' : 'ໃນເດືອນນີ້';
   const startKey = rangeStart.format('YYYY-MM-DD');
   const endKey = rangeEnd.format('YYYY-MM-DD');
+  const rangeDays = useMemo(
+    () => Array.from({ length: dayjs(endKey).diff(dayjs(startKey), 'day') + 1 }, (_, i) => dayjs(startKey).add(i, 'day')),
+    [startKey, endKey]
+  );
+  const goToMonth = (month: Dayjs) => {
+    setMonthStart(month.startOf('month'));
+    setDayRange(null);
+  };
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
   // On a phone the toolbar wraps to several rows — pinned, it would take half
   // the screen, so there it scrolls away and only the column header stays.
@@ -455,9 +475,10 @@ export const ScheduleCoversGrid: React.FC = () => {
       if (selectedPosition) base += selectedPosition.name;
       if (selectedPerson) base += `${selectedPerson.firstName ?? ''} ${selectedPerson.lastName ?? ''}`;
     }
-    return `${base} ປະຈໍາເດືອນ ${monthStart.format('MMMM YYYY')}`;
+    return usingRange
+      ? `${base} ວັນທີ ${rangeStart.format('DD/MM/YYYY')} - ${rangeEnd.format('DD/MM/YYYY')}`
+      : `${base} ປະຈໍາເດືອນ ${monthStart.format('MMMM YYYY')}`;
   })();
-  const printTotalColumns = 5 + 7 + 3;
 
   const { mutate: deleteShift } = useDelete();
   const invalidate = useInvalidate();
@@ -799,22 +820,6 @@ export const ScheduleCoversGrid: React.FC = () => {
   };
   const restingOnWeekday = (dow: number) => rows.filter((emp) => weekInfoOf(emp, dow).resting).length;
 
-  // A person's totals for the month, along the right of the printed roster.
-  const rosterTotalsOf = (emp: Employee) => {
-    let covered = 0;
-    let covering = 0;
-    let hours = 0;
-    for (const dow of WEEK_ORDER) {
-      const info = weekInfoOf(emp, dow);
-      for (const c of info.coveredBy) covered += c.count;
-      for (const c of info.covering) {
-        covering += c.count;
-        hours += c.count * hoursBetween(c.shift.startTime, c.shift.endTime);
-      }
-    }
-    return { covered, covering, hours };
-  };
-
   // The dialogs' state sits on this component, and with everyone showing this
   // table is thousands of cells: without this, every click in ຫາຄົນແທນ draws all
   // of it again and takes seconds. Lists what the cells show; the handlers they
@@ -910,6 +915,74 @@ export const ScheduleCoversGrid: React.FC = () => {
   // wait for the reload that the save set off.
   const shownTable = useDeferredValue(employeeTable);
 
+  // The print's day columns: the weekly roster's seven weekdays, or the dates
+  // picked in the month view. A whole month is too narrow to read, so the month
+  // view prints only once dates are picked (null: nothing to print).
+  const coverLine = (c: { shift: Shift; key: string; count?: number }, coveredBy: boolean) => (
+    <div key={c.key} style={{ color: coveredBy ? PRINT_TONE.coveredBy.text : PRINT_TONE.covering.text }}>
+      {coveredBy
+        ? `ແທນໂດຍ ${codeOf(c.shift.employee as Employee)} ${firstNameOf(c.shift.employee as Employee)}`
+        : `ແທນ ${codeOf(c.shift.coveringFor as Employee)} ${firstNameOf(c.shift.coveringFor as Employee)}`}{' '}
+      {c.shift.startTime}-{c.shift.endTime}
+      {c.count !== undefined && ` ×${c.count}`}
+    </div>
+  );
+  const printDays: PrintDay[] | null =
+    view === 'week'
+      ? WEEK_ORDER.map((dow) => ({
+          key: `dow-${dow}`,
+          header: (
+            <>
+              <div>{WEEKDAY_OPTIONS[dow].label}</div>
+              <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ {restingOnWeekday(dow)} ຄົນ</div>
+            </>
+          ),
+          cell: (emp) => {
+            const info = weekInfoOf(emp, dow);
+            return {
+              tone: info.resting ? PRINT_TONE.rest : info.covering.length ? PRINT_TONE.covering : undefined,
+              lines: (
+                <>
+                  {info.resting && <div style={{ fontWeight: 700, textAlign: 'center' }}>ພ</div>}
+                  {info.coveredBy.map((c) => coverLine(c, true))}
+                  {info.covering.map((c) => coverLine(c, false))}
+                </>
+              ),
+            };
+          },
+        }))
+      : usingRange
+        ? rangeDays.map((day) => {
+            const dateKey = day.format('YYYY-MM-DD');
+            return {
+              key: dateKey,
+              header: (
+                <>
+                  <div>{day.format('DD/MM')}</div>
+                  <div>{WEEKDAY_OPTIONS[day.day()].label}</div>
+                  <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ/ລາ {dateSummary(dateKey).off} ຄົນ</div>
+                </>
+              ),
+              cell: (emp) => {
+                const info = infoOn(emp, dateKey);
+                const kind = info.status.kind;
+                return {
+                  tone: kind === 'rest' ? PRINT_TONE.rest : kind === 'leave' ? PRINT_TONE.leave : info.covering.length ? PRINT_TONE.covering : undefined,
+                  lines: (
+                    <>
+                      {(kind === 'rest' || kind === 'leave') && (
+                        <div style={{ fontWeight: 700, textAlign: 'center' }}>{kind === 'rest' ? 'ພ' : 'ລາ'}</div>
+                      )}
+                      {info.coveredBy.map((s2) => coverLine({ shift: s2, key: s2._id }, true))}
+                      {info.covering.map((s2) => coverLine({ shift: s2, key: s2._id }, false))}
+                    </>
+                  ),
+                };
+              },
+            };
+          })
+        : null;
+
   return (
     <div>
       {modalContext}
@@ -959,12 +1032,32 @@ export const ScheduleCoversGrid: React.FC = () => {
               { label: 'ລາຍອາທິດ', value: 'week' },
             ]}
           />
-          <Button icon={<LeftOutlined />} onClick={() => setMonthStart(monthStart.subtract(1, 'month'))} />
+          <Button icon={<LeftOutlined />} onClick={() => goToMonth(monthStart.subtract(1, 'month'))} />
           <Typography.Text strong>{monthStart.format('MMMM YYYY')}</Typography.Text>
-          <Button icon={<RightOutlined />} onClick={() => setMonthStart(dayjs().startOf('month'))}>
+          <Button icon={<RightOutlined />} onClick={() => goToMonth(dayjs())}>
             ເດືອນນີ້
           </Button>
-          <Button icon={<RightOutlined />} onClick={() => setMonthStart(monthStart.add(1, 'month'))} />
+          <Button icon={<RightOutlined />} onClick={() => goToMonth(monthStart.add(1, 'month'))} />
+          {view === 'month' && (
+            <DatePicker.RangePicker
+              className="covers-range"
+              format="DD/MM/YYYY"
+              placeholder={['ຈາກວັນທີ', 'ຫາວັນທີ']}
+              value={dayRange}
+              // Picking the second date: nothing more than MAX_PRINT_DAYS from the first.
+              disabledDate={(current, info) => !!info?.from && Math.abs(current.startOf('day').diff(info.from.startOf('day'), 'day')) >= MAX_PRINT_DAYS}
+              onChange={(dates) => {
+                const picked = dates && dates[0] && dates[1] ? ([dates[0], dates[1]] as [Dayjs, Dayjs]) : null;
+                // Typed dates don't go through disabledDate.
+                if (picked && picked[1].startOf('day').diff(picked[0].startOf('day'), 'day') >= MAX_PRINT_DAYS) {
+                  notify?.({ type: 'error', message: `ເລືອກໄດ້ບໍ່ເກີນ ${MAX_PRINT_DAYS} ວັນ` });
+                  return;
+                }
+                setDayRange(picked);
+                if (picked) setMonthStart(picked[0].startOf('month'));
+              }}
+            />
+          )}
           <Select
             {...departmentSelect}
             placeholder="ກອງຕາມພະແນກ"
@@ -1004,11 +1097,11 @@ export const ScheduleCoversGrid: React.FC = () => {
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             ມອບໝາຍການເຮັດແທນ
           </Button>
-          {view === 'week' && (
-            <Button icon={<PrinterOutlined />} onClick={() => window.print()}>
+          <Tooltip title={view === 'month' && !dayRange ? `ເລືອກຊ່ວງວັນທີ (ບໍ່ເກີນ ${MAX_PRINT_DAYS} ວັນ) ກ່ອນພິມ` : undefined}>
+            <Button icon={<PrinterOutlined />} disabled={!printDays} onClick={() => window.print()}>
               ພິມ
             </Button>
-          )}
+          </Tooltip>
         </Space>
       </div>
 
@@ -1029,11 +1122,11 @@ export const ScheduleCoversGrid: React.FC = () => {
           : 'ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ — ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ ບໍ່ແມ່ນກະປົກກະຕິຂອງຕົນເອງ'}
       </Typography.Paragraph>
 
-      {/* Only the weekly roster prints. */}
-      {view === 'week' && (
+      {/* The weekly roster prints, and the month view once dates are picked. */}
+      {printDays && (
         <>
           <div className="covers-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
-            {PRINT_LEGEND.map((item) => (
+            {(view === 'week' ? PRINT_LEGEND_WEEK : PRINT_LEGEND_DATES).map((item) => (
               <span key={item.tone} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <span
                   style={{
@@ -1059,23 +1152,18 @@ export const ScheduleCoversGrid: React.FC = () => {
 
           <table className="covers-print-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 9 }}>
             <colgroup>
-              <col style={{ width: 22 }} />
-              <col style={{ width: 42 }} />
-              <col style={{ width: 110 }} />
-              <col style={{ width: 70 }} />
-              <col style={{ width: 62 }} />
-              {WEEK_ORDER.map((dow) => (
-                <col key={dow} style={{ width: PRINT_DAY_COL_WIDTH_PX }} />
+              {PRINT_FIXED_COLS.map((width, i) => (
+                <col key={i} style={{ width }} />
               ))}
-              <col style={{ width: 52 }} />
-              <col style={{ width: 40 }} />
-              <col style={{ width: 44 }} />
+              {printDays.map((d) => (
+                <col key={d.key} style={{ width: (PRINT_PAGE_WIDTH_PX - PRINT_FIXED_COLS_WIDTH_PX) / printDays.length }} />
+              ))}
             </colgroup>
             <thead>
               <tr>
                 {/* Spans the whole header row so it repeats on every printed page
                     with the column headers below it, as on ສະຫຼຸບເງິນເດືອນ. */}
-                <th colSpan={printTotalColumns} style={{ border: '1px solid #999', borderBottom: '2px solid #A9761E', padding: '6px 10px', background: '#fff' }}>
+                <th colSpan={PRINT_FIXED_COLS.length + printDays.length} style={{ border: '1px solid #999', borderBottom: '2px solid #A9761E', padding: '6px 10px', background: '#fff' }}>
                   <div style={{ display: 'flex', alignItems: 'center', fontSize: 11 }}>
                     <div style={{ fontWeight: 700, letterSpacing: 1, minWidth: 90, textAlign: 'left' }}>ROMEO</div>
                     <div style={{ flex: 1, textAlign: 'center', fontWeight: 600, fontSize: 13 }}>{printTitle}</div>
@@ -1091,55 +1179,34 @@ export const ScheduleCoversGrid: React.FC = () => {
                 <th style={PRINT_TH}>ຊື່</th>
                 <th style={PRINT_TH}>ຕຳແໜ່ງ</th>
                 <th style={PRINT_TH}>ກະ</th>
-                {WEEK_ORDER.map((dow) => (
-                  <th key={dow} style={{ ...PRINT_TH, lineHeight: 1.15 }}>
-                    <div>{WEEKDAY_OPTIONS[dow].label}</div>
-                    <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ {restingOnWeekday(dow)} ຄົນ</div>
+                {printDays.map((d) => (
+                  <th key={d.key} style={{ ...PRINT_TH, lineHeight: 1.15 }}>
+                    {d.header}
                   </th>
                 ))}
-                <th style={{ ...PRINT_TH, ...printToneStyle(1, 'coveredBy') }}>ມີຄົນແທນ</th>
-                <th style={{ ...PRINT_TH, ...printToneStyle(1, 'covering') }}>ໄປແທນ</th>
-                <th style={PRINT_TH}>ຊມ.ແທນ</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((emp, idx) => {
-                const totals = rosterTotalsOf(emp);
-                return (
-                  <tr key={emp._id}>
-                    <td style={PRINT_TD}>{idx + 1}</td>
-                    <td style={PRINT_TD}>{emp.employeeCode || '-'}</td>
-                    <td style={{ ...PRINT_TD, textAlign: 'left' }}>{`${emp.firstName ?? ''} ${emp.lastName ?? ''}`}</td>
-                    <td style={{ ...PRINT_TD, textAlign: 'left' }}>{positionOf(emp)}</td>
-                    <td style={PRINT_TD}>{regularShiftHours(emp) ?? '-'}</td>
-                    {WEEK_ORDER.map((dow) => {
-                      const info = weekInfoOf(emp, dow);
-                      const tone = info.resting ? PRINT_TONE.rest : info.covering.length ? PRINT_TONE.covering : undefined;
-                      return (
-                        <td
-                          key={dow}
-                          style={{ ...PRINT_TD, whiteSpace: 'normal', verticalAlign: 'top', textAlign: 'left', fontSize: 8, lineHeight: 1.25, background: tone?.bg, color: tone?.text }}
-                        >
-                          {info.resting && <div style={{ fontWeight: 700, textAlign: 'center' }}>ພ</div>}
-                          {info.coveredBy.map((c) => (
-                            <div key={c.key} style={{ color: PRINT_TONE.coveredBy.text }}>
-                              ແທນໂດຍ {codeOf(c.shift.employee as Employee)} {firstNameOf(c.shift.employee as Employee)} {c.shift.startTime}-{c.shift.endTime} ×{c.count}
-                            </div>
-                          ))}
-                          {info.covering.map((c) => (
-                            <div key={c.key} style={{ color: PRINT_TONE.covering.text }}>
-                              ແທນ {codeOf(c.shift.coveringFor as Employee)} {firstNameOf(c.shift.coveringFor as Employee)} {c.shift.startTime}-{c.shift.endTime} ×{c.count}
-                            </div>
-                          ))}
-                        </td>
-                      );
-                    })}
-                    <td style={{ ...PRINT_TD, ...printToneStyle(totals.covered, 'coveredBy') }}>{totals.covered}</td>
-                    <td style={{ ...PRINT_TD, ...printToneStyle(totals.covering, 'covering') }}>{totals.covering}</td>
-                    <td style={PRINT_TD}>{Number(totals.hours.toFixed(2))}</td>
-                  </tr>
-                );
-              })}
+              {rows.map((emp, idx) => (
+                <tr key={emp._id}>
+                  <td style={PRINT_TD}>{idx + 1}</td>
+                  <td style={PRINT_TD}>{emp.employeeCode || '-'}</td>
+                  <td style={{ ...PRINT_TD, textAlign: 'left' }}>{`${emp.firstName ?? ''} ${emp.lastName ?? ''}`}</td>
+                  <td style={{ ...PRINT_TD, textAlign: 'left' }}>{positionOf(emp)}</td>
+                  <td style={PRINT_TD}>{regularShiftHours(emp) ?? '-'}</td>
+                  {printDays.map((d) => {
+                    const { tone, lines } = d.cell(emp);
+                    return (
+                      <td
+                        key={d.key}
+                        style={{ ...PRINT_TD, whiteSpace: 'normal', verticalAlign: 'top', textAlign: 'left', fontSize: 8, lineHeight: 1.25, background: tone?.bg, color: tone?.text }}
+                      >
+                        {lines}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
             </tbody>
           </table>
 
