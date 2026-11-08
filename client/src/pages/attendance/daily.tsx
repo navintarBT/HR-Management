@@ -2,13 +2,14 @@ import { useMemo, useState } from 'react';
 import { List } from '@refinedev/antd';
 import { useList, useCustom } from '@refinedev/core';
 import { Table, Select, Button, Space, Typography, Input, DatePicker, message } from 'antd';
-import { LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { LeftOutlined, RightOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, ShiftCategory } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { lateTier, formatMinutes } from '../../utils/lateSeverity';
 import { API_URL } from '../../providers/axios';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { downloadCsv, downloadXlsx, type SheetCell, type SheetSpec } from '../../utils/exportSheet';
 
 const { RangePicker } = DatePicker;
 // The most the server's /attendance-daily/range serves per request — about a
@@ -52,6 +53,8 @@ export const AttendanceDailyPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>();
   const [positionFilter, setPositionFilter] = useState<string>();
+  // One or more people picked by name — for a report (or an export) on just them.
+  const [personFilter, setPersonFilter] = useState<string[]>([]);
 
   const { data: employeesData, isLoading: employeesLoading } = useList<Employee>({
     resource: 'employees',
@@ -79,19 +82,40 @@ export const AttendanceDailyPage: React.FC = () => {
     return Array.from(map, ([value, label]) => ({ value, label }));
   }, [allEmployees]);
 
+  const inDepartmentAndPosition = (e: Employee, department = departmentFilter, position = positionFilter) =>
+    (!department || idOf(e.department) === department) && (!position || idOf(e.position) === position);
+
+  // The people picker offers only those in the department/position picked.
+  const personOptions = useMemo(
+    () =>
+      allEmployees
+        .filter((e) => inDepartmentAndPosition(e))
+        .map((e) => ({ value: e._id, label: `${e.employeeCode ?? ''} ${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allEmployees, departmentFilter, positionFilter]
+  );
+  // Picking another department/position drops the people picked who aren't in it.
+  const narrowPeople = (department: string | undefined, position: string | undefined) =>
+    setPersonFilter((picked) => picked.filter((id) => {
+      const e = allEmployees.find((x) => x._id === id);
+      return !!e && inDepartmentAndPosition(e, department, position);
+    }));
+
   const employees = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const picked = new Set(personFilter);
     return allEmployees.filter((e) => {
       if (q) {
         const name = `${e.firstName ?? ''} ${e.lastName ?? ''}`.toLowerCase();
         const code = (e.employeeCode ?? '').toLowerCase();
         if (!name.includes(q) && !code.includes(q)) return false;
       }
-      if (departmentFilter && idOf(e.department) !== departmentFilter) return false;
-      if (positionFilter && idOf(e.position) !== positionFilter) return false;
+      if (!inDepartmentAndPosition(e)) return false;
+      if (picked.size && !picked.has(e._id)) return false;
       return true;
     });
-  }, [allEmployees, search, departmentFilter, positionFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEmployees, search, departmentFilter, positionFilter, personFilter]);
 
   // Every record in range, bounded by the range rather than a row count —
   // any fixed page size (5000, then 20000 here) silently drops the newest
@@ -169,6 +193,125 @@ export const AttendanceDailyPage: React.FC = () => {
     return map;
   }, [dailyRows]);
 
+  // ສົ່ງອອກ: the table as shown — the dates, department, position and people
+  // picked — as an Excel sheet in the page's colours with a ລວມ row, or as CSV.
+  // Numbers stay numbers (a zero shows as "-") so they can be added up in Excel.
+  const exportSpec = (): SheetSpec => {
+    const departmentName = departmentOptions.find((d) => d.value === departmentFilter)?.label;
+    const positionName = positionOptions.find((p) => p.value === positionFilter)?.label;
+    const pickedNames = personFilter
+      .map((id) => allEmployees.find((e) => e._id === id))
+      .filter(Boolean)
+      .map((e) => `${e!.firstName ?? ''} ${e!.lastName ?? ''}`.trim());
+    const people = pickedNames.length === 1 ? pickedNames[0] : pickedNames.length ? `${pickedNames.length} ຄົນທີ່ເລືອກ` : undefined;
+    const filters = [departmentName && `ພະແນກ ${departmentName}`, positionName && `ຕຳແໜ່ງ ${positionName}`, people, search && `ຄົ້ນຫາ "${search}"`]
+      .filter(Boolean)
+      .join(' · ');
+
+    const count = '0;-0;"-"';
+    const hours = '0.0';
+    const badge = (value: number, kind: keyof typeof BADGE_STYLE): SheetCell =>
+      value > 0
+        ? { value, numFmt: count, fill: BADGE_STYLE[kind].bg, color: BADGE_STYLE[kind].text, bold: true }
+        : { value: 0, numFmt: count, color: '#BFBFBF' };
+    const header = (text: string, width: number, kind?: keyof typeof BADGE_STYLE) => ({
+      header: text,
+      width,
+      ...(kind ? { fill: BADGE_STYLE[kind].bg, color: BADGE_STYLE[kind].text } : {}),
+    });
+    const round1 = (n: number) => Math.round(n * 10) / 10;
+    const totals = employees.reduce(
+      (sum, emp) => {
+        const s = summaryByEmployee[emp._id];
+        if (!s) return sum;
+        sum.expectedHours += s.expectedHours;
+        sum.workedHours += s.workedHours;
+        sum.lateMinutes += s.lateMinutes;
+        sum.lateDays += s.lateDays;
+        sum.moderateLateDays += s.moderateLateDays;
+        sum.severeLateDays += s.severeLateDays;
+        sum.substitutedDays += s.substitutedDays;
+        sum.earlyLeaveMinutes += s.earlyLeaveMinutes;
+        sum.noScanOutDays += s.noScanOutDays;
+        sum.absentDays += s.absentDays;
+        return sum;
+      },
+      { expectedHours: 0, workedHours: 0, lateMinutes: 0, lateDays: 0, moderateLateDays: 0, severeLateDays: 0, substitutedDays: 0, earlyLeaveMinutes: 0, noScanOutDays: 0, absentDays: 0 }
+    );
+
+    return {
+      fileName: `scan-report_${rangeStartKey}_${rangeEndKey}`,
+      sheetName: 'ລາຍງານການສະແກນ',
+      title: `ລາຍງານການສະແກນ ${filters || 'ທັງໝົດ'} ວັນທີ ${range[0].format('DD/MM/YYYY')} - ${range[1].format('DD/MM/YYYY')}`,
+      printedAt: dayjs().format('DD/MM/YYYY HH:mm'),
+      frozenColumns: 2,
+      striped: true,
+      columns: [
+        header('ລະຫັດ', 9),
+        header('ຊື່ພະນັກງານ', 24),
+        header('ພະແນກ', 14),
+        header('ຕຳແໜ່ງ', 16),
+        header('ຊົ່ວໂມງທີ່ຕ້ອງເຮັດ (ຊມ.)', 13),
+        header('ຊົ່ວໂມງທີ່ເຮັດແທ້ (ຊມ.)', 13),
+        header('ມາຊ້າ (ນາທີ)', 11, 'late'),
+        header('ມາຊ້າ (ມື້)', 10, 'late'),
+        header(`ຊ້າເກີນ ${graceLabel} (ຄັ້ງ)`, 14, 'late'),
+        header(`ຊ້າເກີນ ${severeLabel} (ຄັ້ງ)`, 14, 'late'),
+        header('ມາແທນ (ຄັ້ງ)', 11, 'substituted'),
+        header('ກັບກ່ອນ (ນາທີ)', 12, 'late'),
+        header('ສະແກນຄັ້ງດຽວ (ຄັ້ງ)', 13, 'incomplete'),
+        header('ມື້ຂາດວຽກ (ວັນ)', 12, 'absent'),
+      ],
+      rows: employees.map((emp) => {
+        const s = summaryByEmployee[emp._id];
+        return [
+          emp.employeeCode ?? '',
+          { value: `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim(), align: 'left' as const },
+          { value: (typeof emp.department === 'object' ? emp.department?.name : undefined) || '-', align: 'left' as const },
+          { value: (typeof emp.position === 'object' ? emp.position?.name : undefined) || '-', align: 'left' as const },
+          { value: round1(s?.expectedHours ?? 0), numFmt: hours },
+          { value: round1(s?.workedHours ?? 0), numFmt: hours },
+          badge(s?.lateMinutes ?? 0, 'late'),
+          badge(s?.lateDays ?? 0, 'late'),
+          badge(s?.moderateLateDays ?? 0, 'late'),
+          badge(s?.severeLateDays ?? 0, 'late'),
+          badge(s?.substitutedDays ?? 0, 'substituted'),
+          badge(s?.earlyLeaveMinutes ?? 0, 'late'),
+          badge(s?.noScanOutDays ?? 0, 'incomplete'),
+          badge(s?.absentDays ?? 0, 'absent'),
+        ];
+      }),
+      totals: [
+        'ລວມ',
+        { value: `${employees.length} ຄົນ`, align: 'left' },
+        '',
+        '',
+        { value: round1(totals.expectedHours), numFmt: hours },
+        { value: round1(totals.workedHours), numFmt: hours },
+        { value: totals.lateMinutes, numFmt: count },
+        { value: totals.lateDays, numFmt: count },
+        { value: totals.moderateLateDays, numFmt: count },
+        { value: totals.severeLateDays, numFmt: count },
+        { value: totals.substitutedDays, numFmt: count },
+        { value: totals.earlyLeaveMinutes, numFmt: count },
+        { value: totals.noScanOutDays, numFmt: count },
+        { value: totals.absentDays, numFmt: count },
+      ],
+    };
+  };
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      await downloadXlsx(exportSpec());
+    } catch {
+      message.error('ສົ່ງອອກ Excel ບໍ່ສຳເລັດ');
+    } finally {
+      setExporting(false);
+    }
+  };
+  const exportDisabled = employeesLoading || dailyLoading || !employees.length;
+
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -212,7 +355,10 @@ export const AttendanceDailyPage: React.FC = () => {
             allowClear
             style={{ width: 180 }}
             value={departmentFilter}
-            onChange={(v) => setDepartmentFilter(v)}
+            onChange={(v) => {
+              setDepartmentFilter(v);
+              narrowPeople(v, positionFilter);
+            }}
           />
           <Select
             options={positionOptions}
@@ -220,8 +366,29 @@ export const AttendanceDailyPage: React.FC = () => {
             allowClear
             style={{ width: 180 }}
             value={positionFilter}
-            onChange={(v) => setPositionFilter(v)}
+            onChange={(v) => {
+              setPositionFilter(v);
+              narrowPeople(departmentFilter, v);
+            }}
           />
+          <Select
+            mode="multiple"
+            options={personOptions}
+            placeholder="ເລືອກພະນັກງານ (ທຸກຄົນ)"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            maxTagCount="responsive"
+            style={{ width: 260 }}
+            value={personFilter}
+            onChange={(v) => setPersonFilter(v)}
+          />
+          <Button icon={<FileExcelOutlined />} loading={exporting} disabled={exportDisabled} onClick={exportExcel}>
+            ສົ່ງອອກ Excel
+          </Button>
+          <Button icon={<DownloadOutlined />} disabled={exportDisabled} onClick={() => downloadCsv(exportSpec())}>
+            ສົ່ງອອກ CSV
+          </Button>
         </Space>
       </div>
 

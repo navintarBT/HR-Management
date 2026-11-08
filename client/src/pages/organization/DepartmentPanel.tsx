@@ -1,12 +1,15 @@
 import { useTable, useModalForm, useSelect, DeleteButton } from '@refinedev/antd';
 import { useGetIdentity, useInvalidate } from '@refinedev/core';
-import { Table, Button, Modal, Form, Input, Select, Space, Typography } from 'antd';
+import { useState } from 'react';
+import type { CrudFilter } from '@refinedev/core';
+import { Table, Button, Modal, Form, Input, Select, Space, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, SearchOutlined } from '@ant-design/icons';
 import type { Department, Employee, Identity } from '../../types';
 import { useTableStickyOffset, useTabsNavBottom } from '../../hooks/useTableStickyOffset';
 import { useShowAllToggle } from '../../hooks/useShowAllToggle';
 import { withLocalTextFilter } from '../../utils/selectFilters';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { EmployeeCountCell, UnusedOnlyToggle, deleteBlockedReason, useOrganizationCounts, useUnusedOnlyFilter } from './employeeCounts';
 
 export const DepartmentPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
@@ -32,6 +35,16 @@ export const DepartmentPanel: React.FC = () => {
 
   const invalidate = useInvalidate();
 
+  const { counts, unusedIds, loaded: countsLoaded, refetch: refetchCounts } = useOrganizationCounts('departments');
+  const [search, setSearch] = useState('');
+  const applyFilters = (s: string, unused: CrudFilter | null) => {
+    const filters: CrudFilter[] = [];
+    if (s) filters.push({ field: 'q', operator: 'eq', value: s });
+    if (unused) filters.push(unused);
+    setFilters(filters, 'replace');
+  };
+  const { onlyUnused, setOnlyUnused, unusedFilter } = useUnusedOnlyFilter(unusedIds, (unused) => applyFilters(search, unused));
+
   const { selectProps: headSelect } = useSelect<Employee>({
     resource: 'employees',
     optionLabel: (item) => `${item.firstName} ${item.lastName}`,
@@ -42,6 +55,7 @@ export const DepartmentPanel: React.FC = () => {
   const { modalProps: createModalProps, formProps: createFormProps, show: showCreate } = useModalForm<Department>({
     resource: 'departments',
     action: 'create',
+    onMutationSuccess: () => refetchCounts(),
   });
 
   const {
@@ -66,14 +80,20 @@ export const DepartmentPanel: React.FC = () => {
   return (
     <div>
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
-        <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Input.Search
-            placeholder="ຄົ້ນຫາຊື່ພະແນກ"
-            allowClear
-            style={{ width: 220 }}
-            prefix={<SearchOutlined />}
-            onSearch={(value) => setFilters(value ? [{ field: 'q', operator: 'eq', value }] : [], 'replace')}
-          />
+        <Space wrap style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <Space wrap>
+            <Input.Search
+              placeholder="ຄົ້ນຫາຊື່ພະແນກ"
+              allowClear
+              style={{ width: 220 }}
+              prefix={<SearchOutlined />}
+              onSearch={(value) => {
+                setSearch(value);
+                applyFilters(value, unusedFilter);
+              }}
+            />
+            <UnusedOnlyToggle checked={onlyUnused} onChange={setOnlyUnused} count={unusedIds.length} loaded={countsLoaded} />
+          </Space>
           {isAdmin && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => showCreate()}>
               ເພີ່ມພະແນກ
@@ -82,8 +102,16 @@ export const DepartmentPanel: React.FC = () => {
         </Space>
       </div>
 
-      <Table {...tableProps} pagination={pagination} rowKey="_id" sticky={{ offsetHeader }}>
+      <Table {...tableProps} pagination={pagination} rowKey="_id" sticky={{ offsetHeader }} scroll={{ x: 'max-content' }}>
         <Table.Column title="ຊື່ພະແນກ" dataIndex="name" />
+        <Table.Column
+          title="ພະນັກງານ"
+          render={(_, record: Department) => <EmployeeCountCell kind="departments" entry={counts?.[record._id]} loaded={countsLoaded} />}
+        />
+        <Table.Column
+          title="ຕໍາແໜ່ງ"
+          render={(_, record: Department) => (countsLoaded ? counts?.[record._id]?.positions ?? 0 : '-')}
+        />
         <Table.Column
           title="ຫົວໜ້າພະແນກ"
           render={(_, record: Department) =>
@@ -94,12 +122,33 @@ export const DepartmentPanel: React.FC = () => {
           <Table.Column
             title="ຈັດການ"
             width={120}
-            render={(_, record: Department) => (
-              <Space>
-                <Button size="small" icon={<EditOutlined />} onClick={() => showEdit(record._id)} />
-                <DeleteButton size="small" hideText resource="departments" recordItemId={record._id} />
-              </Space>
-            )}
+            render={(_, record: Department) => {
+              const entry = counts?.[record._id];
+              const blocked = deleteBlockedReason('departments', entry);
+              const linkedPositions = entry?.positions ?? 0;
+              return (
+                <Space>
+                  <Button size="small" icon={<EditOutlined />} onClick={() => showEdit(record._id)} />
+                  <Tooltip title={blocked}>
+                    <span>
+                      <DeleteButton
+                        size="small"
+                        hideText
+                        resource="departments"
+                        recordItemId={record._id}
+                        disabled={!!blocked}
+                        confirmTitle={
+                          linkedPositions
+                            ? `ພະແນກນີ້ມີ ${linkedPositions} ຕໍາແໜ່ງ — ລຶບແລ້ວຕໍາແໜ່ງເຫຼົ່ານັ້ນຈະບໍ່ຢູ່ໃນພະແນກນີ້ອີກ. ລຶບບໍ?`
+                            : undefined
+                        }
+                        onSuccess={() => refetchCounts()}
+                      />
+                    </span>
+                  </Tooltip>
+                </Space>
+              );
+            }}
           />
         )}
       </Table>

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Edit, useForm, useSelect } from '@refinedev/antd';
 import { useNavigation } from '@refinedev/core';
-import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Divider, Button } from 'antd';
+import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Divider, Button, Modal, Typography } from 'antd';
 import dayjs from 'dayjs';
 import type { Department, EmploymentType, Employee, ShiftCategory } from '../../types';
 import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
@@ -109,8 +109,24 @@ export const EmployeeEdit: React.FC = () => {
     pagination: { pageSize: 200, mode: 'server' },
   });
 
+  // ລະຫັດພະນັກງານ is editable. The scanner number has been the same as the code
+  // (unless someone set another one), so it follows the code while they still
+  // match: shown in the form before saving, and the server's PIN change takes
+  // it off the scanners under the old number and puts it on under the new.
+  const lastCodeRef = useRef<string | undefined>(undefined);
+  const codeValue: string | undefined = Form.useWatch('employeeCode', form);
+  const pinValue: string | undefined = Form.useWatch('deviceUserId', form);
+  const codeChanged = !!record && (codeValue ?? '') !== (record.employeeCode ?? '');
+  const pinChanged = !!record && (pinValue ?? '') !== (record.deviceUserId ?? '');
+  const followCode = (next: string) => {
+    if ((form.getFieldValue('deviceUserId') ?? '') === (lastCodeRef.current ?? '')) form.setFieldValue('deviceUserId', next);
+    lastCodeRef.current = next;
+  };
+  const [modal, modalContext] = Modal.useModal();
+
   useEffect(() => {
     if (!record) return;
+    lastCodeRef.current = record.employeeCode;
     form.setFieldsValue({
       employeeCode: record.employeeCode,
       deviceUserId: record.deviceUserId,
@@ -144,7 +160,37 @@ export const EmployeeEdit: React.FC = () => {
   // When a category is picked, it becomes the live source of the default
   // time (see Employee.defaultShiftCategory) — the manual time fields are
   // only meaningful without one, so they're cleared rather than stored stale.
-  const submitValues = (values: any) =>
+  // A new code is the employee app's login, and maybe the scanner number too —
+  // spelled out before it's saved.
+  const submitValues = (values: any) => {
+    if (!record || (values.employeeCode ?? '') === (record.employeeCode ?? '')) return saveValues(values);
+    const oldPin = record.deviceUserId ?? '';
+    const newPin = values.deviceUserId ?? '';
+    modal.confirm({
+      title: `ປ່ຽນລະຫັດພະນັກງານ ${record.employeeCode ?? '-'} → ${values.employeeCode}?`,
+      width: 520,
+      content: (
+        <ul style={{ paddingInlineStart: 18, margin: 0 }}>
+          <li>
+            ແອັບພະນັກງານ: ຕ້ອງເຂົ້າສູ່ລະບົບດ້ວຍລະຫັດ <b>{values.employeeCode}</b> ແທນ {record.employeeCode ?? '-'}
+          </li>
+          {oldPin !== newPin ? (
+            <li>
+              ລະຫັດເຄື່ອງສະແກນ {oldPin || '-'} → <b>{newPin || '-'}</b>: ລະຫັດເກົ່າຈະຖືກລຶບອອກຈາກທຸກເຄື່ອງ. ເຄື່ອງທີ່ເປີດຊິງຈະໄດ້ລະຫັດໃໝ່ພ້ອມໃບໜ້າ/ນິ້ວມືເອງ —
+              ເຄື່ອງທີ່ບໍ່ເປີດຊິງ ຕ້ອງລົງທະບຽນໃໝ່ຢູ່ເຄື່ອງ
+            </li>
+          ) : (
+            <li>ລະຫັດເຄື່ອງສະແກນຍັງເປັນ {oldPin || '-'} ຄືເກົ່າ</li>
+          )}
+          <li>ປະຫວັດການສະແກນ, ການລາ ແລະ ເງິນເດືອນທີ່ຜ່ານມາ ຍັງຢູ່ຄືເກົ່າ</li>
+        </ul>
+      ),
+      okText: 'ປ່ຽນລະຫັດ',
+      cancelText: 'ຍົກເລີກ',
+      onOk: () => saveValues(values),
+    });
+  };
+  const saveValues = (values: any) =>
     formProps.onFinish?.({
       ...values,
       hireDate: values.hireDate ? dayjs(values.hireDate).toISOString() : undefined,
@@ -188,8 +234,28 @@ export const EmployeeEdit: React.FC = () => {
         <Divider orientation="left">ຂໍ້ມູນພະນັກງານ</Divider>
         <Row gutter={16}>
           <Col xs={24} md={12}>
-            <Form.Item label="ລະຫັດພະນັກງານ" name="employeeCode">
-              <Input disabled />
+            <Form.Item
+              label="ລະຫັດພະນັກງານ"
+              name="employeeCode"
+              rules={[
+                { required: true, message: 'ກະລຸນາປ້ອນລະຫັດພະນັກງານ' },
+                // Only a changed code has to be in the new format; an older one is saved as it is.
+                {
+                  validator: (_, value) =>
+                    !value || value === record.employeeCode || /^\d{1,5}$/.test(value)
+                      ? Promise.resolve()
+                      : Promise.reject(new Error('ຕ້ອງເປັນຕົວເລກ ແລະ ບໍ່ເກີນ 5 ຕົວ')),
+                },
+              ]}
+              extra={
+                codeChanged ? (
+                  <Typography.Text type="warning">
+                    ແອັບພະນັກງານຈະເຂົ້າສູ່ລະບົບດ້ວຍລະຫັດໃໝ່{pinChanged ? ' · ລະຫັດເຄື່ອງສະແກນປ່ຽນຕາມ' : ''}
+                  </Typography.Text>
+                ) : undefined
+              }
+            >
+              <Input maxLength={5} placeholder="ຕົວຢ່າງ: 00212" onChange={(e) => followCode(e.target.value)} />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
@@ -334,6 +400,7 @@ export const EmployeeEdit: React.FC = () => {
       </Form>
       )}
       {absenceSeverityModal}
+      {modalContext}
     </Edit>
   );
 };

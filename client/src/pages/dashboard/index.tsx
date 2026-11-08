@@ -62,6 +62,7 @@ import type {
 import { palette, categorical, tint } from '../../theme/palette';
 import { AttendanceStatusTag, LeaveTypeTag, employeeStatusMap } from '../../components/StatusTags';
 import { REST_DAY_FROM_THE_START } from '../../utils/restDays';
+import { DepartmentDayReportCard } from './DepartmentDayReport';
 
 const CARD_RADIUS = 12;
 const CARD_BODY_PADDING = 20;
@@ -198,10 +199,13 @@ export const DashboardPage: React.FC = () => {
   useEffect(() => {
     if (summary) setLastUpdated(dayjs());
   }, [summary]);
+  // Tells ລາຍງານແຕ່ລະພະແນກ (its own query) to load again with the rest.
+  const [refreshSignal, setRefreshSignal] = useState(0);
 
   const handleRefresh = () => {
     summaryQuery.refetch();
     if (isAdmin) {
+      setRefreshSignal((n) => n + 1);
       orgQuery.refetch();
       qualityQuery.refetch();
       otQuery.refetch();
@@ -423,6 +427,8 @@ export const DashboardPage: React.FC = () => {
           </Card>
         ))}
       </div>
+
+      {isAdmin && <DepartmentDayReportCard refreshSignal={refreshSignal} />}
 
       <Card
         title="ແນວໂນ້ມການເຂົ້າວຽກຍ້ອນຫຼັງ 14 ວັນ"

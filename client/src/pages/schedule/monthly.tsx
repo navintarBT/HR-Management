@@ -12,7 +12,7 @@ import {
   useNavigation,
   useWarnAboutChange,
 } from '@refinedev/core';
-import { Table, Typography, Space, Button, Modal, Form, TimePicker, DatePicker, Select, Input, Popconfirm, Tooltip } from 'antd';
+import { Table, Typography, Space, Button, Modal, Form, TimePicker, Select, Input, Popconfirm, Tooltip } from 'antd';
 import { LeftOutlined, RightOutlined, CalendarOutlined, ScheduleOutlined, SearchOutlined, UserSwitchOutlined } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 import type {
@@ -35,6 +35,7 @@ import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import { ScheduleCoversGrid } from './covers';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { ShiftChangeFields, scheduleShiftChange, cancelScheduledShiftChange } from '../../components/ShiftChangeAhead';
 import { preferredOverride } from '../../utils/dayOverride';
 import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
 import {
@@ -789,9 +790,6 @@ export const MonthlyScheduleGrid: React.FC = () => {
   const [shiftChangeDate, setShiftChangeDate] = useState<Dayjs | null>(null);
   const [shiftChangeCategory, setShiftChangeCategory] = useState<string | undefined>(undefined);
   const [creatingNewCategory, setCreatingNewCategory] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [newCategoryTime, setNewCategoryTime] = useState<[Dayjs, Dayjs] | null>(null);
-  const [creatingCategory, setCreatingCategory] = useState(false);
   const [schedulingShiftChange, setSchedulingShiftChange] = useState(false);
 
   const openShiftChange = () => {
@@ -800,42 +798,13 @@ export const MonthlyScheduleGrid: React.FC = () => {
     setShiftChangeDate(dayjs(editing.dateKey));
     setShiftChangeCategory(undefined);
     setCreatingNewCategory(false);
-    setNewCategoryName('');
-    setNewCategoryTime(null);
-  };
-
-  const createCategoryThenUse = async () => {
-    if (!newCategoryTime) return;
-    setCreatingCategory(true);
-    try {
-      const [start, end] = newCategoryTime;
-      const res = await axiosInstance.post(`${API_URL}/shift-categories`, {
-        name: newCategoryName.trim() || undefined,
-        startTime: start.format('HH:mm'),
-        endTime: end.format('HH:mm'),
-      });
-      setShiftChangeCategory(res.data._id);
-      setCreatingNewCategory(false);
-      setNewCategoryName('');
-      setNewCategoryTime(null);
-      invalidate({ resource: 'shift-categories', invalidates: ['list'] });
-      notify?.({ type: 'success', message: 'ສ້າງກະໃໝ່ແລ້ວ' });
-    } catch (err: any) {
-      notify?.({ type: 'error', message: err?.response?.data?.message || 'ສ້າງກະໃໝ່ບໍ່ສຳເລັດ' });
-    } finally {
-      setCreatingCategory(false);
-    }
   };
 
   const submitShiftChange = async () => {
     if (!editing || !shiftChangeCategory || !shiftChangeDate) return;
     setSchedulingShiftChange(true);
     try {
-      await axiosInstance.post(`${API_URL}/scheduled-shift-changes`, {
-        employee: editing.employee._id,
-        newShiftCategory: shiftChangeCategory,
-        effectiveDate: shiftChangeDate.format('YYYY-MM-DD'),
-      });
+      await scheduleShiftChange(editing.employee._id, shiftChangeCategory, shiftChangeDate.format('YYYY-MM-DD'));
       notify?.({ type: 'success', message: `ຕັ້ງການຍ້າຍກະລ່ວງໜ້າແລ້ວ — ມີຜົນວັນທີ ${shiftChangeDate.format('DD/MM/YYYY')}` });
       closeModal();
       invalidate({ resource: 'shifts', invalidates: ['list'] });
@@ -849,7 +818,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
 
   const cancelShiftChange = async (id: string) => {
     try {
-      await axiosInstance.patch(`${API_URL}/scheduled-shift-changes/${id}`, { status: 'cancelled' });
+      await cancelScheduledShiftChange(id);
       notify?.({ type: 'success', message: 'ຍົກເລີກການຍ້າຍກະລ່ວງໜ້າແລ້ວ' });
       closeModal();
       invalidate({ resource: 'shifts', invalidates: ['list'] });
@@ -1640,55 +1609,13 @@ export const MonthlyScheduleGrid: React.FC = () => {
                   <Typography.Text>
                     ຍ້າຍກະລ່ວງໜ້າໃຫ້ {personLabel(editing.employee)} — ມີຜົນນັບແຕ່ວັນທີ່ເລືອກລຸ່ມນີ້ເປັນຕົ້ນໄປ
                   </Typography.Text>
-                  <DatePicker
-                    format="DD/MM/YYYY"
-                    value={shiftChangeDate}
-                    onChange={(v) => setShiftChangeDate(v)}
-                    style={{ width: '100%' }}
-                    allowClear={false}
+                  <ShiftChangeFields
+                    date={shiftChangeDate}
+                    onDateChange={setShiftChangeDate}
+                    category={shiftChangeCategory}
+                    onCategoryChange={setShiftChangeCategory}
+                    onCreatingChange={setCreatingNewCategory}
                   />
-                  {!creatingNewCategory ? (
-                    <>
-                      <Select
-                        {...shiftCategorySelect}
-                        placeholder="ເລືອກກະທີ່ມີ"
-                        style={{ width: '100%' }}
-                        value={shiftChangeCategory}
-                        onChange={(v: any) => setShiftChangeCategory(v)}
-                      />
-                      <Button type="link" style={{ paddingLeft: 0 }} onClick={() => setCreatingNewCategory(true)}>
-                        + ສ້າງກະໃໝ່
-                      </Button>
-                    </>
-                  ) : (
-                    <div style={{ border: '1px dashed #d9d9d9', borderRadius: 6, padding: 12, width: '100%' }}>
-                      <Typography.Text strong style={{ display: 'block', marginBottom: 8 }}>
-                        ສ້າງກະໃໝ່
-                      </Typography.Text>
-                      <Input
-                        placeholder="ຊື່ໝວດໝູ່ (ບໍ່ບັງຄັບ)"
-                        value={newCategoryName}
-                        onChange={(e) => setNewCategoryName(e.target.value)}
-                        style={{ marginBottom: 8 }}
-                      />
-                      <TimePicker.RangePicker
-                        format="HH:mm"
-                        minuteStep={15}
-                        order={false}
-                        style={{ width: '100%', marginBottom: 8 }}
-                        value={newCategoryTime}
-                        onChange={(v) => setNewCategoryTime(v as [Dayjs, Dayjs] | null)}
-                      />
-                      <Space>
-                        <Button type="primary" size="small" loading={creatingCategory} disabled={!newCategoryTime} onClick={createCategoryThenUse}>
-                          ສ້າງ ແລະ ເລືອກໃຊ້
-                        </Button>
-                        <Button size="small" onClick={() => setCreatingNewCategory(false)}>
-                          ຍົກເລີກ, ເລືອກຈາກລາຍການ
-                        </Button>
-                      </Space>
-                    </div>
-                  )}
                   <Button
                     type="primary"
                     onClick={submitShiftChange}

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm, message } from 'antd';
-import { CameraFilled, LeftOutlined, RightOutlined, SearchOutlined } from '@ant-design/icons';
+import { CameraFilled, LeftOutlined, RightOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type {
   AttendanceDaily,
@@ -23,6 +23,7 @@ import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { ScanEvidenceView } from '../../components/ScanEvidenceView';
+import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -119,7 +120,7 @@ const AttendanceSummaryGrid: React.FC = () => {
   const [departmentFilter, setDepartmentFilter] = useState<string>();
   const [positionFilter, setPositionFilter] = useState<string>();
 
-  const { selectProps: departmentSelect } = useSelect<Department>({
+  const { selectProps: departmentSelect, query: departmentQuery } = useSelect<Department>({
     resource: 'departments',
     optionLabel: 'name',
     optionValue: '_id',
@@ -442,6 +443,126 @@ const AttendanceSummaryGrid: React.FC = () => {
     }
   };
 
+  // What one person's day shows, for the table and the exported files alike.
+  type DayCell =
+    | { kind: 'status'; label: string; time?: string; bg: string; text: string; title?: string }
+    | { kind: 'time'; time: string }
+    | { kind: 'queued'; time: string }
+    | { kind: 'badge'; label: string; bg: string; text: string; title?: string }
+    | { kind: 'none' };
+  const dayCellOf = (emp: Employee, dateKey: string, day: Dayjs): DayCell => {
+    const row = byEmpDate[`${emp._id}_${dateKey}`];
+    // A lone late-arriving scan can land as lastOut with no
+    // firstIn at all now (see attendanceProcessor.js's
+    // shift-midpoint check) — show that one time too instead of
+    // silently dropping it just because it's not firstIn.
+    const timeText = (r: AttendanceDaily) =>
+      r.firstIn
+        ? `${dayjs(r.firstIn).format('HH:mm')}${r.lastOut ? `-${dayjs(r.lastOut).format('HH:mm')}` : ''}`
+        : r.lastOut
+          ? dayjs(r.lastOut).format('HH:mm')
+          : '';
+
+    const style = row ? CELL_STYLE[row.status] : undefined;
+    if (style) {
+      const severity = row!.status === 'absent' ? absentSeverity(emp, day, row!) : null;
+      // Still ລາ — the leave decides — but scanned anyway, so HR
+      // checks it and corrects the leave if they really came in.
+      const scannedOnLeave = row!.status === 'leave' && !!(row!.firstIn || row!.lastOut);
+      const label =
+        row!.status === 'late'
+          ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
+          : row!.status === 'absent'
+            ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
+            : `${style.label}${scannedOnLeave ? ' ⚠' : ''}${row!.autoFilledReason ? ' ↺' : ''}`;
+      const title = row!.disciplinaryNote
+        ? `ລົງໂທດ: ${row!.disciplinaryNote}`
+        : scannedOnLeave
+          ? 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ'
+          : row!.autoFilledReason
+            ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
+            : undefined;
+      return { kind: 'status', label, time: timeText(row!) || undefined, bg: style.bg, text: style.text, title };
+    }
+    if (row?.firstIn) return { kind: 'time', time: timeText(row) };
+    // No AttendanceDaily row at all — a real queued shift always
+    // wins first (that's what a swap/stand-in override means, even
+    // on what's otherwise this employee's day off), shown plain
+    // since nothing has actually been scanned against it yet.
+    // Otherwise check for a real "rest" Shift override (a company
+    // holiday shows its occasion name; a personal one-off rest day
+    // just shows "ພັກ"), then finally the recurring weekly day off.
+    const queuedShift = scheduledByEmpDate[`${emp._id}_${dateKey}`];
+    if (queuedShift) return { kind: 'queued', time: `${queuedShift.startTime}-${queuedShift.endTime}` };
+    if (swappedByEmpDate[`${emp._id}_${dateKey}`]) {
+      const swapped = CELL_STYLE.swapped;
+      return { kind: 'badge', label: swapped.label, bg: swapped.bg, text: swapped.text };
+    }
+    const restShift = restByEmpDate[`${emp._id}_${dateKey}`];
+    const rest = CELL_STYLE.rest;
+    if (restShift) {
+      const holiday = restShift.holiday;
+      const isHoliday = !!holiday && typeof holiday === 'object';
+      return { kind: 'badge', label: isHoliday ? 'ຮ້ານປິດ' : rest.label, bg: rest.bg, text: rest.text, title: isHoliday ? holiday.name : undefined };
+    }
+    if (isRecurringRestDay(emp, dateKey, day)) return { kind: 'badge', label: rest.label, bg: rest.bg, text: rest.text };
+    return { kind: 'none' };
+  };
+
+  // ສົ່ງອອກ: the table as shown — the people filtered, the dates picked — as
+  // Excel in the page's colours, or as plain CSV.
+  const exportSpec = (): SheetSpec => {
+    const department = (departmentQuery?.data?.data ?? []).find((d) => d._id === departmentFilter);
+    const position = allPositions.find((p) => p._id === positionFilter);
+    const filters = [department?.name, position?.name, search && `ຄົ້ນຫາ "${search}"`].filter(Boolean).join(' · ');
+    const range0 = range[0].format('DD/MM/YYYY');
+    const range1 = range[1].format('DD/MM/YYYY');
+    return {
+      fileName: `scan-history_${range[0].format('YYYY-MM-DD')}_${range[1].format('YYYY-MM-DD')}`,
+      sheetName: 'ປະຫວັດການສະແກນ',
+      title: `ປະຫວັດການສະແກນເຂົ້າ-ອອກວຽກ${filters ? ` ${filters}` : ' ທັງໝົດ'} ວັນທີ ${range0} - ${range1}`,
+      printedAt: dayjs().format('DD/MM/YYYY HH:mm'),
+      frozenColumns: 4,
+      legend: (['late', 'incomplete', 'absent', 'leave', 'rest', 'substituted', 'swapped'] as const).map((k) => ({
+        label: CELL_STYLE[k].label,
+        text: '',
+        color: CELL_STYLE[k].text,
+      })),
+      columns: [
+        { header: 'ລະຫັດ', width: 9 },
+        { header: 'ຊື່ພະນັກງານ', width: 24 },
+        { header: 'ພະແນກ', width: 14 },
+        { header: 'ຕຳແໜ່ງ', width: 16 },
+        ...days.map((day) => ({ header: `${day.format('DD/MM')}\n${day.format('ddd')}`, width: 13 })),
+      ],
+      rows: employees.map((emp) => [
+        { value: emp.employeeCode ?? '', align: 'center' as const },
+        { value: `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim(), align: 'left' as const },
+        { value: (typeof emp.department === 'object' ? emp.department?.name : undefined) ?? '-', align: 'left' as const },
+        { value: (typeof emp.position === 'object' ? emp.position?.name : undefined) ?? '-', align: 'left' as const },
+        ...days.map((day) => {
+          const cell = dayCellOf(emp, day.format('YYYY-MM-DD'), day);
+          if (cell.kind === 'status') return { value: cell.time ? `${cell.label}\n${cell.time}` : cell.label, fill: cell.bg, color: cell.text, bold: true };
+          if (cell.kind === 'badge') return { value: cell.label, fill: cell.bg, color: cell.text, bold: true };
+          if (cell.kind === 'time') return { value: cell.time };
+          if (cell.kind === 'queued') return { value: cell.time, color: '#8c8c8c' };
+          return { value: '-', color: '#bfbfbf' };
+        }),
+      ]),
+    };
+  };
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      await downloadXlsx(exportSpec());
+    } catch {
+      message.error('ສົ່ງອອກ Excel ບໍ່ສຳເລັດ');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -504,6 +625,12 @@ const AttendanceSummaryGrid: React.FC = () => {
               value={positionFilter}
               onChange={(v: any) => setPositionFilter(v)}
             />
+            <Button icon={<FileExcelOutlined />} loading={exporting} disabled={!employees.length} onClick={exportExcel}>
+              ສົ່ງອອກ Excel
+            </Button>
+            <Button icon={<DownloadOutlined />} disabled={!employees.length} onClick={() => downloadCsv(exportSpec())}>
+              ສົ່ງອອກ CSV
+            </Button>
           </Space>
           <Space wrap size={[14, 6]}>
             {[
@@ -613,94 +740,27 @@ const AttendanceSummaryGrid: React.FC = () => {
               }}
               render={(_, emp: Employee) => {
                 const renderDay = () => {
-                  const row = byEmpDate[`${emp._id}_${dateKey}`];
-                  // A lone late-arriving scan can land as lastOut with no
-                  // firstIn at all now (see attendanceProcessor.js's
-                  // shift-midpoint check) — show that one time too instead of
-                  // silently dropping it just because it's not firstIn.
-                  const timeText = (r: AttendanceDaily) =>
-                    r.firstIn
-                      ? `${dayjs(r.firstIn).format('HH:mm')}${r.lastOut ? `-${dayjs(r.lastOut).format('HH:mm')}` : ''}`
-                      : r.lastOut
-                        ? dayjs(r.lastOut).format('HH:mm')
-                        : '';
-
-                  const style = row ? CELL_STYLE[row.status] : undefined;
-                  if (style) {
-                    const time = timeText(row!);
-                    const severity = row!.status === 'absent' ? absentSeverity(emp, day, row!) : null;
-                    // Still ລາ — the leave decides — but scanned anyway, so HR
-                    // checks it and corrects the leave if they really came in.
-                    const scannedOnLeave = row!.status === 'leave' && !!(row!.firstIn || row!.lastOut);
-                    const label =
-                      row!.status === 'late'
-                        ? lateLabel(row!.lateMinutes, row!.graceMinutes, row!.severeLateMinutes)
-                        : row!.status === 'absent'
-                          ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
-                          : `${style.label}${scannedOnLeave ? ' ⚠' : ''}${row!.autoFilledReason ? ' ↺' : ''}`;
-                    const cellTitle = row!.disciplinaryNote
-                      ? `ລົງໂທດ: ${row!.disciplinaryNote}`
-                      : scannedOnLeave
-                        ? 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ'
-                        : row!.autoFilledReason
-                          ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
-                          : undefined;
+                  const cell = dayCellOf(emp, dateKey, day);
+                  if (cell.kind === 'status') {
                     return (
                       <div
-                        title={cellTitle}
-                        style={{ background: style.bg, color: style.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}
+                        title={cell.title}
+                        style={{ background: cell.bg, color: cell.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', lineHeight: 1.3 }}
                       >
-                        <div style={{ fontSize: 11, fontWeight: 500 }}>{label}</div>
-                        {time && <div style={{ fontSize: 11 }}>{time}</div>}
+                        <div style={{ fontSize: 11, fontWeight: 500 }}>{cell.label}</div>
+                        {cell.time && <div style={{ fontSize: 11 }}>{cell.time}</div>}
                       </div>
                     );
                   }
-                  if (row?.firstIn) {
-                    return <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{timeText(row)}</span>;
-                  }
-                  // No AttendanceDaily row at all — a real queued shift always
-                  // wins first (that's what a swap/stand-in override means, even
-                  // on what's otherwise this employee's day off), shown plain
-                  // since nothing has actually been scanned against it yet.
-                  // Otherwise check for a real "rest" Shift override (a company
-                  // holiday shows its occasion name; a personal one-off rest day
-                  // just shows "ພັກ"), then finally the recurring weekly day off.
-                  const queuedShift = scheduledByEmpDate[`${emp._id}_${dateKey}`];
-                  if (queuedShift) {
-                    return (
-                      <span style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>
-                        {queuedShift.startTime}-{queuedShift.endTime}
-                      </span>
-                    );
-                  }
-                  const swappedShift = swappedByEmpDate[`${emp._id}_${dateKey}`];
-                  if (swappedShift) {
-                    const swapped = CELL_STYLE.swapped;
-                    return (
-                      <div style={{ background: swapped.bg, color: swapped.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
-                        {swapped.label}
-                      </div>
-                    );
-                  }
-                  const restShift = restByEmpDate[`${emp._id}_${dateKey}`];
-                  if (restShift) {
-                    const holiday = restShift.holiday;
-                    const isHoliday = holiday && typeof holiday === 'object';
-                    const rest = CELL_STYLE.rest;
+                  if (cell.kind === 'time') return <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{cell.time}</span>;
+                  if (cell.kind === 'queued') return <span style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>{cell.time}</span>;
+                  if (cell.kind === 'badge') {
                     return (
                       <div
-                        title={isHoliday ? holiday.name : undefined}
-                        style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}
+                        title={cell.title}
+                        style={{ background: cell.bg, color: cell.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}
                       >
-                        {isHoliday ? 'ຮ້ານປິດ' : rest.label}
-                      </div>
-                    );
-                  }
-                  if (isRecurringRestDay(emp, dateKey, day)) {
-                    const rest = CELL_STYLE.rest;
-                    return (
-                      <div style={{ background: rest.bg, color: rest.text, borderRadius: 4, padding: '2px 4px', textAlign: 'center', fontSize: 11, fontWeight: 500 }}>
-                        {rest.label}
+                        {cell.label}
                       </div>
                     );
                   }

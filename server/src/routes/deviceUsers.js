@@ -94,6 +94,28 @@ router.patch('/devices/:serial', authenticate, requireRole('admin'), async (req,
   }
 });
 
+// Takes a terminal off the list: a test entry, or a scanner retired or
+// replaced. Its command queue and its list of who's enrolled on it go with it.
+// What it already sent stays: the scans (people's attendance) and the
+// fingerprints/faces it uploaded (the other scanners still use them). A
+// terminal that's still switched on comes back on its next contact, as
+// ລໍຖ້າອະນຸມັດ, like any new one.
+router.delete('/devices/:serial', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const device = await findDevice(req.params.serial);
+    if (!device) return res.status(404).json({ message: 'Not found' });
+    const sn = device.serialNumber;
+    const [commands, enrolled] = await Promise.all([
+      DeviceCommand.deleteMany({ serialNumber: sn }),
+      DeviceEnrolledUser.deleteMany({ serialNumber: sn }),
+    ]);
+    await Device.deleteOne({ _id: device._id });
+    res.json({ serialNumber: sn, commandsRemoved: commands.deletedCount, enrolledRemoved: enrolled.deletedCount });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/devices/:serial/provision', authenticate, requireRole('admin'), async (req, res, next) => {
   try {
     const device = await findDevice(req.params.serial);

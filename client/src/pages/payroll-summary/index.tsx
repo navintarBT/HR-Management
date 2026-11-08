@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, Segmented, Tag, message } from 'antd';
-import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined, CheckOutlined } from '@ant-design/icons';
+import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined, CheckOutlined, FileExcelOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment, RestDayScheduleRow } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
@@ -12,6 +12,7 @@ import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
+import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
 
 const { RangePicker } = DatePicker;
 
@@ -196,12 +197,13 @@ type PrintDayState =
   | 'absent';
 type SummaryTone = 'work' | 'rest' | 'x1' | 'x2' | 'x3' | 'grace' | 'absent';
 
-// work, x2 and x3 are deliberately muted: staff found the saturated green
-// that fills most of the grid, and the vivid reds, glaring. Each red tier
-// stays darker than the one before so the x1 → x2 → x3 severity order still
-// reads at a glance.
+// work has no colour at all: ມ fills most of the grid, and staff found even a
+// muted green tiring — plain, the days that need a look (ຂາດ, ລາ, ພັກ) stand
+// out. x2 and x3 are deliberately muted, the vivid reds having been glaring;
+// each red tier stays darker than the one before so the x1 → x2 → x3 severity
+// order still reads at a glance.
 const SUMMARY_TONE: Record<SummaryTone, { bg: string; text: string }> = {
-  work: { bg: '#b7eb8f', text: '#237804' },
+  work: { bg: 'transparent', text: 'inherit' },
   rest: { bg: '#d9d9d9', text: '#434343' },
   x1: { bg: '#ffccc7', text: '#a8071a' },
   x2: { bg: '#e88b8b', text: '#ffffff' },
@@ -990,35 +992,70 @@ const PayrollSummaryGrid: React.FC = () => {
     }, 8000);
   };
 
-  const exportCsv = () => {
-    const header = ['ລະຫັດ', 'ຊື່', 'ມາເຮັດວຽກ', 'ພັກ', 'ຂາດວຽກ', 'x1', 'x2', 'x3', 'ປ', 'ວັນທັງໝົດ', 'ຊ/ມ x3', 'ມື້ x2'];
-    const lines = rows.map((r) => {
-      const name = `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`.trim();
-      return [
-        r.employee.employeeCode ?? '',
-        name,
-        trackedCount(r, r.workDays),
-        r.restDays,
-        trackedCount(r, r.absentDays),
-        r.x1,
-        r.x2,
-        r.x3,
-        r.grace,
-        r.totalDays,
-        r.otHours,
-        r.otDays,
-      ]
-        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
-        .join(',');
-    });
-    const csv = [header.join(','), ...lines].join('\n');
-    const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `payroll-summary_${rangeStartKey}_${rangeEndKey}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // ສົ່ງອອກ: the print's table — its title naming the department / position /
+  // person picked, a column per day in the print's colours, then the totals —
+  // as Excel, or the same as plain CSV.
+  const exportSpec = (): SheetSpec => {
+    const tone = (t: SummaryTone) => ({ fill: SUMMARY_TONE[t].bg, color: SUMMARY_TONE[t].text });
+    const total = (value: number | string, t?: SummaryTone) => ({ value, ...(t && Number(value) > 0 ? { ...tone(t), bold: true } : {}) });
+    return {
+      fileName: `payroll-summary_${rangeStartKey}_${rangeEndKey}`,
+      sheetName: 'ສະຫຼຸບເງິນເດືອນ',
+      title: printTitle,
+      printedAt: dayjs().format('DD/MM/YYYY HH:mm'),
+      frozenColumns: 4,
+      legend: (Object.keys(PRINT_DAY_STYLE) as PrintDayState[])
+        .filter((state) => PRINT_DAY_STYLE[state].label)
+        .map((state) => ({ label: PRINT_DAY_STYLE[state].label, text: PRINT_DAY_LEGEND_TEXT[state], color: PRINT_DAY_STYLE[state].text })),
+      columns: [
+        { header: 'ລ/ດ', width: 5 },
+        { header: 'ລະຫັດ', width: 9 },
+        { header: 'ຊື່', width: 24 },
+        { header: 'ກະ', width: 12 },
+        ...days.map((d) => ({ header: `${d.format('DD')}\n${LAO_WEEKDAYS_SHORT[d.day()]}`, width: 4.5 })),
+        { header: 'ມາ', width: 6, ...tone('work') },
+        { header: 'ພັກ', width: 6, ...tone('rest') },
+        { header: 'ຂາດ', width: 6, ...tone('absent') },
+        { header: 'x1', width: 5, ...tone('x1') },
+        { header: 'x2', width: 5, ...tone('x2') },
+        { header: 'x3', width: 5, ...tone('x3') },
+        { header: 'ປ', width: 5, ...tone('grace') },
+        { header: 'ລວມ', width: 6 },
+        { header: 'ຊ/ມx3', width: 7 },
+        { header: 'ມື້x2', width: 7 },
+      ],
+      rows: rows.map((r, idx) => [
+        idx + 1,
+        r.employee.employeeCode || '-',
+        { value: [`${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`.trim(), resignedNote(r.employee)].filter(Boolean).join(' '), align: 'left' as const },
+        regularShiftHours(r.employee) ?? '-',
+        ...days.map((d) => {
+          const style = PRINT_DAY_STYLE[printDayState(r.employee, d.format('YYYY-MM-DD'), d.day())];
+          return { value: style.label, fill: style.bg, color: style.text, bold: true };
+        }),
+        total(trackedCount(r, r.workDays), 'work'),
+        total(r.restDays, 'rest'),
+        total(trackedCount(r, r.absentDays), 'absent'),
+        total(r.x1, 'x1'),
+        total(r.x2, 'x2'),
+        total(r.x3, 'x3'),
+        total(r.grace, 'grace'),
+        total(r.totalDays),
+        total(r.otHours),
+        total(r.otDays),
+      ]),
+    };
+  };
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async () => {
+    setExporting(true);
+    try {
+      await downloadXlsx(exportSpec());
+    } catch {
+      message.error('ສົ່ງອອກ Excel ບໍ່ສຳເລັດ');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
@@ -1128,7 +1165,10 @@ const PayrollSummaryGrid: React.FC = () => {
             <Button icon={<PrinterOutlined />} onClick={handlePrintClick}>
               ພິມ
             </Button>
-            <Button icon={<DownloadOutlined />} onClick={exportCsv}>
+            <Button icon={<FileExcelOutlined />} loading={exporting} onClick={exportExcel}>
+              ສົ່ງອອກ Excel
+            </Button>
+            <Button icon={<DownloadOutlined />} onClick={() => downloadCsv(exportSpec())}>
               ສົ່ງອອກ CSV
             </Button>
             <Popover

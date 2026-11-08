@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { List } from '@refinedev/antd';
 import { useCustom, useGetIdentity, useNotification } from '@refinedev/core';
 import { Table, Button, Space, Typography, Tag, Switch, Modal, DatePicker, Tooltip, Alert } from 'antd';
-import { ReloadOutlined, CloudDownloadOutlined, SyncOutlined, HistoryOutlined, CheckOutlined, StopOutlined } from '@ant-design/icons';
+import { ReloadOutlined, CloudDownloadOutlined, SyncOutlined, HistoryOutlined, CheckOutlined, StopOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Identity, ScannerDevice } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
@@ -130,6 +130,48 @@ export const ScannerDevicesPage: React.FC = () => {
     });
   };
   const waitingCount = devices.filter((d) => !d.approved).length;
+
+  // Off the list: a test entry, or a scanner retired or replaced. One that's
+  // still switched on comes straight back as ລໍຖ້າອະນຸມັດ, so that case is
+  // spelled out before it's done to a scanner in use.
+  const removeDevice = (device: ScannerDevice) => {
+    const sinceContact = device.lastSeenAt ? dayjs().diff(dayjs(device.lastSeenAt), 'minute') : null;
+    const inUse = device.approved && sinceContact != null && sinceContact <= CONTACT_STALE_MINUTES;
+    modal.confirm({
+      title: `ລຶບເຄື່ອງ ${device.serialNumber} ອອກຈາກລາຍການ?`,
+      content: (
+        <Space direction="vertical" size={8}>
+          {inUse && (
+            <Alert
+              type="error"
+              showIcon
+              message={`ເຄື່ອງນີ້ອະນຸມັດແລ້ວ ແລະ ຍັງຕິດຕໍ່ມາ ${sinceContact} ນາທີກ່ອນ`}
+              description="ຖ້າເຄື່ອງຍັງເປີດຢູ່ ມັນຈະກັບມາຂຶ້ນໃໝ່ເປັນ ລໍຖ້າອະນຸມັດ ແລະ ການສະແກນຈາກເຄື່ອງນີ້ຈະບໍ່ເຂົ້າລະບົບຈົນກວ່າຈະອະນຸມັດອີກຄັ້ງ — ຖ້າບໍ່ຢາກໃຫ້ມັນສົ່ງມາອີກ ໃຫ້ກົດ ບລັອກ ແທນ"
+            />
+          )}
+          <Typography.Text>ຈະລຶບຄຳສັ່ງທີ່ຄ້າງຢູ່ ແລະ ລາຍຊື່ຄົນທີ່ລົງທະບຽນໃນເຄື່ອງນີ້ອອກນຳ.</Typography.Text>
+          <Typography.Text type="secondary">
+            ການສະແກນທີ່ເຂົ້າມາແລ້ວ ແລະ ໃບໜ້າ/ນິ້ວມືທີ່ເຄື່ອງນີ້ສົ່ງມາ ຍັງຢູ່ຄືເກົ່າ (ເຄື່ອງອື່ນຍັງໃຊ້ໄດ້).
+          </Typography.Text>
+        </Space>
+      ),
+      okText: 'ລຶບ',
+      okButtonProps: { danger: true },
+      cancelText: 'ຍົກເລີກ',
+      onOk: async () => {
+        setBusySerial(device.serialNumber);
+        try {
+          await axiosInstance.delete(`${API_URL}/device-users/devices/${device.serialNumber}`);
+          notify?.({ type: 'success', message: `ລຶບເຄື່ອງ ${device.serialNumber} ແລ້ວ` });
+          refetch();
+        } catch (err) {
+          fail(err);
+        } finally {
+          setBusySerial(null);
+        }
+      },
+    });
+  };
 
   const provision = async (device: ScannerDevice) => {
     setBusySerial(device.serialNumber);
@@ -332,6 +374,11 @@ export const ScannerDevicesPage: React.FC = () => {
               {isAdmin && d.approved && (
                 <Button size="small" type="text" danger icon={<StopOutlined />} onClick={() => setApproved(d, false)}>
                   ບລັອກ
+                </Button>
+              )}
+              {isAdmin && (
+                <Button size="small" type="text" danger icon={<DeleteOutlined />} loading={busySerial === d.serialNumber} onClick={() => removeDevice(d)}>
+                  ລຶບ
                 </Button>
               )}
             </Space>

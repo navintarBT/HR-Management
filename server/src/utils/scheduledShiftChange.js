@@ -2,6 +2,8 @@ const Employee = require('../models/Employee');
 const ShiftCategory = require('../models/ShiftCategory');
 const Shift = require('../models/Shift');
 const ScheduledShiftChange = require('../models/ScheduledShiftChange');
+const Leave = require('../models/Leave');
+const AttendanceDaily = require('../models/AttendanceDaily');
 const { toDateKey } = require('./attendanceProcessor');
 const { recordShiftChange } = require('./shiftHistory');
 
@@ -18,7 +20,28 @@ const SHIFT_CHANGE_PIN_NOTE = 'ສ້າງອັດຕະໂນມັດ — �
 // immediately correct with no race against exactly when the field flip below
 // lands — that flip only has to be right by effectiveDate+1, which always has
 // a wide safety margin (at worst, catches up at the next server restart).
+// The start date can't be a day they're on approved leave or someone else
+// works for them: ຕັ້ງຄ່າແຜນວຽກ never offers those, and a group move from
+// ແກ້ໄຂກະແບບກຸ່ມ is refused for that person the same way.
 async function pinNewScheduleForEffectiveDate(employee, category, effectiveDate) {
+  const refuse = (message) => {
+    const err = new Error(message);
+    err.status = 409;
+    return err;
+  };
+  // The start-date shift is a working shift, which needs their position.
+  if (!employee.position) throw refuse('ຍັງບໍ່ມີຕຳແໜ່ງ — ຕັ້ງຕຳແໜ່ງໃຫ້ກ່ອນ ຈຶ່ງຍ້າຍກະລ່ວງໜ້າໄດ້');
+  const [substituted, onLeave] = await Promise.all([
+    AttendanceDaily.exists({ employee: employee._id, date: effectiveDate, status: 'substituted' }),
+    Leave.exists({
+      employee: employee._id,
+      status: 'approved',
+      startDate: { $lte: new Date(`${effectiveDate}T23:59:59.999`) },
+      endDate: { $gte: new Date(`${effectiveDate}T00:00:00.000`) },
+    }),
+  ]);
+  if (substituted) throw refuse('ມື້ນີ້ມີຄົນມາແທນ ບໍ່ສາມາດຕັ້ງຈຸດເລີ່ມຕົ້ນກະໃໝ່ທີ່ມື້ນີ້ໄດ້');
+  if (onLeave) throw refuse('ມື້ນີ້ລາ ບໍ່ສາມາດຕັ້ງຈຸດເລີ່ມຕົ້ນກະໃໝ່ທີ່ມື້ນີ້ໄດ້');
   const existing = await Shift.findOne({ employee: employee._id, date: effectiveDate });
   if (existing) {
     const err = new Error('ມື້ນີ້ມີຕາຕະລາງຕັ້ງຄ່າໄວ້ແລ້ວ — ກະລຸນາລຶບ ຫຼື ຄືນຄ່າປົກກະຕິມື້ນີ້ກ່ອນ');

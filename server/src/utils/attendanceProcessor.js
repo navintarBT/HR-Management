@@ -619,20 +619,25 @@ async function bulkMarkPresentForOutage(startDateKey, endDateKey, note) {
 //    closed yet — too early to call it a no-show.
 const ABSENT_SWEEP_DAYS_BACK = 4;
 
-async function markAbsentForMissedScans() {
+// `fromDate` and `employeeIds` narrow it to some people, every day from that
+// date to yesterday instead of the last few (a reverted position swap checks
+// everyone it moved back, from the swap's date on).
+async function markAbsentForMissedScans({ fromDate, employeeIds } = {}) {
   const now = new Date();
-  const employees = await Employee.find({ status: 'active' }, '_id defaultRestDay hireDate deviceUserId');
+  const today = toDateKey(now);
+  const employees = await Employee.find(
+    { status: 'active', ...(employeeIds ? { _id: { $in: employeeIds } } : {}) },
+    '_id defaultRestDay hireDate deviceUserId'
+  );
   const marked = [];
+  const firstDay = fromDate ?? addDays(today, -ABSENT_SWEEP_DAYS_BACK);
+  const daysBack = Math.round((new Date(`${today}T12:00:00`) - new Date(`${firstDay}T12:00:00`)) / 86400000);
   // The recurring rest day in force on each swept day — reading today's
   // (Employee.defaultRestDay) turned someone's old rest day into a "missed"
   // work day the moment it was changed.
-  const restSchedules = await loadRestDaySchedules(
-    employees.map((e) => e._id),
-    addDays(toDateKey(now), -ABSENT_SWEEP_DAYS_BACK),
-    addDays(toDateKey(now), -1)
-  );
+  const restSchedules = await loadRestDaySchedules(employees.map((e) => e._id), firstDay, addDays(today, -1));
 
-  for (let daysAgo = 1; daysAgo <= ABSENT_SWEEP_DAYS_BACK; daysAgo += 1) {
+  for (let daysAgo = 1; daysAgo <= daysBack; daysAgo += 1) {
     const dateKey = addDays(toDateKey(now), -daysAgo);
     const dow = new Date(`${dateKey}T00:00:00`).getDay();
 

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTable, useModalForm, useSelect, DeleteButton } from '@refinedev/antd';
-import { useGetIdentity, useInvalidate, useNotification } from '@refinedev/core';
-import { Table, Button, Modal, Form, Input, Select, Space, Typography } from 'antd';
+import { useGetIdentity, useInvalidate, useNotification, type CrudFilter } from '@refinedev/core';
+import { Table, Button, Modal, Form, Input, Select, Space, Typography, Tooltip } from 'antd';
 import { PlusOutlined, EditOutlined, ApartmentOutlined, DeleteOutlined, ExclamationCircleFilled, SearchOutlined } from '@ant-design/icons';
 import type { Department, Employee, Position, Identity } from '../../types';
 import { useTableStickyOffset, useTabsNavBottom } from '../../hooks/useTableStickyOffset';
@@ -10,6 +10,7 @@ import { withLocalTextFilter } from '../../utils/selectFilters';
 import { axiosInstance, API_URL } from '../../providers/axios';
 import { palette } from '../../theme/palette';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { EmployeeCountCell, UnusedOnlyToggle, deleteBlockedReason, useOrganizationCounts, useUnusedOnlyFilter } from './employeeCounts';
 
 export const PositionPanel: React.FC = () => {
   const { data: identity } = useGetIdentity<Identity>();
@@ -24,16 +25,20 @@ export const PositionPanel: React.FC = () => {
   const total = typeof tableProps.pagination === 'object' ? tableProps.pagination?.total ?? 0 : 0;
   const { showAll, toggleShowAll } = useShowAllToggle(setPageSize, total, 10, setCurrent);
 
+  const { counts, unusedIds, loaded: countsLoaded, refetch: refetchCounts } = useOrganizationCounts('positions');
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>();
-  const applyPositionFilters = (overrides: { search?: string; department?: string } = {}) => {
+  const applyPositionFilters = (overrides: { search?: string; department?: string; unused?: CrudFilter | null } = {}) => {
     const s = 'search' in overrides ? overrides.search : search;
     const d = 'department' in overrides ? overrides.department : departmentFilter;
-    const filters: any[] = [];
+    const u = 'unused' in overrides ? overrides.unused : unusedFilter;
+    const filters: CrudFilter[] = [];
     if (s) filters.push({ field: 'q', operator: 'eq', value: s });
     if (d) filters.push({ field: 'departments', operator: 'eq', value: d });
+    if (u) filters.push(u);
     setFilters(filters, 'replace');
   };
+  const { onlyUnused, setOnlyUnused, unusedFilter } = useUnusedOnlyFilter(unusedIds, (unused) => applyPositionFilters({ unused }));
 
   const pagination = {
     ...(typeof tableProps.pagination === 'object' ? tableProps.pagination : {}),
@@ -93,6 +98,7 @@ export const PositionPanel: React.FC = () => {
 
       setSelectedRowKeys(failed.map(({ key }) => key));
       invalidate({ resource: 'positions', invalidates: ['list'] });
+      refetchCounts();
     } finally {
       setBulkDeleteLoading(false);
     }
@@ -138,6 +144,7 @@ export const PositionPanel: React.FC = () => {
   const { modalProps: createModalProps, formProps: createFormProps, show: showCreate } = useModalForm<Position>({
     resource: 'positions',
     action: 'create',
+    onMutationSuccess: () => refetchCounts(),
   });
 
   const {
@@ -184,12 +191,13 @@ export const PositionPanel: React.FC = () => {
               applyPositionFilters({ department: v });
             }}
           />
+          <UnusedOnlyToggle checked={onlyUnused} onChange={setOnlyUnused} count={unusedIds.length} loaded={countsLoaded} />
         </Space>
-        <Space style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <Space wrap style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Typography.Text type="secondary">
             {selectedRowKeys.length > 0 ? `ເລືອກໄວ້ ${selectedRowKeys.length} ຕໍາແໜ່ງ` : 'ຈັດການລາຍຊື່ຕໍາແໜ່ງວຽກທັງໝົດ'}
           </Typography.Text>
-          <Space>
+          <Space wrap>
             {isAdmin && selectedRowKeys.length > 0 && (
               <>
                 <Button
@@ -219,11 +227,16 @@ export const PositionPanel: React.FC = () => {
         pagination={pagination}
         rowKey="_id"
         sticky={{ offsetHeader }}
+        scroll={{ x: 'max-content' }}
         rowSelection={
           isAdmin ? { selectedRowKeys, onChange: setSelectedRowKeys } : undefined
         }
       >
         <Table.Column title="ຊື່ຕໍາແໜ່ງ" dataIndex="name" />
+        <Table.Column
+          title="ພະນັກງານ"
+          render={(_, record: Position) => <EmployeeCountCell kind="positions" entry={counts?.[record._id]} loaded={countsLoaded} />}
+        />
         <Table.Column
           title="ພະແນກ"
           dataIndex="departments"
@@ -247,7 +260,18 @@ export const PositionPanel: React.FC = () => {
               selectedRowKeys.length > 1 && selectedRowKeys.includes(record._id) ? null : (
                 <Space>
                   <Button size="small" icon={<EditOutlined />} onClick={() => showEdit(record._id)} />
-                  <DeleteButton size="small" hideText resource="positions" recordItemId={record._id} />
+                  <Tooltip title={deleteBlockedReason('positions', counts?.[record._id])}>
+                    <span>
+                      <DeleteButton
+                        size="small"
+                        hideText
+                        resource="positions"
+                        recordItemId={record._id}
+                        disabled={!!deleteBlockedReason('positions', counts?.[record._id])}
+                        onSuccess={() => refetchCounts()}
+                      />
+                    </span>
+                  </Tooltip>
                 </Space>
               )
             }

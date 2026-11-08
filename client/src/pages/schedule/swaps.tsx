@@ -1,16 +1,18 @@
 import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useGetIdentity, useInvalidate, useNotification, useList, useCustom } from '@refinedev/core';
-import { Button, Space, Typography, Modal, Select, DatePicker, Table, Tag, Popconfirm, Input, Card, Statistic, Row, Col } from 'antd';
-import { RetweetOutlined, EditOutlined, DeleteOutlined, SwapOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Space, Typography, Modal, Select, DatePicker, Table, Tag, Popconfirm, Input, Card, Statistic, Row, Col, Alert } from 'antd';
+import { RetweetOutlined, EditOutlined, DeleteOutlined, SwapOutlined, SearchOutlined, RollbackOutlined, EyeOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import type { Department, Employee, Identity, Position, ScheduledPositionSwap } from '../../types';
+import { SwapDetailsModal } from './swapDetails';
 
 const SCHEDULE_STATUS: Record<string, { label: string; color: string }> = {
   pending: { label: 'ລໍຖ້າ', color: 'gold' },
   applied: { label: 'ສະຫຼັບແລ້ວ', color: 'green' },
   cancelled: { label: 'ຍົກເລີກແລ້ວ', color: 'default' },
+  reverted: { label: 'ຍ້ອນກັບແລ້ວ', color: 'purple' },
 };
 
 function idOf(value: unknown) {
@@ -111,6 +113,51 @@ export const ShiftSwapListPage: React.FC = () => {
     queryOptions: { enabled: canWrite },
   });
   const scheduledSwaps = scheduleData?.data ?? [];
+  // ລາຍລະອຽດ: read off the list each time, so it follows the swap as it changes.
+  const [detailId, setDetailId] = useState<string>();
+  const detailSwap = scheduledSwaps.find((s) => s._id === detailId);
+
+  // Swaps deleted from this history whose changes are still in place: put back
+  // on the list, they can be undone with ຍ້ອນກັບ like any other.
+  type UnrecordedSwap = {
+    effectiveDate: string;
+    positionA: string;
+    positionB: string;
+    positionAName: string;
+    positionBName: string;
+    people: number;
+    // The pair can't be told apart from a third position: shown, never put back.
+    ambiguous: boolean;
+    positions: { id: string; name: string; count: number }[];
+  };
+  const { data: unrecordedData, refetch: refetchUnrecorded } = useCustom<UnrecordedSwap[]>({
+    url: `${API_URL}/position-swaps/unrecorded`,
+    method: 'get',
+    queryOptions: { enabled: isAdmin },
+    // Only an extra on this page: if it can't be loaded (a server still on the
+    // code from before it, while a deploy finishes) the page works without it.
+    errorNotification: false,
+  });
+  const unrecordedSwaps = unrecordedData?.data ?? [];
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const restoreSwap = async (swap: UnrecordedSwap) => {
+    const keyOf = `${swap.effectiveDate}_${swap.positionA}_${swap.positionB}`;
+    setRestoringKey(keyOf);
+    try {
+      await axiosInstance.post(`${API_URL}/position-swaps/restore`, {
+        effectiveDate: swap.effectiveDate,
+        positionA: swap.positionA,
+        positionB: swap.positionB,
+      });
+      notify?.({ type: 'success', message: 'ກູ້ຄືນລາຍການແລ້ວ — ກົດ ຍ້ອນກັບ ຢູ່ໃນປະຫວັດ ຖ້າຕ້ອງການຍ້ອນ' });
+      refetchSchedule();
+      refetchUnrecorded();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ກູ້ຄືນບໍ່ສໍາເລັດ' });
+    } finally {
+      setRestoringKey(null);
+    }
+  };
 
   const { data: empAData } = useList<Employee>({
     resource: 'employees',
@@ -212,9 +259,57 @@ export const ShiftSwapListPage: React.FC = () => {
       await axiosInstance.delete(`${API_URL}/position-swaps/${id}`);
       notify?.({ type: 'success', message: 'ລຶບລາຍການແລ້ວ' });
       refetchSchedule();
+      refetchUnrecorded();
     } catch {
       notify?.({ type: 'error', message: 'ລຶບບໍ່ສໍາເລັດ' });
     }
+  };
+
+  // ຍ້ອນກັບ: as if the swap never happened, from its date on — for a swap set
+  // wrong while everyone kept their old shifts (server: positionSwap.js
+  // revertPositionSwap). Asks first: it judges their attendance since again.
+  const [modal, modalContext] = Modal.useModal();
+  const revertSwap = (swap: ScheduledPositionSwap) => {
+    const nameOf = (p: Position | string) => (p && typeof p === 'object' ? p.name : '-');
+    const date = dayjs(swap.effectiveDate).format('DD/MM/YYYY');
+    modal.confirm({
+      title: `ຍ້ອນກັບການສະຫຼັບ ${nameOf(swap.positionA)} ⇄ ${nameOf(swap.positionB)} ວັນທີ ${date}?`,
+      width: 560,
+      content: (
+        <Space direction="vertical" size={6}>
+          <Typography.Text>ຄືກັບບໍ່ເຄີຍສະຫຼັບ ຕັ້ງແຕ່ວັນທີ {date} ເປັນຕົ້ນໄປ:</Typography.Text>
+          <Typography.Text>• ທຸກຄົນທີ່ຖືກສະຫຼັບກັບໄປຕຳແໜ່ງ, ກະປະຈຳ ແລະ ວັນພັກເດີມ</Typography.Text>
+          <Typography.Text>• ວັນທີ {date} ບໍ່ມີກະຕໍ່ເນື່ອງ ຫຼື ວັນວ່າງຂອງການສະຫຼັບອີກ</Typography.Text>
+          <Typography.Text>• ການສະແກນຕັ້ງແຕ່ {date} ຈະຖືກຄິດໃໝ່ຕາມກະເດີມ — ໃຊ້ເມື່ອພະນັກງານຍັງເຮັດວຽກຕາມກະເດີມແທ້</Typography.Text>
+          <Typography.Text type="secondary">ພະນັກງານບໍ່ຕ້ອງເຮັດຫຍັງ. ຫຼັງຈາກນີ້ຕັ້ງວັນສະຫຼັບໃໝ່ໄດ້ຕາມປົກກະຕິ</Typography.Text>
+        </Space>
+      ),
+      okText: 'ຍ້ອນກັບ',
+      okButtonProps: { danger: true },
+      cancelText: 'ບໍ່',
+      onOk: async () => {
+        try {
+          const { data } = await axiosInstance.post(`${API_URL}/position-swaps/${swap._id}/revert`, {});
+          notify?.({
+            type: 'success',
+            message: [
+              `ຍ້ອນກັບແລ້ວ ${data.reverted} ຄົນ`,
+              data.skipped ? `${data.skipped} ຄົນຖືກຍ້າຍໄປບ່ອນອື່ນແລ້ວ ຈຶ່ງບໍ່ປ່ຽນ` : '',
+              data.laterRestPlans ? `ແຜນວັນພັກທີ່ລະບົບປັບຕອນສະຫຼັບ ${data.laterRestPlans} ລາຍການ — ກວດເບິ່ງຢູ່ ວາງແຜນວັນພັກ` : '',
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          });
+          invalidate({ resource: 'employees', invalidates: ['list'] });
+          invalidate({ resource: 'shifts', invalidates: ['list'] });
+          invalidate({ resource: 'attendance-daily', invalidates: ['list'] });
+          refetchSchedule();
+          refetchUnrecorded();
+        } catch (err: any) {
+          notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍ້ອນກັບບໍ່ສໍາເລັດ' });
+        }
+      },
+    });
   };
 
   const [historySearch, setHistorySearch] = useState('');
@@ -251,8 +346,9 @@ export const ShiftSwapListPage: React.FC = () => {
       if (historyPosFilter && idOf(s.positionA) !== historyPosFilter && idOf(s.positionB) !== historyPosFilter) return false;
       if (historySearch) {
         const q = historySearch.trim().toLowerCase();
-        const nameA = typeof s.positionA === 'object' ? s.positionA.name.toLowerCase() : '';
-        const nameB = typeof s.positionB === 'object' ? s.positionB.name.toLowerCase() : '';
+        // A position deleted since comes back null.
+        const nameA = s.positionA && typeof s.positionA === 'object' ? s.positionA.name.toLowerCase() : '';
+        const nameB = s.positionB && typeof s.positionB === 'object' ? s.positionB.name.toLowerCase() : '';
         if (!nameA.includes(q) && !nameB.includes(q)) return false;
       }
       return true;
@@ -274,6 +370,8 @@ export const ShiftSwapListPage: React.FC = () => {
         )
       }
     >
+      {modalContext}
+      <SwapDetailsModal swap={detailSwap} onClose={() => setDetailId(undefined)} />
       {!canWrite && <Typography.Paragraph type="secondary">ການສະຫຼັບກະຈັດການໂດຍຜູ້ຄຸ້ມຄອງເທົ່ານັ້ນ</Typography.Paragraph>}
 
       <Modal
@@ -477,9 +575,45 @@ export const ShiftSwapListPage: React.FC = () => {
               options={Object.entries(SCHEDULE_STATUS).map(([value, { label }]) => ({ value, label }))}
             />
           </Space>
+          {unrecordedSwaps.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={`ພົບການສະຫຼັບ ${unrecordedSwaps.length} ລາຍການທີ່ຖືກລຶບອອກຈາກປະຫວັດ ແຕ່ຍັງມີຜົນຢູ່`}
+              description={
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  <Typography.Text type="secondary">ກູ້ຄືນລາຍການກ່ອນ ແລ້ວກົດ ຍ້ອນກັບ ຢູ່ໃນຕາຕະລາງ ຖ້າຕ້ອງການໃຫ້ກັບເປັນແບບເດີມ</Typography.Text>
+                  {unrecordedSwaps.map((u) => {
+                    const keyOf = `${u.effectiveDate}_${u.positionA}_${u.positionB}`;
+                    return (
+                      <Space key={keyOf} className="unrecorded-swap" wrap>
+                        <Typography.Text strong>{dayjs(u.effectiveDate).format('DD/MM/YYYY')}</Typography.Text>
+                        {u.ambiguous ? (
+                          <Typography.Text type="secondary">
+                            {u.positions.map((p) => `${p.name} (${p.count})`).join(', ')} — ບອກບໍ່ໄດ້ແນ່ນອນວ່າແມ່ນ 2 ຕຳແໜ່ງໃດ, ກູ້ຄືນອັດຕະໂນມັດບໍ່ໄດ້
+                          </Typography.Text>
+                        ) : (
+                          <>
+                            <Typography.Text>
+                              {u.positionAName} ⇄ {u.positionBName} ({u.people} ຄົນ)
+                            </Typography.Text>
+                            <Button size="small" loading={restoringKey === keyOf} onClick={() => restoreSwap(u)}>
+                              ກູ້ຄືນລາຍການ
+                            </Button>
+                          </>
+                        )}
+                      </Space>
+                    );
+                  })}
+                </Space>
+              }
+            />
+          )}
           <Table
             dataSource={filteredSwaps}
             rowKey="_id"
+            scroll={{ x: 'max-content' }}
             pagination={{ pageSize: 10, hideOnSinglePage: true }}
             locale={{ emptyText: scheduledSwaps.length ? 'ບໍ່ພົບລາຍການ' : 'ຍັງບໍ່ມີລາຍການ' }}
           >
@@ -503,8 +637,15 @@ export const ShiftSwapListPage: React.FC = () => {
               title="ຈຳນວນທີ່ຍ້າຍ"
               align="center"
               render={(_, r: ScheduledPositionSwap) =>
-                r.status === 'applied' ? (
-                  (r.movedFromA ?? 0) + (r.movedFromB ?? 0)
+                r.status === 'applied' || r.status === 'reverted' ? (
+                  // Not known for a record put back before it was counted.
+                  r.movedFromA == null && r.movedFromB == null ? (
+                    '-'
+                  ) : (
+                    <Button type="link" size="small" onClick={() => setDetailId(r._id)}>
+                      {(r.movedFromA ?? 0) + (r.movedFromB ?? 0)} ຄົນ
+                    </Button>
+                  )
                 ) : r.status === 'pending' ? (
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     ຮູ້ຕອນສະຫຼັບ
@@ -530,24 +671,37 @@ export const ShiftSwapListPage: React.FC = () => {
             />
             <Table.Column
               title="ຈັດການ"
-              render={(_, r: ScheduledPositionSwap) =>
-                r.status === 'pending' ? (
-                  <Space>
-                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditSwap(r)} />
-                    <Popconfirm title="ຍົກເລີກລາຍການນີ້?" onConfirm={() => cancelScheduledSwap(r._id)}>
-                      <Button size="small" danger>
-                        ຍົກເລີກ
-                      </Button>
-                    </Popconfirm>
-                  </Space>
-                ) : (
-                  isAdmin && (
-                    <Popconfirm title="ລຶບລາຍການປະຫວັດນີ້?" onConfirm={() => deleteScheduledSwap(r._id)}>
+              render={(_, r: ScheduledPositionSwap) => (
+                <Space>
+                  <Button size="small" icon={<EyeOutlined />} onClick={() => setDetailId(r._id)}>
+                    ລາຍລະອຽດ
+                  </Button>
+                  {r.status === 'pending' && (
+                    <>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openEditSwap(r)} />
+                      <Popconfirm title="ຍົກເລີກລາຍການນີ້?" onConfirm={() => cancelScheduledSwap(r._id)}>
+                        <Button size="small" danger>
+                          ຍົກເລີກ
+                        </Button>
+                      </Popconfirm>
+                    </>
+                  )}
+                  {isAdmin && r.status === 'applied' && (
+                    <Button size="small" icon={<RollbackOutlined />} onClick={() => revertSwap(r)}>
+                      ຍ້ອນກັບ
+                    </Button>
+                  )}
+                  {r.status !== 'pending' && isAdmin && (
+                    <Popconfirm
+                      title="ລຶບລາຍການປະຫວັດນີ້?"
+                      description={r.status === 'applied' ? 'ການສະຫຼັບຍັງມີຜົນຢູ່ — ລຶບແລ້ວຈະບໍ່ມີປຸ່ມ ຍ້ອນກັບ ຈົນກວ່າຈະກູ້ຄືນລາຍການ' : undefined}
+                      onConfirm={() => deleteScheduledSwap(r._id)}
+                    >
                       <Button size="small" danger icon={<DeleteOutlined />} />
                     </Popconfirm>
-                  )
-                )
-              }
+                  )}
+                </Space>
+              )}
             />
           </Table>
         </>

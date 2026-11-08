@@ -12,7 +12,8 @@ const departmentName = (e: Employee) => (typeof e.department === 'object' ? e.de
 const rowChanged = (row: Employee, previous: Employee) => row !== previous;
 
 // ສິດໃຊ້ເຄື່ອງສະແກນ: which scanners each person may scan on. "ທຸກເຄື່ອງ" (no
-// list) also covers scanners added later; otherwise only the ticked ones. Saved
+// list) also covers scanners added later; otherwise only the ticked ones. A new
+// person starts with it off, on the scanners there were then (routes/employees.js). Saved
 // on each click — sync-enabled scanners get the person (with their face/finger)
 // or lose them right away; a scanner with sync off follows once it's switched
 // on (server: routes/deviceUsers.js, utils/scannerAccess.js). Also here: who is
@@ -231,7 +232,8 @@ export const ScannerAccessPage: React.FC = () => {
           message="ເລືອກວ່າພະນັກງານແຕ່ລະຄົນສະແກນໄດ້ຢູ່ເຄື່ອງໃດ"
           description={
             'ລະບົບສົ່ງຊື່ ແລະ ໃບໜ້າ/ນິ້ວມື ໄປສະເພາະເຄື່ອງທີ່ມີສິດ ແລະ ລຶບອອກຈາກເຄື່ອງທີ່ຖອນສິດທັນທີ (ເຄື່ອງທີ່ເປີດຊິງ). ' +
-            '"ທຸກເຄື່ອງ" ລວມເຖິງເຄື່ອງທີ່ເພີ່ມໃນພາຍຫຼັງ. ຢາກປ່ຽນທີລະກຸ່ມ ໃຫ້ກັ່ນຕອງລາຍຊື່ກ່ອນ ແລ້ວໃຊ້ເມນູ ▾ ຢູ່ຫົວຖັນຂອງເຄື່ອງ'
+            '"ທຸກເຄື່ອງ" ລວມເຖິງເຄື່ອງທີ່ເພີ່ມໃນພາຍຫຼັງ. ພະນັກງານໃໝ່ເລີ່ມຕົ້ນດ້ວຍ "ທຸກເຄື່ອງ" ປິດ — ໄດ້ສິດສະເພາະເຄື່ອງທີ່ມີຢູ່ຕອນເພີ່ມ, ເຄື່ອງທີ່ເພີ່ມພາຍຫຼັງຕ້ອງຕິກໃຫ້ເອງ. ' +
+            'ຢາກປ່ຽນທີລະກຸ່ມ ໃຫ້ກັ່ນຕອງລາຍຊື່ກ່ອນ ແລ້ວໃຊ້ເມນູ ▾ ຢູ່ຫົວຖັນຂອງເຄື່ອງ'
           }
         />
         <Space wrap>

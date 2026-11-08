@@ -254,6 +254,22 @@ async function cancelRestDayChange(row, now = new Date()) {
   await relinkNextChange(row.employee, row.effectiveDate, row.previousRestDay);
 }
 
+// Takes a change out whether or not it has taken effect, and puts the rest day
+// in force today back to match — undoing a reverted position swap.
+async function removeRestDayChange(row, now = new Date()) {
+  const today = toDateKey(now);
+  await row.deleteOne();
+  await relinkNextChange(row.employee, row.effectiveDate, row.previousRestDay);
+  const left = await RestDayHistory.exists({ employee: row.employee });
+  // With no change left at all, Employee.defaultRestDay is all there is, and it
+  // still holds what this change set: what it changed from applies again.
+  if (!left) {
+    if (row.effectiveDate <= today) await Employee.updateOne({ _id: row.employee }, { defaultRestDay: row.previousRestDay });
+    return;
+  }
+  await refreshCurrentRestDay(row.employee, today);
+}
+
 // Switches Employee.defaultRestDay over for every change whose day has come.
 // Run on startup and on the usual 15-minute timer (index.js).
 async function applyDueRestDayChanges(now = new Date()) {
@@ -318,6 +334,7 @@ module.exports = {
   firstMondayOfMonthAfter,
   recordRestDayChange,
   cancelRestDayChange,
+  removeRestDayChange,
   applyDueRestDayChanges,
   migrateRestDayHistory,
   sameRestDays,

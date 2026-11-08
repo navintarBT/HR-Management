@@ -6,6 +6,11 @@ const fs = require('fs');
 const Employee = require('../models/Employee');
 const User = require('../models/User');
 const Position = require('../models/Position');
+const Department = require('../models/Department');
+const EmploymentType = require('../models/EmploymentType');
+const ScheduledPositionSwap = require('../models/ScheduledPositionSwap');
+const Device = require('../models/Device');
+const { APPROVED_DEVICE_FILTER } = require('../utils/deviceApproval');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { startOfChange, recordRestDayChange } = require('../utils/restDaySchedule');
 const { recomputeLeavesAfterRestChange } = require('../utils/leaveDeduction');
@@ -245,21 +250,26 @@ async function syncSubstituteShiftTime(current, payload) {
   if (transition) Object.assign(payload, transition);
 }
 
+// Says which value is taken and by whom — with codes editable, "0020 is
+// already someone's" needs to name that someone.
 async function ensureUniqueEmployeeFields(payload, currentId) {
-  const or = [];
-  if (payload.employeeCode) or.push({ employeeCode: payload.employeeCode });
-  if (payload.email) or.push({ email: payload.email.toLowerCase() });
-  if (payload.deviceUserId) or.push({ deviceUserId: payload.deviceUserId });
-  if (!or.length) return;
-
-  const query = { $or: or };
-  if (currentId) query._id = { $ne: currentId };
-  const existing = await Employee.findOne(query);
-  if (!existing) return;
-
-  const err = new Error('ມີພະນັກງານທີ່ໃຊ້ ລະຫັດພະນັກງານ, ອີເມວ, ຫຼື ລະຫັດເຄື່ອງສະແກນດຽວກັນຢູ່ແລ້ວ');
-  err.status = 409;
-  throw err;
+  const checks = [
+    ['employeeCode', payload.employeeCode, 'ລະຫັດພະນັກງານ'],
+    ['email', payload.email ? payload.email.toLowerCase() : null, 'ອີເມວ'],
+    ['deviceUserId', payload.deviceUserId, 'ລະຫັດເຄື່ອງສະແກນ'],
+  ];
+  for (const [field, value, label] of checks) {
+    if (!value) continue;
+    const query = { [field]: value };
+    if (currentId) query._id = { $ne: currentId };
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await Employee.findOne(query, 'employeeCode firstName lastName');
+    if (!existing) continue;
+    const who = [existing.employeeCode, existing.firstName, existing.lastName].filter(Boolean).join(' ');
+    const err = new Error(`${label} "${value}" ມີຢູ່ແລ້ວ — ເປັນຂອງ ${who}`);
+    err.status = 409;
+    throw err;
+  }
 }
 
 function validateEmployee(payload, partial = false) {
@@ -317,6 +327,57 @@ router.get('/', authenticate, requireRole('admin', 'manager', 'employee'), async
   }
 });
 
+// How many people every ພະແນກ / ຕໍາແໜ່ງ / ປະເພດການຈ້າງ has, by status, for the
+// organization page, so the unused ones can be found and removed. Every one
+// of them is listed, those with nobody included. Every status counts, ລາອອກ
+// too: deleting is refused while anyone at all still points at it (the
+// beforeDelete of departments.js / positions.js / employmentTypes.js). Also, a
+// department's positions, and a position's still-pending ສະຫຼັບກະ (also
+// refused, positions.js).
+router.get('/organization-counts', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    const listOf = async (Model) => {
+      const out = {};
+      for (const { _id } of await Model.find({}, '_id').lean()) out[String(_id)] = { employees: {} };
+      return out;
+    };
+    const countInto = async (out, field) => {
+      const rows = await Employee.aggregate([
+        { $match: { [field]: { $ne: null } } },
+        { $group: { _id: { id: `$${field}`, status: { $ifNull: ['$status', 'active'] } }, n: { $sum: 1 } } },
+      ]);
+      // Someone pointing at one deleted since isn't counted against anything.
+      for (const r of rows) {
+        const entry = out[String(r._id.id)];
+        if (entry) entry.employees[r._id.status] = r.n;
+      }
+      return out;
+    };
+    const [departments, positions, employmentTypes] = await Promise.all([
+      listOf(Department).then((out) => countInto(out, 'department')),
+      listOf(Position).then((out) => countInto(out, 'position')),
+      listOf(EmploymentType).then((out) => countInto(out, 'employmentType')),
+    ]);
+    const [positionsPerDepartment, pendingSwaps] = await Promise.all([
+      Position.aggregate([{ $unwind: '$departments' }, { $group: { _id: '$departments', n: { $sum: 1 } } }]),
+      ScheduledPositionSwap.find({ status: 'pending' }, 'positionA positionB').lean(),
+    ]);
+    for (const r of positionsPerDepartment) {
+      const entry = departments[String(r._id)];
+      if (entry) entry.positions = r.n;
+    }
+    for (const swap of pendingSwaps) {
+      for (const id of new Set([String(swap.positionA), String(swap.positionB)])) {
+        const entry = positions[id];
+        if (entry) entry.pendingSwaps = (entry.pendingSwaps ?? 0) + 1;
+      }
+    }
+    res.json({ departments, positions, employmentTypes });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/:id', authenticate, requireRole('admin', 'manager', 'employee'), async (req, res, next) => {
   try {
     const query = { _id: req.params.id };
@@ -356,6 +417,16 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
     if (noAbsenceError) return res.status(400).json({ message: noAbsenceError });
     if (employeePayload.defaultRestDay != null) {
       employeePayload.defaultRestDay = await resolveRestDayForEmployee(employeePayload, employeePayload.position, employeePayload.defaultRestDay);
+    }
+    // ສິດໃຊ້ເຄື່ອງສະແກນ: a new person starts on the approved scanners there are
+    // now, ticked one by one, not "ທຸກເຄື່ອງ" (no list): a scanner added later
+    // doesn't take them in until it's ticked for them (agreed 2026-11-09).
+    // Everyone from before keeps what they had. With no approved scanner yet (a
+    // fresh setup) that list would be empty — no scanner ever — so they stay on
+    // ທຸກເຄື່ອງ then.
+    if (!Array.isArray(employeePayload.allowedScanners)) {
+      const scanners = (await Device.find(APPROVED_DEVICE_FILTER, 'serialNumber').sort({ serialNumber: 1 }).lean()).map((d) => d.serialNumber);
+      if (scanners.length) employeePayload.allowedScanners = scanners;
     }
 
     if (userPayload.createUser) {
@@ -397,6 +468,11 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     const { employeePayload } = cleanEmployeePayload(req.body);
     const current = await Employee.findById(req.params.id);
     if (!current) return res.status(404).json({ message: 'Not found' });
+    // A new code follows the same format as when adding someone. Only a changed
+    // one is checked, so older codes in another format can still be saved as is.
+    if ('employeeCode' in employeePayload && employeePayload.employeeCode !== current.employeeCode) {
+      validateEmployeeCodeFormat(employeePayload.employeeCode);
+    }
 
     // Termination date is set when status transitions into "resigned" — the
     // caller's last working day if given, otherwise today.

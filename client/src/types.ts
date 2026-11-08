@@ -224,7 +224,7 @@ export interface Leave {
   splitPart?: 'before' | 'after' | null;
 }
 
-export type ScheduledPositionSwapStatus = 'pending' | 'applied' | 'cancelled';
+export type ScheduledPositionSwapStatus = 'pending' | 'applied' | 'cancelled' | 'reverted';
 
 export interface ScheduledPositionSwap {
   _id: string;
@@ -237,7 +237,41 @@ export interface ScheduledPositionSwap {
   appliedAt?: string;
   movedFromA?: number;
   movedFromB?: number;
+  revertedAt?: string;
+  revertedByEmail?: string;
   createdAt: string;
+  updatedAt?: string;
+}
+
+// GET /position-swaps/:id/details (server: utils/positionSwap.js swapDetails).
+export interface PositionSwapShift {
+  category: string | null;
+  categoryName?: string | null;
+  startTime: string | null;
+  endTime: string | null;
+}
+export interface PositionSwapPerson {
+  employee: {
+    _id: string;
+    employeeCode?: string;
+    firstName?: string;
+    lastName?: string;
+    nameEn?: string;
+    status?: string;
+    position?: { _id: string; name: string } | null;
+  };
+  from: 'A' | 'B';
+  previous: PositionSwapShift | null;
+  next: PositionSwapShift | null;
+  // The swap date itself: worked the old shift, worked through both halves of
+  // the day, had no shift, or kept a schedule set by hand that day.
+  swapDay: { kind: 'kept' | 'extended' | 'off' | 'set'; status?: string; startTime?: string | null; endTime?: string | null } | null;
+  restDay: { before: number[]; after: number[] } | null;
+}
+export interface PositionSwapDetails {
+  // Pending: whoever is in each position right now.
+  preview: boolean;
+  people: PositionSwapPerson[];
 }
 
 // A PIN a scanner reports as enrolled (table=BIODATA) with no matching
@@ -478,6 +512,48 @@ export interface DashboardSummary {
 export interface DashboardOrgComposition {
   byDepartment: Array<{ name: string; count: number }>;
   byStatus: Array<{ status: Employee['status']; count: number }>;
+}
+
+// GET /dashboard/department-day — one day, every department's people by what
+// they did (server/src/routes/dashboard.js).
+export type DepartmentDayBucket = 'came' | 'absent' | 'rest' | 'leave' | 'pending' | 'other';
+export interface DepartmentDayPerson {
+  _id: string;
+  employeeCode: string;
+  name: string;
+  position: string | null;
+  note?: string;
+  firstIn?: string | null; // came
+  late?: boolean; // came
+  leaveType?: LeaveType; // leave
+  shift?: string; // pending: "18:00-06:00"
+  overdue?: boolean; // pending: the shift has started
+}
+export interface DepartmentDaySwap {
+  _id: string;
+  effectiveDate: string;
+  positionA: string;
+  positionB: string;
+  peopleA: number;
+  peopleB: number;
+  departments: { _id: string; name: string }[];
+}
+export interface DepartmentDayGroup {
+  _id: string;
+  name: string;
+  total: number;
+  late: number;
+  counts: Record<DepartmentDayBucket, number>;
+  people: Record<DepartmentDayBucket, DepartmentDayPerson[]>;
+  swaps: DepartmentDaySwap[];
+}
+export interface DepartmentDayReport {
+  date: string;
+  today: string;
+  holiday: string | null;
+  totals: Record<DepartmentDayBucket | 'total' | 'late', number>;
+  departments: DepartmentDayGroup[];
+  swaps: DepartmentDaySwap[];
 }
 
 export interface DashboardDataQuality {

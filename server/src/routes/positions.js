@@ -2,6 +2,7 @@ const crudRouter = require('./crudFactory');
 const Position = require('../models/Position');
 const Department = require('../models/Department');
 const Employee = require('../models/Employee');
+const ScheduledPositionSwap = require('../models/ScheduledPositionSwap');
 const { checkHeadConflict } = require('../utils/headConflicts');
 const { computeSubstituteTransitionUpdate } = require('../utils/substituteRule');
 const { recordShiftChange } = require('../utils/shiftHistory');
@@ -47,6 +48,10 @@ module.exports = crudRouter(Position, {
   beforeDelete: async (id) => {
     const inUse = await Employee.exists({ position: id });
     if (inUse) return 'ຕໍາແໜ່ງນີ້ຖືກນໍາໃຊ້ໂດຍພະນັກງານຢູ່ແລ້ວ ບໍ່ສາມາດລຶບໄດ້';
+    // Even with nobody in it: on the day, the swap would move the other
+    // position's people into a position that's gone.
+    const pendingSwap = await ScheduledPositionSwap.exists({ status: 'pending', $or: [{ positionA: id }, { positionB: id }] });
+    if (pendingSwap) return 'ຕໍາແໜ່ງນີ້ມີໃນການສະຫຼັບກະທີ່ລໍຖ້າຢູ່ ບໍ່ສາມາດລຶບໄດ້ — ຍົກເລີກການສະຫຼັບນັ້ນກ່ອນ';
     return null;
   },
   // One employee can only head one position, and can't also be a department's head.
