@@ -10,6 +10,7 @@ import { lateTier, formatMinutes } from '../../utils/lateSeverity';
 import { API_URL } from '../../providers/axios';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { downloadCsv, downloadXlsx, type SheetCell, type SheetSpec } from '../../utils/exportSheet';
+import { PrintPickerModal, groupBySection, pickedScope, sectionHeading, type PrintSection } from '../../components/PrintPicker';
 
 const { RangePicker } = DatePicker;
 // The most the server's /attendance-daily/range serves per request — about a
@@ -194,9 +195,11 @@ export const AttendanceDailyPage: React.FC = () => {
   }, [dailyRows]);
 
   // ສົ່ງອອກ: the table as shown — the dates, department, position and people
-  // picked — as an Excel sheet in the page's colours with a ລວມ row, or as CSV.
-  // Numbers stay numbers (a zero shows as "-") so they can be added up in Excel.
-  const exportSpec = (): SheetSpec => {
+  // picked — or the departments picked (PrintPicker), each under its own
+  // dividing row; as an Excel sheet in the page's colours with a ລວມ row for
+  // everyone exported, or as CSV. Numbers stay numbers (a zero shows as "-") so
+  // they can be added up in Excel.
+  const exportSpec = (scope?: { sections: PrintSection[]; all: boolean }): SheetSpec => {
     const departmentName = departmentOptions.find((d) => d.value === departmentFilter)?.label;
     const positionName = positionOptions.find((p) => p.value === positionFilter)?.label;
     const pickedNames = personFilter
@@ -204,9 +207,13 @@ export const AttendanceDailyPage: React.FC = () => {
       .filter(Boolean)
       .map((e) => `${e!.firstName ?? ''} ${e!.lastName ?? ''}`.trim());
     const people = pickedNames.length === 1 ? pickedNames[0] : pickedNames.length ? `${pickedNames.length} ຄົນທີ່ເລືອກ` : undefined;
-    const filters = [departmentName && `ພະແນກ ${departmentName}`, positionName && `ຕຳແໜ່ງ ${positionName}`, people, search && `ຄົ້ນຫາ "${search}"`]
-      .filter(Boolean)
-      .join(' · ');
+    const filters = scope
+      ? pickedScope(scope.sections, scope.all)
+      : [departmentName && `ພະແນກ ${departmentName}`, positionName && `ຕຳແໜ່ງ ${positionName}`, people, search && `ຄົ້ນຫາ "${search}"`]
+          .filter(Boolean)
+          .join(' · ');
+    const groups = scope ? groupBySection(scope.sections, allEmployees, (e) => e._id) : null;
+    const exported = groups ? groups.flatMap((g) => g.items) : employees;
 
     const count = '0;-0;"-"';
     const hours = '0.0';
@@ -220,7 +227,7 @@ export const AttendanceDailyPage: React.FC = () => {
       ...(kind ? { fill: BADGE_STYLE[kind].bg, color: BADGE_STYLE[kind].text } : {}),
     });
     const round1 = (n: number) => Math.round(n * 10) / 10;
-    const totals = employees.reduce(
+    const totals = exported.reduce(
       (sum, emp) => {
         const s = summaryByEmployee[emp._id];
         if (!s) return sum;
@@ -262,7 +269,27 @@ export const AttendanceDailyPage: React.FC = () => {
         header('ສະແກນຄັ້ງດຽວ (ຄັ້ງ)', 13, 'incomplete'),
         header('ມື້ຂາດວຽກ (ວັນ)', 12, 'absent'),
       ],
-      rows: employees.map((emp) => {
+      rows: groups
+        ? groups.flatMap(({ section, items }) => [{ section: sectionHeading(section, items.length) }, ...items.map(rowCells)])
+        : employees.map(rowCells),
+      totals: [
+        'ລວມ',
+        { value: `${exported.length} ຄົນ`, align: 'left' },
+        '',
+        '',
+        { value: round1(totals.expectedHours), numFmt: hours },
+        { value: round1(totals.workedHours), numFmt: hours },
+        { value: totals.lateMinutes, numFmt: count },
+        { value: totals.lateDays, numFmt: count },
+        { value: totals.moderateLateDays, numFmt: count },
+        { value: totals.severeLateDays, numFmt: count },
+        { value: totals.substitutedDays, numFmt: count },
+        { value: totals.earlyLeaveMinutes, numFmt: count },
+        { value: totals.noScanOutDays, numFmt: count },
+        { value: totals.absentDays, numFmt: count },
+      ],
+    };
+    function rowCells(emp: Employee) {
         const s = summaryByEmployee[emp._id];
         return [
           emp.employeeCode ?? '',
@@ -280,37 +307,33 @@ export const AttendanceDailyPage: React.FC = () => {
           badge(s?.noScanOutDays ?? 0, 'incomplete'),
           badge(s?.absentDays ?? 0, 'absent'),
         ];
-      }),
-      totals: [
-        'ລວມ',
-        { value: `${employees.length} ຄົນ`, align: 'left' },
-        '',
-        '',
-        { value: round1(totals.expectedHours), numFmt: hours },
-        { value: round1(totals.workedHours), numFmt: hours },
-        { value: totals.lateMinutes, numFmt: count },
-        { value: totals.lateDays, numFmt: count },
-        { value: totals.moderateLateDays, numFmt: count },
-        { value: totals.severeLateDays, numFmt: count },
-        { value: totals.substitutedDays, numFmt: count },
-        { value: totals.earlyLeaveMinutes, numFmt: count },
-        { value: totals.noScanOutDays, numFmt: count },
-        { value: totals.absentDays, numFmt: count },
-      ],
-    };
+    }
   };
+  // ສົ່ງອອກ Excel / CSV ask what to export first (PrintPicker).
+  const [exportFormat, setExportFormat] = useState<'excel' | 'csv' | null>(null);
   const [exporting, setExporting] = useState(false);
-  const exportExcel = async () => {
+  const runExport = async (format: 'excel' | 'csv', spec: SheetSpec) => {
+    if (format === 'csv') {
+      downloadCsv(spec);
+      return;
+    }
     setExporting(true);
     try {
-      await downloadXlsx(exportSpec());
+      await downloadXlsx(spec);
     } catch {
       message.error('ສົ່ງອອກ Excel ບໍ່ສຳເລັດ');
     } finally {
       setExporting(false);
     }
   };
-  const exportDisabled = employeesLoading || dailyLoading || !employees.length;
+  const exportDisabled = employeesLoading || dailyLoading || !allEmployees.length;
+  const pickedPeopleLabel = personFilter.length
+    ? personFilter.length === 1
+      ? personOptions.find((o) => o.value === personFilter[0])?.label ?? '1 ຄົນ'
+      : `${personFilter.length} ຄົນທີ່ເລືອກ`
+    : search
+      ? `ຄົ້ນຫາ "${search}" (${employees.length} ຄົນ)`
+      : undefined;
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
@@ -383,12 +406,34 @@ export const AttendanceDailyPage: React.FC = () => {
             value={personFilter}
             onChange={(v) => setPersonFilter(v)}
           />
-          <Button icon={<FileExcelOutlined />} loading={exporting} disabled={exportDisabled} onClick={exportExcel}>
+          <Button icon={<FileExcelOutlined />} loading={exporting} disabled={exportDisabled} onClick={() => setExportFormat('excel')}>
             ສົ່ງອອກ Excel
           </Button>
-          <Button icon={<DownloadOutlined />} disabled={exportDisabled} onClick={() => downloadCsv(exportSpec())}>
+          <Button icon={<DownloadOutlined />} disabled={exportDisabled} onClick={() => setExportFormat('csv')}>
             ສົ່ງອອກ CSV
           </Button>
+          <PrintPickerModal
+            open={!!exportFormat}
+            verb="ສົ່ງອອກ"
+            okText={exportFormat === 'csv' ? 'ສົ່ງອອກ CSV' : 'ສົ່ງອອກ Excel'}
+            allNote="ມີແຖວແບ່ງແຕ່ລະພະແນກ"
+            className="export-picker"
+            onCancel={() => setExportFormat(null)}
+            employees={allEmployees}
+            initialDepartment={departmentFilter}
+            initialPosition={positionFilter}
+            currentLabel={pickedPeopleLabel}
+            onPrintCurrent={() => {
+              const format = exportFormat ?? 'excel';
+              setExportFormat(null);
+              runExport(format, exportSpec());
+            }}
+            onPrint={(sections, { all }) => {
+              const format = exportFormat ?? 'excel';
+              setExportFormat(null);
+              runExport(format, exportSpec({ sections, all }));
+            }}
+          />
         </Space>
       </div>
 

@@ -13,6 +13,7 @@ import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
 import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
+import { PrintPickerModal, positionsNote, usePrintJob, groupBySection, pickedScope, sectionHeading, type PrintSection } from '../../components/PrintPicker';
 
 const { RangePicker } = DatePicker;
 
@@ -730,8 +731,10 @@ const PayrollSummaryGrid: React.FC = () => {
     return null;
   };
 
-  const rows = useMemo<SummaryRow[]>(() => {
-    return employees.map((emp) => {
+  // Everyone's row, whatever the page is filtered to — ພິມ can print every
+  // department at once (PrintPicker); the table on screen takes `rows` below.
+  const allRows = useMemo<SummaryRow[]>(() => {
+    return allEmployees.map((emp) => {
       let workDays = 0;
       let restDays = 0;
       let absentDays = 0;
@@ -802,7 +805,12 @@ const PayrollSummaryGrid: React.FC = () => {
         untracked: !emp.deviceUserId,
       };
     });
-  }, [employees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, leaveKindsById, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEmployees, days, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, leaveKindsById, overtimeByEmployee, rangeStartKey, rangeEndKey]);
+  const rows = useMemo(() => {
+    const shown = new Set(employees.map((e) => e._id));
+    return allRows.filter((r) => shown.has(r.employee._id));
+  }, [allRows, employees]);
 
   // ຄອມເມັ້ນ — a reviewer leaves a note on any cell (a day, or a summary
   // column) for whoever maintains payroll to see, answer and confirm. One
@@ -995,13 +1003,35 @@ const PayrollSummaryGrid: React.FC = () => {
   // ສົ່ງອອກ: the print's table — its title naming the department / position /
   // person picked, a column per day in the print's colours, then the totals —
   // as Excel, or the same as plain CSV.
-  const exportSpec = (): SheetSpec => {
+  // What ສົ່ງອອກ exports: what's on screen, or the departments picked
+  // (PrintPicker) — each under its own dividing row, numbered from 1 again.
+  const exportSpec = (scope?: { sections: PrintSection[]; all: boolean }): SheetSpec => {
     const tone = (t: SummaryTone) => ({ fill: SUMMARY_TONE[t].bg, color: SUMMARY_TONE[t].text });
     const total = (value: number | string, t?: SummaryTone) => ({ value, ...(t && Number(value) > 0 ? { ...tone(t), bold: true } : {}) });
+    const rowCells = (r: SummaryRow, idx: number) => [
+      idx + 1,
+      r.employee.employeeCode || '-',
+      { value: [`${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`.trim(), resignedNote(r.employee)].filter(Boolean).join(' '), align: 'left' as const },
+      regularShiftHours(r.employee) ?? '-',
+      ...days.map((d) => {
+        const style = PRINT_DAY_STYLE[printDayState(r.employee, d.format('YYYY-MM-DD'), d.day())];
+        return { value: style.label, fill: style.bg, color: style.text, bold: true };
+      }),
+      total(trackedCount(r, r.workDays), 'work'),
+      total(r.restDays, 'rest'),
+      total(trackedCount(r, r.absentDays), 'absent'),
+      total(r.x1, 'x1'),
+      total(r.x2, 'x2'),
+      total(r.x3, 'x3'),
+      total(r.grace, 'grace'),
+      total(r.totalDays),
+      total(r.otHours),
+      total(r.otDays),
+    ];
     return {
       fileName: `payroll-summary_${rangeStartKey}_${rangeEndKey}`,
       sheetName: 'ສະຫຼຸບເງິນເດືອນ',
-      title: printTitle,
+      title: scope ? `ລາຍຊື່ພະນັກງານ${pickedScope(scope.sections, scope.all) || 'ທັງໝົດ'} ${periodLabel}` : printTitle,
       printedAt: dayjs().format('DD/MM/YYYY HH:mm'),
       frozenColumns: 4,
       legend: (Object.keys(PRINT_DAY_STYLE) as PrintDayState[])
@@ -1024,33 +1054,25 @@ const PayrollSummaryGrid: React.FC = () => {
         { header: 'ຊ/ມx3', width: 7 },
         { header: 'ມື້x2', width: 7 },
       ],
-      rows: rows.map((r, idx) => [
-        idx + 1,
-        r.employee.employeeCode || '-',
-        { value: [`${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`.trim(), resignedNote(r.employee)].filter(Boolean).join(' '), align: 'left' as const },
-        regularShiftHours(r.employee) ?? '-',
-        ...days.map((d) => {
-          const style = PRINT_DAY_STYLE[printDayState(r.employee, d.format('YYYY-MM-DD'), d.day())];
-          return { value: style.label, fill: style.bg, color: style.text, bold: true };
-        }),
-        total(trackedCount(r, r.workDays), 'work'),
-        total(r.restDays, 'rest'),
-        total(trackedCount(r, r.absentDays), 'absent'),
-        total(r.x1, 'x1'),
-        total(r.x2, 'x2'),
-        total(r.x3, 'x3'),
-        total(r.grace, 'grace'),
-        total(r.totalDays),
-        total(r.otHours),
-        total(r.otDays),
-      ]),
+      rows: scope
+        ? groupBySection(scope.sections, allRows, (r) => r.employee._id).flatMap(({ section, items }) => [
+            { section: sectionHeading(section, items.length) },
+            ...items.map(rowCells),
+          ])
+        : rows.map(rowCells),
     };
   };
+  // ສົ່ງອອກ Excel / CSV ask what to export first (PrintPicker).
+  const [exportFormat, setExportFormat] = useState<'excel' | 'csv' | null>(null);
   const [exporting, setExporting] = useState(false);
-  const exportExcel = async () => {
+  const runExport = async (format: 'excel' | 'csv', spec: SheetSpec) => {
+    if (format === 'csv') {
+      downloadCsv(spec);
+      return;
+    }
     setExporting(true);
     try {
-      await downloadXlsx(exportSpec());
+      await downloadXlsx(spec);
     } catch {
       message.error('ສົ່ງອອກ Excel ບໍ່ສຳເລັດ');
     } finally {
@@ -1062,7 +1084,19 @@ const PayrollSummaryGrid: React.FC = () => {
   const loading =
     employeesLoading || scheduledLoading || restLoading || swappedLoading || dailyLoading || scannedBeforeHireLoading || substituteDaysLoading || restScheduleLoading || leavesLoading || overtimeLoading;
 
-  const handlePrintClick = () => window.print();
+  // ພິມ asks what to print: every department, chosen ones (and positions), or
+  // — when the page is narrowed to one person — just what's shown.
+  const [printPickerOpen, setPrintPickerOpen] = useState(false);
+  const { job: printJob, print: printSections } = usePrintJob();
+  const handlePrintClick = () => setPrintPickerOpen(true);
+  const printBlocks = useMemo(() => {
+    if (!printJob) return [{ key: 'shown', title: printTitle, rows }];
+    return printJob.map((section) => ({
+      key: section.key,
+      title: `ລາຍຊື່ພະນັກງານ${section.departmentName}${positionsNote(section)} ${periodLabel}`,
+      rows: allRows.filter((r) => section.employeeIds.has(r.employee._id)),
+    }));
+  }, [printJob, printTitle, rows, allRows, periodLabel]);
 
   return (
     <div>
@@ -1100,6 +1134,8 @@ const PayrollSummaryGrid: React.FC = () => {
           .payroll-print-table, .payroll-print-table *, .payroll-print-only, .payroll-print-only * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
           body:has(.payroll-print-table) .ant-layout-header { display: none !important; }
           body:has(.payroll-print-table) .ant-page-header-heading { display: none !important; }
+          /* The ພິມ dialog may still be closing when the print starts. */
+          .ant-modal-root { display: none !important; }
         }
       `}</style>
       <div ref={toolbarRef} className="payroll-no-print" style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
@@ -1165,10 +1201,10 @@ const PayrollSummaryGrid: React.FC = () => {
             <Button icon={<PrinterOutlined />} onClick={handlePrintClick}>
               ພິມ
             </Button>
-            <Button icon={<FileExcelOutlined />} loading={exporting} onClick={exportExcel}>
+            <Button icon={<FileExcelOutlined />} loading={exporting} onClick={() => setExportFormat('excel')}>
               ສົ່ງອອກ Excel
             </Button>
-            <Button icon={<DownloadOutlined />} onClick={() => downloadCsv(exportSpec())}>
+            <Button icon={<DownloadOutlined />} onClick={() => setExportFormat('csv')}>
               ສົ່ງອອກ CSV
             </Button>
             <Popover
@@ -1525,6 +1561,12 @@ const PayrollSummaryGrid: React.FC = () => {
         [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, scannedSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, loading, offsetHeader]
       )}
 
+      {/* One block per thing printed — what's on screen, or each department
+          picked in ພິມ, each starting on a new page. */}
+      {useMemo(
+        () =>
+          printBlocks.map((block, blockIndex) => (
+      <div key={block.key} className="payroll-print-block" style={blockIndex ? { breakBefore: 'page', pageBreakBefore: 'always' } : undefined}>
       <div className="payroll-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
         {(Object.keys(PRINT_DAY_STYLE) as PrintDayState[]).map((state) => (
           <span key={state} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1549,8 +1591,6 @@ const PayrollSummaryGrid: React.FC = () => {
         ))}
       </div>
 
-      {useMemo(
-        () => (
       <table className="payroll-print-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 9 }}>
         <colgroup>
           <col style={{ width: 22 }} />
@@ -1581,7 +1621,7 @@ const PayrollSummaryGrid: React.FC = () => {
             <th colSpan={printTotalColumns} style={{ border: '1px solid #999', borderBottom: '2px solid #A9761E', padding: '6px 10px', background: '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', fontSize: 11 }}>
                 <div style={{ fontWeight: 700, letterSpacing: 1, minWidth: 90, textAlign: 'left' }}>ROMEO</div>
-                <div style={{ flex: 1, textAlign: 'center', fontWeight: 600, fontSize: 13 }}>{printTitle}</div>
+                <div style={{ flex: 1, textAlign: 'center', fontWeight: 600, fontSize: 13 }}>{block.title}</div>
                 <div style={{ minWidth: 110, textAlign: 'right', color: '#8c8c8c', fontWeight: 400 }}>
                   ພິມ: {dayjs().format('DD/MM/YYYY HH:mm')}
                 </div>
@@ -1611,7 +1651,7 @@ const PayrollSummaryGrid: React.FC = () => {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, idx) => (
+          {block.rows.map((r, idx) => (
             <tr key={r.employee._id} className={r.employee.status === 'resigned' ? 'payroll-resigned-row' : undefined}>
               <td style={PRINT_TD}>{idx + 1}</td>
               <td style={PRINT_TD}>{r.employee.employeeCode || '-'}</td>
@@ -1646,12 +1686,9 @@ const PayrollSummaryGrid: React.FC = () => {
           ))}
         </tbody>
       </table>
-        ),
-        [rows, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, printTitle, printTotalColumns, printDayColWidth]
-      )}
 
       <div className="payroll-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>
-        {['ຜູ້ຮັບຜິດຊອບ', 'ຜູ້ທວດສອບ', 'ຜູ້ທວດສອບ'].map((label, i) => (
+        {['ຜູ້ຮັບຜິດຊອບ', 'ຜູ້ກວດສອບ', 'ຜູ້ກວດສອບ'].map((label, i) => (
           <div key={i} style={{ textAlign: 'center', width: 220 }}>
             <div style={{ height: 48 }} />
             <div style={{ borderTop: '1px solid #000' }} />
@@ -1659,6 +1696,51 @@ const PayrollSummaryGrid: React.FC = () => {
           </div>
         ))}
       </div>
+      </div>
+          )),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [printBlocks, days, threadsByKey, rangeStartKey, rangeEndKey, scheduledSet, restSet, swappedSet, absentSet, recentDailySet, yesterdayKey, scannedBeforeHireSet, substituteDaySet, restRowsByEmployee, todayKey, leaves, printTotalColumns, printDayColWidth]
+      )}
+
+      <PrintPickerModal
+        open={!!exportFormat}
+        verb="ສົ່ງອອກ"
+        okText={exportFormat === 'csv' ? 'ສົ່ງອອກ CSV' : 'ສົ່ງອອກ Excel'}
+        allNote="ມີແຖວແບ່ງແຕ່ລະພະແນກ"
+        className="export-picker"
+        onCancel={() => setExportFormat(null)}
+        employees={allEmployees}
+        initialDepartment={departmentFilter}
+        initialPosition={positionFilter}
+        currentLabel={selectedPerson ? `${selectedPerson.employeeCode ?? ''} ${selectedPerson.firstName ?? ''} ${selectedPerson.lastName ?? ''}`.trim() : undefined}
+        onPrintCurrent={() => {
+          const format = exportFormat ?? 'excel';
+          setExportFormat(null);
+          runExport(format, exportSpec());
+        }}
+        onPrint={(sections, { all }) => {
+          const format = exportFormat ?? 'excel';
+          setExportFormat(null);
+          runExport(format, exportSpec({ sections, all }));
+        }}
+      />
+
+      <PrintPickerModal
+        open={printPickerOpen}
+        onCancel={() => setPrintPickerOpen(false)}
+        employees={allEmployees}
+        initialDepartment={departmentFilter}
+        initialPosition={positionFilter}
+        currentLabel={selectedPerson ? `${selectedPerson.employeeCode ?? ''} ${selectedPerson.firstName ?? ''} ${selectedPerson.lastName ?? ''}`.trim() : undefined}
+        onPrintCurrent={() => {
+          setPrintPickerOpen(false);
+          window.setTimeout(() => window.print(), 300);
+        }}
+        onPrint={(sections) => {
+          setPrintPickerOpen(false);
+          printSections(sections);
+        }}
+      />
 
       <CommentThreadModal
         cell={commentCell}

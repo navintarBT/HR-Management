@@ -13,6 +13,7 @@ import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { preferredOverride } from '../../utils/dayOverride';
 import { groupLogsByEmployee, shiftOnDate, regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
+import { PrintPickerModal, positionsNote, usePrintJob } from '../../components/PrintPicker';
 
 function idOf(value: { _id: string } | string | null | undefined) {
   if (!value) return undefined;
@@ -232,6 +233,9 @@ export const ScheduleCoversGrid: React.FC = () => {
   const [departmentFilter, setDepartmentFilter] = useState<string>();
   const [positionFilter, setPositionFilter] = useState<string>();
   const [personFilter, setPersonFilter] = useState<string>();
+  // ພິມ: what's being printed when it isn't just what's on screen (PrintPicker).
+  const [printPickerOpen, setPrintPickerOpen] = useState(false);
+  const { job: printJob, print: printSections } = usePrintJob();
 
   const { selectProps: departmentSelect, query: departmentQuery } = useSelect<Department>({
     resource: 'departments',
@@ -360,23 +364,29 @@ export const ScheduleCoversGrid: React.FC = () => {
     [allEmployees, departmentFilter, positionFilter]
   );
 
-  // Everyone in the department / position / person picked, grouped by position.
+  // Everyone, grouped by position — and those in the department / position /
+  // person picked.
+  const sortedEmployees = useMemo(
+    () => [...allEmployees].sort((a, b) => positionOf(a).localeCompare(positionOf(b)) || (a.employeeCode ?? '').localeCompare(b.employeeCode ?? '')),
+    [allEmployees]
+  );
   const rows = useMemo(
     () =>
-      allEmployees
-        .filter(
-          (e) =>
-            (!departmentFilter || idOf(e.department) === departmentFilter) &&
-            (!positionFilter || idOf(e.position) === positionFilter) &&
-            (!personFilter || e._id === personFilter)
-        )
-        .sort((a, b) => positionOf(a).localeCompare(positionOf(b)) || (a.employeeCode ?? '').localeCompare(b.employeeCode ?? '')),
-    [allEmployees, departmentFilter, positionFilter, personFilter]
+      sortedEmployees.filter(
+        (e) =>
+          (!departmentFilter || idOf(e.department) === departmentFilter) &&
+          (!positionFilter || idOf(e.position) === positionFilter) &&
+          (!personFilter || e._id === personFilter)
+      ),
+    [sortedEmployees, departmentFilter, positionFilter, personFilter]
   );
+  // Whose days are worked out: those shown — or everyone while ພິມ prints
+  // departments beyond them.
+  const infoRows = printJob ? sortedEmployees : rows;
 
   const dayInfo = useMemo(() => {
     const map = new Map<string, DayInfo>();
-    for (const emp of rows) {
+    for (const emp of infoRows) {
       for (const day of rangeDays) {
         const key = `${emp._id}_${day.format('YYYY-MM-DD')}`;
         map.set(key, {
@@ -388,7 +398,7 @@ export const ScheduleCoversGrid: React.FC = () => {
     }
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, rangeDays, shiftIndex, leaveRanges, restRowsByEmployee, shiftLogsByEmployee]);
+  }, [infoRows, rangeDays, shiftIndex, leaveRanges, restRowsByEmployee, shiftLogsByEmployee]);
   const infoOn = (emp: Employee, dateKey: string) =>
     dayInfo.get(`${emp._id}_${dateKey}`) ?? { status: { kind: 'unset' } as DayStatus, covering: [], coveredBy: [] };
 
@@ -430,7 +440,7 @@ export const ScheduleCoversGrid: React.FC = () => {
   // month's covers by weekday.
   const weekInfo = useMemo(() => {
     const map = new Map<string, WeekdayInfo>();
-    for (const emp of rows) {
+    for (const emp of infoRows) {
       for (const dow of WEEK_ORDER) {
         const days = rangeDays.filter((d) => d.day() === dow).map((d) => `${emp._id}_${d.format('YYYY-MM-DD')}`);
         map.set(`${emp._id}_${dow}`, {
@@ -447,7 +457,7 @@ export const ScheduleCoversGrid: React.FC = () => {
       }
     }
     return map;
-  }, [rows, rangeDays, shiftIndex]);
+  }, [infoRows, rangeDays, shiftIndex]);
   const weekInfoOf = (emp: Employee, dow: number) => weekInfo.get(`${emp._id}_${dow}`) ?? { resting: false, covering: [], coveredBy: [] };
 
   // This month's covers involving anyone shown — doing it or covered — for the totals.
@@ -465,6 +475,9 @@ export const ScheduleCoversGrid: React.FC = () => {
   const selectedDepartment = allDepartments.find((d) => d._id === departmentFilter);
   const selectedPosition = allPositions.find((p) => p._id === positionFilter);
   const selectedPerson = allEmployees.find((e) => e._id === personFilter);
+  const printPeriod = usingRange
+    ? `ວັນທີ ${rangeStart.format('DD/MM/YYYY')} - ${rangeEnd.format('DD/MM/YYYY')}`
+    : `ປະຈໍາເດືອນ ${monthStart.format('MMMM YYYY')}`;
   // Worded the way ສະຫຼຸບເງິນເດືອນ words its own.
   const printTitle = (() => {
     let base = 'ຕາຕະລາງການເຮັດແທນ';
@@ -475,9 +488,7 @@ export const ScheduleCoversGrid: React.FC = () => {
       if (selectedPosition) base += selectedPosition.name;
       if (selectedPerson) base += `${selectedPerson.firstName ?? ''} ${selectedPerson.lastName ?? ''}`;
     }
-    return usingRange
-      ? `${base} ວັນທີ ${rangeStart.format('DD/MM/YYYY')} - ${rangeEnd.format('DD/MM/YYYY')}`
-      : `${base} ປະຈໍາເດືອນ ${monthStart.format('MMMM YYYY')}`;
+    return `${base} ${printPeriod}`;
   })();
 
   const { mutate: deleteShift } = useDelete();
@@ -803,11 +814,11 @@ export const ScheduleCoversGrid: React.FC = () => {
 
   // Header lines for each column: how many in the group are off, how many of
   // them have someone covering, and how many normal working days are covered.
-  const dateSummary = (dateKey: string) => {
+  const dateSummary = (dateKey: string, list: Employee[] = rows) => {
     let off = 0;
     let covered = 0;
     let workCovered = 0;
-    for (const emp of rows) {
+    for (const emp of list) {
       const info = infoOn(emp, dateKey);
       if (!isOff(info.status)) {
         if (info.status.kind === 'work' && info.coveredBy.length) workCovered += 1;
@@ -818,7 +829,7 @@ export const ScheduleCoversGrid: React.FC = () => {
     }
     return { off, covered, workCovered };
   };
-  const restingOnWeekday = (dow: number) => rows.filter((emp) => weekInfoOf(emp, dow).resting).length;
+  const restingOnWeekday = (dow: number, list: Employee[] = rows) => list.filter((emp) => weekInfoOf(emp, dow).resting).length;
 
   // The dialogs' state sits on this component, and with everyone showing this
   // table is thousands of cells: without this, every click in ຫາຄົນແທນ draws all
@@ -927,14 +938,16 @@ export const ScheduleCoversGrid: React.FC = () => {
       {c.count !== undefined && ` ×${c.count}`}
     </div>
   );
-  const printDays: PrintDay[] | null =
+  // The columns for one printed table — its header counts are for the people in
+  // it (`list`).
+  const printDaysFor = (list: Employee[]): PrintDay[] | null =>
     view === 'week'
       ? WEEK_ORDER.map((dow) => ({
           key: `dow-${dow}`,
           header: (
             <>
               <div>{WEEKDAY_OPTIONS[dow].label}</div>
-              <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ {restingOnWeekday(dow)} ຄົນ</div>
+              <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ {restingOnWeekday(dow, list)} ຄົນ</div>
             </>
           ),
           cell: (emp) => {
@@ -960,7 +973,7 @@ export const ScheduleCoversGrid: React.FC = () => {
                 <>
                   <div>{day.format('DD/MM')}</div>
                   <div>{WEEKDAY_OPTIONS[day.day()].label}</div>
-                  <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ/ລາ {dateSummary(dateKey).off} ຄົນ</div>
+                  <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ/ລາ {dateSummary(dateKey, list).off} ຄົນ</div>
                 </>
               ),
               cell: (emp) => {
@@ -982,6 +995,14 @@ export const ScheduleCoversGrid: React.FC = () => {
             };
           })
         : null;
+  const printDays = printDaysFor(rows);
+  // What prints: what's on screen, or each department picked in ພິມ.
+  const printBlocks = printJob
+    ? printJob.map((section) => {
+        const list = sortedEmployees.filter((e) => section.employeeIds.has(e._id));
+        return { key: section.key, title: `ຕາຕະລາງການເຮັດແທນ${section.departmentName}${positionsNote(section)} ${printPeriod}`, rows: list, days: printDaysFor(list) };
+      })
+    : [{ key: 'shown', title: printTitle, rows, days: printDays }];
 
   return (
     <div>
@@ -1013,6 +1034,8 @@ export const ScheduleCoversGrid: React.FC = () => {
              held for it to match. */
           body:has(.covers-print-table) .ant-layout-has-sider > aside.ant-layout-sider,
           body:has(.covers-print-table) .ant-layout-has-sider > div:not(.ant-layout) { display: none !important; }
+          /* The ພິມ dialog may still be closing when the print starts. */
+          .ant-modal-root { display: none !important; }
         }
       `}</style>
       {/* Pinned with the date/weekday header below it (and the table's own
@@ -1098,7 +1121,7 @@ export const ScheduleCoversGrid: React.FC = () => {
             ມອບໝາຍການເຮັດແທນ
           </Button>
           <Tooltip title={view === 'month' && !dayRange ? `ເລືອກຊ່ວງວັນທີ (ບໍ່ເກີນ ${MAX_PRINT_DAYS} ວັນ) ກ່ອນພິມ` : undefined}>
-            <Button icon={<PrinterOutlined />} disabled={!printDays} onClick={() => window.print()}>
+            <Button icon={<PrinterOutlined />} disabled={!printDays} onClick={() => setPrintPickerOpen(true)}>
               ພິມ
             </Button>
           </Tooltip>
@@ -1122,9 +1145,13 @@ export const ScheduleCoversGrid: React.FC = () => {
           : 'ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ — ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ ບໍ່ແມ່ນກະປົກກະຕິຂອງຕົນເອງ'}
       </Typography.Paragraph>
 
-      {/* The weekly roster prints, and the month view once dates are picked. */}
-      {printDays && (
-        <>
+      {/* The weekly roster prints, and the month view once dates are picked —
+          what's on screen, or each department picked in ພິມ, each on new pages. */}
+      {printBlocks.map((block, blockIndex) => {
+        const blockDays = block.days;
+        if (!blockDays) return null;
+        return (
+        <div key={block.key} className="covers-print-block" style={blockIndex ? { breakBefore: 'page', pageBreakBefore: 'always' } : undefined}>
           <div className="covers-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
             {(view === 'week' ? PRINT_LEGEND_WEEK : PRINT_LEGEND_DATES).map((item) => (
               <span key={item.tone} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1155,18 +1182,18 @@ export const ScheduleCoversGrid: React.FC = () => {
               {PRINT_FIXED_COLS.map((width, i) => (
                 <col key={i} style={{ width }} />
               ))}
-              {printDays.map((d) => (
-                <col key={d.key} style={{ width: (PRINT_PAGE_WIDTH_PX - PRINT_FIXED_COLS_WIDTH_PX) / printDays.length }} />
+              {blockDays.map((d) => (
+                <col key={d.key} style={{ width: (PRINT_PAGE_WIDTH_PX - PRINT_FIXED_COLS_WIDTH_PX) / blockDays.length }} />
               ))}
             </colgroup>
             <thead>
               <tr>
                 {/* Spans the whole header row so it repeats on every printed page
                     with the column headers below it, as on ສະຫຼຸບເງິນເດືອນ. */}
-                <th colSpan={PRINT_FIXED_COLS.length + printDays.length} style={{ border: '1px solid #999', borderBottom: '2px solid #A9761E', padding: '6px 10px', background: '#fff' }}>
+                <th colSpan={PRINT_FIXED_COLS.length + blockDays.length} style={{ border: '1px solid #999', borderBottom: '2px solid #A9761E', padding: '6px 10px', background: '#fff' }}>
                   <div style={{ display: 'flex', alignItems: 'center', fontSize: 11 }}>
                     <div style={{ fontWeight: 700, letterSpacing: 1, minWidth: 90, textAlign: 'left' }}>ROMEO</div>
-                    <div style={{ flex: 1, textAlign: 'center', fontWeight: 600, fontSize: 13 }}>{printTitle}</div>
+                    <div style={{ flex: 1, textAlign: 'center', fontWeight: 600, fontSize: 13 }}>{block.title}</div>
                     <div style={{ minWidth: 110, textAlign: 'right', color: '#8c8c8c', fontWeight: 400 }}>
                       ພິມ: {dayjs().format('DD/MM/YYYY HH:mm')}
                     </div>
@@ -1179,7 +1206,7 @@ export const ScheduleCoversGrid: React.FC = () => {
                 <th style={PRINT_TH}>ຊື່</th>
                 <th style={PRINT_TH}>ຕຳແໜ່ງ</th>
                 <th style={PRINT_TH}>ກະ</th>
-                {printDays.map((d) => (
+                {blockDays.map((d) => (
                   <th key={d.key} style={{ ...PRINT_TH, lineHeight: 1.15 }}>
                     {d.header}
                   </th>
@@ -1187,14 +1214,14 @@ export const ScheduleCoversGrid: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {rows.map((emp, idx) => (
+              {block.rows.map((emp, idx) => (
                 <tr key={emp._id}>
                   <td style={PRINT_TD}>{idx + 1}</td>
                   <td style={PRINT_TD}>{emp.employeeCode || '-'}</td>
                   <td style={{ ...PRINT_TD, textAlign: 'left' }}>{`${emp.firstName ?? ''} ${emp.lastName ?? ''}`}</td>
                   <td style={{ ...PRINT_TD, textAlign: 'left' }}>{positionOf(emp)}</td>
                   <td style={PRINT_TD}>{regularShiftHours(emp) ?? '-'}</td>
-                  {printDays.map((d) => {
+                  {blockDays.map((d) => {
                     const { tone, lines } = d.cell(emp);
                     return (
                       <td
@@ -1211,7 +1238,7 @@ export const ScheduleCoversGrid: React.FC = () => {
           </table>
 
           <div className="covers-print-only" style={{ justifyContent: 'space-between', marginTop: 64, padding: '0 24px' }}>
-            {['ຜູ້ຮັບຜິດຊອບ', 'ຜູ້ທວດສອບ', 'ຜູ້ທວດສອບ'].map((label, i) => (
+            {['ຜູ້ຮັບຜິດຊອບ', 'ຜູ້ກວດສອບ', 'ຜູ້ກວດສອບ'].map((label, i) => (
               <div key={i} style={{ textAlign: 'center', width: 220 }}>
                 <div style={{ height: 48 }} />
                 <div style={{ borderTop: '1px solid #000' }} />
@@ -1221,10 +1248,28 @@ export const ScheduleCoversGrid: React.FC = () => {
               </div>
             ))}
           </div>
-        </>
-      )}
+        </div>
+        );
+      })}
 
       {shownTable}
+
+      <PrintPickerModal
+        open={printPickerOpen}
+        onCancel={() => setPrintPickerOpen(false)}
+        employees={allEmployees}
+        initialDepartment={departmentFilter}
+        initialPosition={positionFilter}
+        currentLabel={selectedPerson ? `${selectedPerson.employeeCode ?? ''} ${fullName(selectedPerson)}`.trim() : undefined}
+        onPrintCurrent={() => {
+          setPrintPickerOpen(false);
+          window.setTimeout(() => window.print(), 300);
+        }}
+        onPrint={(sections) => {
+          setPrintPickerOpen(false);
+          printSections(sections);
+        }}
+      />
 
       <Modal
         title={assignFor ? `ຫາຄົນແທນ — ${assignFor.employee.employeeCode ?? ''} ${fullName(assignFor.employee)}` : ''}

@@ -24,6 +24,7 @@ import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { ScanEvidenceView } from '../../components/ScanEvidenceView';
 import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
+import { PrintPickerModal, groupBySection, pickedScope, sectionHeading, type PrintSection } from '../../components/PrintPicker';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -509,12 +510,15 @@ const AttendanceSummaryGrid: React.FC = () => {
     return { kind: 'none' };
   };
 
-  // ສົ່ງອອກ: the table as shown — the people filtered, the dates picked — as
+  // ສົ່ງອອກ: the table as shown — the people filtered, the dates picked — or
+  // the departments picked (PrintPicker), each under its own dividing row; as
   // Excel in the page's colours, or as plain CSV.
-  const exportSpec = (): SheetSpec => {
+  const exportSpec = (scope?: { sections: PrintSection[]; all: boolean }): SheetSpec => {
     const department = (departmentQuery?.data?.data ?? []).find((d) => d._id === departmentFilter);
     const position = allPositions.find((p) => p._id === positionFilter);
-    const filters = [department?.name, position?.name, search && `ຄົ້ນຫາ "${search}"`].filter(Boolean).join(' · ');
+    const filters = scope
+      ? pickedScope(scope.sections, scope.all)
+      : [department?.name, position?.name, search && `ຄົ້ນຫາ "${search}"`].filter(Boolean).join(' · ');
     const range0 = range[0].format('DD/MM/YYYY');
     const range1 = range[1].format('DD/MM/YYYY');
     return {
@@ -535,7 +539,15 @@ const AttendanceSummaryGrid: React.FC = () => {
         { header: 'ຕຳແໜ່ງ', width: 16 },
         ...days.map((day) => ({ header: `${day.format('DD/MM')}\n${day.format('ddd')}`, width: 13 })),
       ],
-      rows: employees.map((emp) => [
+      rows: (scope
+        ? groupBySection(scope.sections, allEmployees, (e) => e._id).flatMap(({ section, items }) => [
+            { section: sectionHeading(section, items.length) },
+            ...items.map(rowCells),
+          ])
+        : employees.map(rowCells)),
+    };
+  };
+  const rowCells = (emp: Employee) => [
         { value: emp.employeeCode ?? '', align: 'center' as const },
         { value: `${emp.firstName ?? ''} ${emp.lastName ?? ''}`.trim(), align: 'left' as const },
         { value: (typeof emp.department === 'object' ? emp.department?.name : undefined) ?? '-', align: 'left' as const },
@@ -548,14 +560,18 @@ const AttendanceSummaryGrid: React.FC = () => {
           if (cell.kind === 'queued') return { value: cell.time, color: '#8c8c8c' };
           return { value: '-', color: '#bfbfbf' };
         }),
-      ]),
-    };
-  };
+  ];
+  // ສົ່ງອອກ Excel / CSV ask what to export first (PrintPicker).
+  const [exportFormat, setExportFormat] = useState<'excel' | 'csv' | null>(null);
   const [exporting, setExporting] = useState(false);
-  const exportExcel = async () => {
+  const runExport = async (format: 'excel' | 'csv', spec: SheetSpec) => {
+    if (format === 'csv') {
+      downloadCsv(spec);
+      return;
+    }
     setExporting(true);
     try {
-      await downloadXlsx(exportSpec());
+      await downloadXlsx(spec);
     } catch {
       message.error('ສົ່ງອອກ Excel ບໍ່ສຳເລັດ');
     } finally {
@@ -625,12 +641,34 @@ const AttendanceSummaryGrid: React.FC = () => {
               value={positionFilter}
               onChange={(v: any) => setPositionFilter(v)}
             />
-            <Button icon={<FileExcelOutlined />} loading={exporting} disabled={!employees.length} onClick={exportExcel}>
+            <Button icon={<FileExcelOutlined />} loading={exporting} disabled={!allEmployees.length} onClick={() => setExportFormat('excel')}>
               ສົ່ງອອກ Excel
             </Button>
-            <Button icon={<DownloadOutlined />} disabled={!employees.length} onClick={() => downloadCsv(exportSpec())}>
+            <Button icon={<DownloadOutlined />} disabled={!allEmployees.length} onClick={() => setExportFormat('csv')}>
               ສົ່ງອອກ CSV
             </Button>
+            <PrintPickerModal
+              open={!!exportFormat}
+              verb="ສົ່ງອອກ"
+              okText={exportFormat === 'csv' ? 'ສົ່ງອອກ CSV' : 'ສົ່ງອອກ Excel'}
+              allNote="ມີແຖວແບ່ງແຕ່ລະພະແນກ"
+              className="export-picker"
+              onCancel={() => setExportFormat(null)}
+              employees={allEmployees}
+              initialDepartment={departmentFilter}
+              initialPosition={positionFilter}
+              currentLabel={search ? `ຄົ້ນຫາ "${search}" (${employees.length} ຄົນ)` : undefined}
+              onPrintCurrent={() => {
+                const format = exportFormat ?? 'excel';
+                setExportFormat(null);
+                runExport(format, exportSpec());
+              }}
+              onPrint={(sections, { all }) => {
+                const format = exportFormat ?? 'excel';
+                setExportFormat(null);
+                runExport(format, exportSpec({ sections, all }));
+              }}
+            />
           </Space>
           <Space wrap size={[14, 6]}>
             {[

@@ -14,6 +14,11 @@ export type SheetCell = {
   numFmt?: string;
 };
 type CellInput = SheetCell | string | number | null | undefined;
+// A dividing row above a department's rows — a heading across the whole width
+// (Excel), or a blank line and the heading (CSV).
+export type SheetSectionRow = { section: string };
+type RowInput = CellInput[] | SheetSectionRow;
+const isSection = (row: RowInput): row is SheetSectionRow => !Array.isArray(row);
 
 export type SheetColumn = { header: string; width: number; fill?: string; color?: string };
 
@@ -23,7 +28,7 @@ export type SheetSpec = {
   title: string;
   printedAt: string;
   columns: SheetColumn[];
-  rows: CellInput[][];
+  rows: RowInput[];
   // The first this many columns stay in view when scrolling sideways.
   frozenColumns?: number;
   legend?: { label: string; text: string; fill?: string; color?: string }[];
@@ -37,6 +42,7 @@ const HEADER_FILL = '#FBF3E0';
 const HEADER_TEXT = '#5C4315';
 const TITLE_RULE = '#A9761E';
 const STRIPE_FILL = '#FAFAFA';
+const SECTION_FILL = '#5C4315';
 
 const asCell = (input: CellInput): SheetCell => (input !== null && typeof input === 'object' ? input : { value: input });
 
@@ -61,7 +67,7 @@ export function downloadCsv(spec: SheetSpec) {
     [`ພິມ: ${spec.printedAt}`],
     [],
     spec.columns.map((c) => c.header),
-    ...spec.rows.map((row) => row.map((cell) => asCell(cell).value)),
+    ...spec.rows.flatMap((row, i) => (isSection(row) ? [...(i ? [[]] : []), [row.section]] : [row.map((cell) => asCell(cell).value)])),
     ...(spec.totals ? [spec.totals.map((cell) => asCell(cell).value)] : []),
   ].map((line) => line.map(quote).join(','));
   download(new Blob([`﻿${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8;' }), `${spec.fileName}.csv`);
@@ -125,15 +131,31 @@ export async function downloadXlsx(spec: SheetSpec) {
   });
   header.height = 32;
 
+  // Shading counts from each department's first row.
+  let stripe = 0;
   spec.rows.forEach((row, r) => {
     const sheetRow = sheet.getRow(headerRow + 1 + r);
+    if (isSection(row)) {
+      stripe = 0;
+      sheet.mergeCells(headerRow + 1 + r, 1, headerRow + 1 + r, lastColumn);
+      const cell = sheetRow.getCell(1);
+      cell.value = row.section;
+      cell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(SECTION_FILL) } };
+      cell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+      cell.border = { top: { style: 'thick', color: { argb: 'FF000000' } }, bottom: { style: 'medium', color: { argb: argb(TITLE_RULE) } } };
+      sheetRow.height = 24;
+      return;
+    }
+    const striped = spec.striped && stripe % 2 === 1;
+    stripe += 1;
     let lines = 1;
     row.forEach((input, c) => {
       const data = asCell(input);
       const cell = sheetRow.getCell(c + 1);
       cell.value = data.value ?? '';
       if (typeof data.value === 'string') lines = Math.max(lines, data.value.split('\n').length);
-      const fill = argb(data.fill) ?? (spec.striped && r % 2 === 1 ? argb(STRIPE_FILL) : undefined);
+      const fill = argb(data.fill) ?? (striped ? argb(STRIPE_FILL) : undefined);
       if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
       if (data.numFmt) cell.numFmt = data.numFmt;
       const color = argb(data.color);
