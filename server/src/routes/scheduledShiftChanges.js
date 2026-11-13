@@ -4,6 +4,7 @@ const Employee = require('../models/Employee');
 const ShiftCategory = require('../models/ShiftCategory');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { toDateKey } = require('../utils/attendanceProcessor');
+const { openRoundFor, markDone, sidesOf, recordSingleShiftMove, markShiftMoveCancelled } = require('../utils/bulkEditRounds');
 const {
   pinNewScheduleForEffectiveDate,
   unpinScheduleForEffectiveDate,
@@ -40,6 +41,12 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
     if (!employee) return res.status(404).json({ message: 'ບໍ່ພົບພະນັກງານ' });
     if (!category) return res.status(404).json({ message: 'ບໍ່ພົບກະ' });
 
+    // Every ຍ້າຍກະ goes into ປະຫວັດການແກ້ໄຂ (routes/bulkEdits.js): as part of a
+    // ແກ້ໄຂກະແບບກຸ່ມ round, or as a round of one from the employee page or
+    // ຕັ້ງຄ່າແຜນວຽກ — what they had before is read now, before it changes.
+    const round = await openRoundFor(req.body.bulkEditRound, employee._id, 'shift');
+    const before = round ? null : (await sidesOf([employee._id])).get(String(employee._id))?.side;
+
     await pinNewScheduleForEffectiveDate(employee, category, effectiveDate);
 
     const todayKey = toDateKey(new Date());
@@ -54,6 +61,13 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
       appliedAt: isImmediate ? new Date() : undefined,
     });
     if (isImmediate) await applyScheduledShiftChange(change);
+
+    try {
+      if (round) await markDone(round._id, employee._id, { shift: `${category.startTime}-${category.endTime}` });
+      else await recordSingleShiftMove({ employee, before, category, effectiveDate, user: req.user, source: req.body.source });
+    } catch (err) {
+      console.error('[scheduled-shift-changes] record the move in the history failed', err);
+    }
 
     const populated = await change.populate(POPULATE);
     res.status(201).json(populated);
@@ -77,6 +91,11 @@ router.patch('/:id', authenticate, requireRole('admin', 'manager'), async (req, 
     const change = await ScheduledShiftChange.findOneAndUpdate({ _id: existing._id, status: 'pending' }, { status: 'cancelled' }, { new: true });
     if (!change) return res.status(400).json({ message: 'ຍົກເລີກໄດ້ສະເພາະລາຍການທີ່ຍັງບໍ່ທັນມີຜົນ' });
     await unpinScheduleForEffectiveDate(change.employee, change.effectiveDate);
+    try {
+      await markShiftMoveCancelled(change);
+    } catch (err) {
+      console.error('[scheduled-shift-changes] mark the move cancelled in the history failed', err);
+    }
     const populated = await change.populate(POPULATE);
     res.json(populated);
   } catch (err) {

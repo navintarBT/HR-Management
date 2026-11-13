@@ -51,6 +51,15 @@ function computeExpectedHours(expected) {
   return Math.round(((endMinutes - startMinutes) / 60) * 100) / 100;
 }
 
+// The shift a day is judged against, as stored on its AttendanceDaily
+// (shiftStart/shiftEnd) — null/null when there was none.
+function judgedShiftOf(expected) {
+  const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return expected
+    ? { shiftStart: hhmm(expected.startHour, expected.startMinute), shiftEnd: hhmm(expected.endHour, expected.endMinute) }
+    : { shiftStart: null, shiftEnd: null };
+}
+
 function isOvernightShift(expected) {
   return (
     !!expected &&
@@ -374,6 +383,7 @@ async function recomputeDay(employeeId, dateKey, { force = false } = {}) {
       expectedHours,
       lateMinutes,
       graceMinutes: expected?.graceMinutes ?? null,
+      ...judgedShiftOf(expected),
       severeLateMinutes: expected?.severeLateMinutes ?? null,
       earlyLeaveMinutes,
       otHours,
@@ -422,6 +432,7 @@ async function markAbsent(employeeId, dateKey) {
       lastOut: null,
       workedHours: 0,
       expectedHours: computeExpectedHours(expected),
+      ...judgedShiftOf(expected),
       lateMinutes: 0,
       earlyLeaveMinutes: 0,
       otHours: 0,
@@ -452,6 +463,7 @@ async function markPresentFromShift(employeeId, dateKey, expected, note) {
       lastOut,
       workedHours: hours,
       expectedHours: hours,
+      ...judgedShiftOf(expected),
       lateMinutes: 0,
       earlyLeaveMinutes: 0,
       otHours: 0,
@@ -693,6 +705,7 @@ async function markLeave(employeeId, dateKey) {
       lastOut: null,
       workedHours: 0,
       expectedHours: computeExpectedHours(expected),
+      ...judgedShiftOf(expected),
       lateMinutes: 0,
       earlyLeaveMinutes: 0,
       otHours: 0,
@@ -756,6 +769,7 @@ async function markSubstituted(employeeId, dateKey) {
       lastOut: null,
       workedHours: 0,
       expectedHours: computeExpectedHours(expected),
+      ...judgedShiftOf(expected),
       lateMinutes: 0,
       earlyLeaveMinutes: 0,
       otHours: 0,

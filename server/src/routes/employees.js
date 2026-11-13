@@ -21,6 +21,7 @@ const { pushEmployeeToDevices, removeStoredTemplates, moveStoredTemplates } = re
 const { OPTIONAL_UNIQUE_KEYS } = require('../utils/employeeKeys');
 const { shiftFieldsDiffer, recordShiftChange } = require('../utils/shiftHistory');
 const { toDateKey, linkUnmatchedScans } = require('../utils/attendanceProcessor');
+const { lockedChanges, openRoundFor, markDone } = require('../utils/bulkEditRounds');
 
 // Follow-up work that runs after the employee change itself is saved (queuing
 // for the scanners, recording a shift change) — a problem there is logged
@@ -466,8 +467,27 @@ router.post('/', authenticate, requireRole('admin'), async (req, res, next) => {
 router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) => {
   try {
     const { employeePayload } = cleanEmployeePayload(req.body);
+    delete employeePayload.bulkEditRound;
     const current = await Employee.findById(req.params.id);
     if (!current) return res.status(404).json({ message: 'Not found' });
+
+    // Department, position and the regular shift are set when someone is added
+    // (still a draft counts as being added). After that they move only from
+    // ແກ້ໄຂກະແບບກຸ່ມ, which records each round (utils/bulkEditRounds.js): a
+    // department or position move comes with that round's id. A shift moves
+    // only through ຍ້າຍກະ (routes/scheduledShiftChanges.js — the employee page,
+    // ແກ້ໄຂກະແບບກຸ່ມ and ຕັ້ງຄ່າແຜນວຽກ all use it), never here.
+    let bulkRound = null;
+    const locked = current.status === 'draft' ? [] : lockedChanges(current, employeePayload);
+    if (locked.includes('shift')) {
+      return res.status(400).json({ message: 'ປ່ຽນໂມງເຂົ້າວຽກໄດ້ດ້ວຍປຸ່ມ ຍ້າຍກະ ເທົ່ານັ້ນ (ໜ້າພະນັກງານ, ແກ້ໄຂກະແບບກຸ່ມ ຫຼື ຕັ້ງຄ່າແຜນວຽກ)' });
+    }
+    if (locked.length) {
+      // A department move also clears a position the new department doesn't have.
+      const action = locked.includes('department') ? 'department' : 'position';
+      bulkRound = await openRoundFor(req.body.bulkEditRound, current._id, action);
+      if (!bulkRound) return res.status(400).json({ message: 'ປ່ຽນພະແນກ ຫຼື ຕຳແໜ່ງໄດ້ທີ່ໜ້າ ແກ້ໄຂກະແບບກຸ່ມ ເທົ່ານັ້ນ' });
+    }
     // A new code follows the same format as when adding someone. Only a changed
     // one is checked, so older codes in another format can still be saved as is.
     if ('employeeCode' in employeePayload && employeePayload.employeeCode !== current.employeeCode) {
@@ -585,6 +605,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
       if (newPin && (pinChanged || nameChanged || becameActive)) await pushEmployeeToDevices(item);
     });
     if (newPin && pinChanged) await runAfterSave('link earlier scans', () => linkUnmatchedScans(item));
+    if (bulkRound) await runAfterSave('record the bulk move', () => markDone(bulkRound._id, item._id));
 
     res.json(item);
   } catch (err) {

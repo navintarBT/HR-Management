@@ -250,6 +250,30 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
   const canonicalA = canonicalTimeOf(empListA);
   const canonicalB = canonicalTimeOf(empListB);
 
+  // Each mover's rest day is settled first (a day the new position forbids moves
+  // to its fallback from the swap date), so the swap day below sees the rest day
+  // they actually have on it.
+  const historyDate = effectiveDate || toDateKey(new Date());
+  const [restDayA, restDayB] = await Promise.all([
+    Promise.all(empListA.map((e) => resolveMoverRestDay(e, positionB, historyDate))),
+    Promise.all(empListB.map((e) => resolveMoverRestDay(e, positionA, historyDate))),
+  ]);
+
+  // Someone whose rest day the swap date is gets no working shift put on it —
+  // it stays their day off (a long swap-day shift on a rest day made a no-show
+  // there a ຂາດ — seen 2/11/2026). Their new shift starts on their next working day.
+  const restingOnSwapDay = new Set();
+  if (effectiveDate) {
+    const dow = new Date(`${effectiveDate}T00:00:00`).getDay();
+    [...restDayA, ...restDayB].forEach((r, i) => {
+      if (r.after.includes(dow)) restingOnSwapDay.add(String([...empListA, ...empListB][i]._id));
+    });
+  }
+  const resting = (e) => restingOnSwapDay.has(String(e._id));
+  const leaveDayOff = async (e) => {
+    await clearAutoPinIfAny(e._id, effectiveDate);
+  };
+
   if (effectiveDate) {
     const [oldTimeA, oldTimeB] = await Promise.all([resolveCanonicalTime(canonicalA), resolveCanonicalTime(canonicalB)]);
     if (tilesFullDay(oldTimeA, oldTimeB)) {
@@ -265,22 +289,18 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
       const lateEnd = aIsEarly ? oldTimeB.endTime : oldTimeA.endTime;
       const lateList = aIsEarly ? empListB : empListA;
       await Promise.all([
-        ...earlyList.map((e) => pinExtendedScheduleForSwapDay(e, earlyOldPositionId, earlyStart, lateEnd, earlyCategoryId, effectiveDate)),
+        ...earlyList.map((e) =>
+          resting(e) ? leaveDayOff(e) : pinExtendedScheduleForSwapDay(e, earlyOldPositionId, earlyStart, lateEnd, earlyCategoryId, effectiveDate)
+        ),
         ...lateList.map((e) => pinBlankScheduleForSwapDay(e, effectiveDate)),
       ]);
     } else {
       await Promise.all([
-        ...empListA.map((e) => pinOldScheduleForSwapDay(e, positionAId, effectiveDate)),
-        ...empListB.map((e) => pinOldScheduleForSwapDay(e, positionBId, effectiveDate)),
+        ...empListA.map((e) => (resting(e) ? leaveDayOff(e) : pinOldScheduleForSwapDay(e, positionAId, effectiveDate))),
+        ...empListB.map((e) => (resting(e) ? leaveDayOff(e) : pinOldScheduleForSwapDay(e, positionBId, effectiveDate))),
       ]);
     }
   }
-
-  const historyDate = effectiveDate || toDateKey(new Date());
-  const [restDayA, restDayB] = await Promise.all([
-    Promise.all(empListA.map((e) => resolveMoverRestDay(e, positionB, historyDate))),
-    Promise.all(empListB.map((e) => resolveMoverRestDay(e, positionA, historyDate))),
-  ]);
 
   // The designated head travels with the group, same as their shift time —
   // whoever led position A now leads wherever that group ended up (B), and
@@ -339,8 +359,8 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
   // What each one's swap was, kept on the swap so ສະຫຼັບກະ can show it later.
   const [nextForA, nextForB] = await Promise.all([snapshotShift(toB), snapshotShift(toA)]);
   const basic = [
-    ...empListA.map((e, i) => ({ employee: e._id, from: 'A', next: nextForA, restDay: { before: restDayA[i].before, after: restDayA[i].after } })),
-    ...empListB.map((e, i) => ({ employee: e._id, from: 'B', next: nextForB, restDay: { before: restDayB[i].before, after: restDayB[i].after } })),
+    ...empListA.map((e, i) => ({ employee: e._id, from: 'A', next: nextForA, restDay: { before: restDayA[i].before, after: restDayA[i].after }, restingOnSwapDay: resting(e) })),
+    ...empListB.map((e, i) => ({ employee: e._id, from: 'B', next: nextForB, restDay: { before: restDayB[i].before, after: restDayB[i].after }, restingOnSwapDay: resting(e) })),
   ];
   const previous = await Promise.all([...empListA, ...empListB].map((e) => snapshotShift(e)));
   const movers = await describeSwapPeople(
@@ -354,6 +374,8 @@ async function applyPositionSwap(positionAId, positionBId, effectiveDate) {
     movers,
   };
 }
+
+const REST_SWAP_DAY = { kind: 'rest', status: 'rest', startTime: null, endTime: null };
 
 function swapDayOf(shift) {
   if (!shift) return undefined;
@@ -389,7 +411,8 @@ async function describeSwapPeople(date, movers) {
       from: plain.from,
       previous: plain.previous ?? snapshot(log?.previous),
       next: plain.next ?? snapshot(log?.next),
-      swapDay: plain.swapDay ?? swapDayOf(shiftOf.get(id)),
+      // Nothing put on the day because it's their rest day: say so.
+      swapDay: plain.swapDay ?? swapDayOf(shiftOf.get(id)) ?? (plain.restingOnSwapDay ? REST_SWAP_DAY : undefined),
       restDay: plain.restDay ?? (rest ? { before: rest.previousRestDay ?? [], after: rest.newRestDay ?? [] } : undefined),
     };
   });
@@ -677,12 +700,20 @@ async function swapDetails(swap) {
     const preview = async (e, from) => {
       const [previous, restBefore] = await Promise.all([snapshotShift(e), restDaysOnFor(e._id, date)]);
       const allowed = restDayAllowedIn(e, from === 'A' ? positionB : positionA);
+      const restAfter = restBefore.length ? allowed(restBefore) : restBefore;
+      // Same as applyPositionSwap: a working swap day that is their rest day stays one.
+      const restingThatDay = restAfter.includes(new Date(`${date}T00:00:00`).getDay());
       let swapDay;
       if (setByHand.has(String(e._id))) swapDay = swapDayOf(setByHand.get(String(e._id)));
       else if (workThrough) {
-        swapDay = workThrough.from === from ? { kind: 'extended', status: 'scheduled', startTime: workThrough.startTime, endTime: workThrough.endTime } : { kind: 'off', status: 'swapped' };
+        swapDay =
+          workThrough.from !== from
+            ? { kind: 'off', status: 'swapped' }
+            : restingThatDay
+              ? REST_SWAP_DAY
+              : { kind: 'extended', status: 'scheduled', startTime: workThrough.startTime, endTime: workThrough.endTime };
       } else if (previous.startTime && previous.endTime) {
-        swapDay = { kind: 'kept', status: 'scheduled', startTime: previous.startTime, endTime: previous.endTime };
+        swapDay = restingThatDay ? REST_SWAP_DAY : { kind: 'kept', status: 'scheduled', startTime: previous.startTime, endTime: previous.endTime };
       }
       return {
         employee: e._id,
@@ -690,7 +721,7 @@ async function swapDetails(swap) {
         previous,
         next: from === 'A' ? nextForA : nextForB,
         swapDay,
-        restDay: { before: restBefore, after: restBefore.length ? allowed(restBefore) : restBefore },
+        restDay: { before: restBefore, after: restAfter },
       };
     };
     people = await Promise.all([...listA.map((e) => preview(e, 'A')), ...listB.map((e) => preview(e, 'B'))]);

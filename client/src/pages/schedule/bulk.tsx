@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useInvalidate, useNotification } from '@refinedev/core';
 import { Table, Select, Button, Space, Typography, Modal, Input, Tag, Popconfirm } from 'antd';
-import { ApartmentOutlined, IdcardOutlined, ClockCircleOutlined, SearchOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, IdcardOutlined, ClockCircleOutlined, SearchOutlined, HistoryOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL, axiosInstance } from '../../providers/axios';
-import type { Employee, Department, Position, ScheduledShiftChange } from '../../types';
+import type { Employee, Department, Position, ScheduledShiftChange, BulkEditAction, BulkEditRound } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
@@ -16,6 +16,7 @@ import {
   cancelScheduledShiftChange,
   shiftCategoryLabel,
 } from '../../components/ShiftChangeAhead';
+import { BulkEditHistory } from './bulkHistory';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -89,6 +90,28 @@ export const BulkShiftEditPage: React.FC = () => {
     refetch();
   };
 
+  // ປະຫວັດການແກ້ໄຂ: every press of ຍ້າຍ below is one round, opened before
+  // anyone is moved and passed along with each move — the server only takes a
+  // department/position/shift move that belongs to one (routes/bulkEdits.js) —
+  // then closed with who didn't go through and why.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const startRound = async (action: BulkEditAction, target: string, ids: string[], effectiveDate?: string) => {
+    try {
+      const { data } = await axiosInstance.post<BulkEditRound>(`${API_URL}/bulk-edits`, { action, target, employees: ids, effectiveDate });
+      return data._id;
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ເລີ່ມບັນທຶກປະຫວັດບໍ່ໄດ້ — ຍັງບໍ່ໄດ້ຍ້າຍໃຜ' });
+      return null;
+    }
+  };
+  type RoundResult = { employee: string; status: 'ok' | 'failed' | 'skipped'; message?: string };
+  const reasonOf = (r: PromiseSettledResult<unknown>) =>
+    r.status === 'rejected' ? (r.reason as any)?.response?.data?.message || 'ດໍາເນີນການບໍ່ສຳເລັດ' : undefined;
+  const resultsOf = (ids: string[], settled: PromiseSettledResult<unknown>[]): RoundResult[] =>
+    ids.map((id, i) => (settled[i].status === 'fulfilled' ? { employee: id, status: 'ok' } : { employee: id, status: 'failed', message: reasonOf(settled[i]) }));
+  const finishRound = (roundId: string, results: RoundResult[]) =>
+    axiosInstance.post(`${API_URL}/bulk-edits/${roundId}/finish`, { results }).catch(() => undefined);
+
   // ---- 1. ຍ້າຍພະແນກ ----
   const [deptModalOpen, setDeptModalOpen] = useState(false);
   const [moveDepartment, setMoveDepartment] = useState<string>();
@@ -98,8 +121,14 @@ export const BulkShiftEditPage: React.FC = () => {
     if (!moveDepartment || !selectedIds.length) return;
     const target = allDepartments.find((d) => d._id === moveDepartment);
     setMovingDept(true);
+    const ids = [...selectedIds];
+    const roundId = await startRound('department', moveDepartment, ids);
+    if (!roundId) {
+      setMovingDept(false);
+      return;
+    }
     const results = await Promise.allSettled(
-      selectedIds.map((id) => {
+      ids.map((id) => {
         const emp = employees.find((e) => e._id === id);
         const positionStillValid =
           emp?.position &&
@@ -108,9 +137,11 @@ export const BulkShiftEditPage: React.FC = () => {
           department: moveDepartment,
           supervisor: target?.head ? idOf(target.head) : null,
           ...(positionStillValid ? {} : { position: null, positionHead: null }),
+          bulkEditRound: roundId,
         });
       })
     );
+    await finishRound(roundId, resultsOf(ids, results));
     setMovingDept(false);
     const failCount = results.filter((r) => r.status === 'rejected').length;
     notify?.({
@@ -136,14 +167,22 @@ export const BulkShiftEditPage: React.FC = () => {
     if (!movePosition || !selectedIds.length) return;
     const target = allPositions.find((p) => p._id === movePosition);
     setMovingPosition(true);
+    const ids = [...selectedIds];
+    const roundId = await startRound('position', movePosition, ids);
+    if (!roundId) {
+      setMovingPosition(false);
+      return;
+    }
     const results = await Promise.allSettled(
-      selectedIds.map((id) =>
+      ids.map((id) =>
         axiosInstance.patch(`${API_URL}/employees/${id}`, {
           position: movePosition,
           positionHead: target?.head ? idOf(target.head) : null,
+          bulkEditRound: roundId,
         })
       )
     );
+    await finishRound(roundId, resultsOf(ids, results));
     setMovingPosition(false);
     const failCount = results.filter((r) => r.status === 'rejected').length;
     notify?.({
@@ -153,7 +192,7 @@ export const BulkShiftEditPage: React.FC = () => {
     setPositionModalOpen(false);
     setMovePosition(undefined);
     refreshAll();
-    const moved = selectedIds.filter((_, i) => results[i].status === 'fulfilled');
+    const moved = ids.filter((_, i) => results[i].status === 'fulfilled');
     if (moved.length) {
       askAbsenceSeverity(
         { employees: moved },
@@ -212,7 +251,16 @@ export const BulkShiftEditPage: React.FC = () => {
     });
     const toMove = selectedIds.filter((id) => !alreadyOn.includes(id));
     setMovingShift(true);
-    const results = await Promise.allSettled(toMove.map((id) => scheduleShiftChange(id, moveCategory, effectiveDate)));
+    const roundId = await startRound('shift', moveCategory, [...selectedIds], effectiveDate);
+    if (!roundId) {
+      setMovingShift(false);
+      return;
+    }
+    const results = await Promise.allSettled(toMove.map((id) => scheduleShiftChange(id, moveCategory, effectiveDate, roundId)));
+    await finishRound(roundId, [
+      ...resultsOf(toMove, results),
+      ...alreadyOn.map((id): RoundResult => ({ employee: id, status: 'skipped', message: 'ຢູ່ກະນີ້ແລ້ວ' })),
+    ]);
     setMovingShift(false);
 
     const failedBy = new Map<string, string[]>();
@@ -272,7 +320,15 @@ export const BulkShiftEditPage: React.FC = () => {
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
-    <List title="ແກ້ໄຂກະແບບກຸ່ມ" breadcrumb={false}>
+    <List
+      title="ແກ້ໄຂກະແບບກຸ່ມ"
+      breadcrumb={false}
+      headerButtons={
+        <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>
+          ປະຫວັດການແກ້ໄຂ
+        </Button>
+      }
+    >
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space wrap style={{ marginBottom: 12 }}>
           <Input.Search
@@ -459,6 +515,7 @@ export const BulkShiftEditPage: React.FC = () => {
       </Modal>
       {modalContext}
       {absenceSeverityModal}
+      <BulkEditHistory open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </List>
   );
 };

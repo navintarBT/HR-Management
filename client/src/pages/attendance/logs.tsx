@@ -444,10 +444,38 @@ const AttendanceSummaryGrid: React.FC = () => {
     }
   };
 
+  // The shift a day was judged against, when it isn't the person's shift now —
+  // a ຊ້າ judged by an earlier shift (a move, a swap, a cover) otherwise reads
+  // wrong. Kept on the day since 13/11/2026; for a day judged before that, the
+  // shift in force then: the day's own time, else the shift history, else
+  // their shift now (the same order the server judges by).
+  const judgedShiftOf = (emp: Employee, dateKey: string, row: AttendanceDaily): { shift: string; now: string | null } | undefined => {
+    const label = (t: { start: string; end: string } | null) => (t ? `${t.start}-${t.end}` : null);
+    let judged: string | null;
+    if (row.shiftStart !== undefined) {
+      judged = row.shiftStart && row.shiftEnd ? `${row.shiftStart}-${row.shiftEnd}` : null;
+    } else {
+      const queued = scheduledByEmpDate[`${emp._id}_${dateKey}`];
+      if (queued) judged = `${queued.startTime}-${queued.endTime}`;
+      else if (swappedByEmpDate[`${emp._id}_${dateKey}`]) judged = null;
+      else {
+        const historical = shiftOnDate(shiftLogsByEmployee.get(emp._id), dateKey);
+        judged = historical
+          ? historical.startTime && historical.endTime
+            ? `${historical.startTime}-${historical.endTime}`
+            : null
+          : label(resolveDefaultTime(emp));
+      }
+    }
+    const now = label(resolveDefaultTime(emp));
+    return judged && judged !== now ? { shift: judged, now } : undefined;
+  };
+  const judgedShiftTitle = (j: { shift: string; now: string | null }) => `ຕັດສິນຕາມກະ ${j.shift} · ກະປັດຈຸບັນ ${j.now ?? '-'}`;
+
   // What one person's day shows, for the table and the exported files alike.
   type DayCell =
-    | { kind: 'status'; label: string; time?: string; bg: string; text: string; title?: string }
-    | { kind: 'time'; time: string }
+    | { kind: 'status'; label: string; time?: string; bg: string; text: string; title?: string; shift?: string }
+    | { kind: 'time'; time: string; shift?: string; title?: string }
     | { kind: 'queued'; time: string }
     | { kind: 'badge'; label: string; bg: string; text: string; title?: string }
     | { kind: 'none' };
@@ -476,16 +504,21 @@ const AttendanceSummaryGrid: React.FC = () => {
           : row!.status === 'absent'
             ? `${style.label}${severity ? ` (${severity})` : ''}${row!.disciplinaryNote ? ' ⚠' : ''}`
             : `${style.label}${scannedOnLeave ? ' ⚠' : ''}${row!.autoFilledReason ? ' ↺' : ''}`;
-      const title = row!.disciplinaryNote
+      const note = row!.disciplinaryNote
         ? `ລົງໂທດ: ${row!.disciplinaryNote}`
         : scannedOnLeave
           ? 'ມີການສະແກນໃນມື້ລາ — ຍັງນັບເປັນ ລາ; ຖ້າມາເຮັດວຽກແທ້ ໃຫ້ແກ້ໃບລາ'
           : row!.autoFilledReason
             ? `ລົງເວລາຍ້ອນຫຼັງ: ${row!.autoFilledReason}`
             : undefined;
-      return { kind: 'status', label, time: timeText(row!) || undefined, bg: style.bg, text: style.text, title };
+      const judged = judgedShiftOf(emp, dateKey, row!);
+      const title = [note, judged ? judgedShiftTitle(judged) : undefined].filter(Boolean).join('\n') || undefined;
+      return { kind: 'status', label, time: timeText(row!) || undefined, bg: style.bg, text: style.text, title, shift: judged?.shift };
     }
-    if (row?.firstIn) return { kind: 'time', time: timeText(row) };
+    if (row?.firstIn) {
+      const judged = judgedShiftOf(emp, dateKey, row);
+      return { kind: 'time', time: timeText(row), shift: judged?.shift, title: judged ? judgedShiftTitle(judged) : undefined };
+    }
     // No AttendanceDaily row at all — a real queued shift always
     // wins first (that's what a swap/stand-in override means, even
     // on what's otherwise this employee's day off), shown plain
@@ -554,9 +587,12 @@ const AttendanceSummaryGrid: React.FC = () => {
         { value: (typeof emp.position === 'object' ? emp.position?.name : undefined) ?? '-', align: 'left' as const },
         ...days.map((day) => {
           const cell = dayCellOf(emp, day.format('YYYY-MM-DD'), day);
-          if (cell.kind === 'status') return { value: cell.time ? `${cell.label}\n${cell.time}` : cell.label, fill: cell.bg, color: cell.text, bold: true };
+          if (cell.kind === 'status') {
+            const lines = [cell.label, cell.time, cell.shift ? `ກະ ${cell.shift}` : undefined].filter(Boolean);
+            return { value: lines.join('\n'), fill: cell.bg, color: cell.text, bold: true };
+          }
           if (cell.kind === 'badge') return { value: cell.label, fill: cell.bg, color: cell.text, bold: true };
-          if (cell.kind === 'time') return { value: cell.time };
+          if (cell.kind === 'time') return { value: cell.shift ? `${cell.time}\nກະ ${cell.shift}` : cell.time };
           if (cell.kind === 'queued') return { value: cell.time, color: '#8c8c8c' };
           return { value: '-', color: '#bfbfbf' };
         }),
@@ -680,6 +716,7 @@ const AttendanceSummaryGrid: React.FC = () => {
               { color: CELL_STYLE.rest.text, label: 'ພັກ / ຮ້ານປິດ' },
               { color: CELL_STYLE.substituted.text, label: 'ມາແທນ' },
               { color: CELL_STYLE.swapped.text, label: 'ສະຫຼັບກະ (ບໍ່ມີກະຍ້ອນມື້ສະຫຼັບຕຳແໜ່ງ)' },
+              { color: '#8c8c8c', outline: true, label: '"ກະ 06:00-18:00" ໃຕ້ເວລາ = ມື້ນັ້ນຕັດສິນຕາມກະນີ້ (ບໍ່ແມ່ນກະປັດຈຸບັນ — ຍ້າຍ/ສະຫຼັບ/ໄປແທນ)' },
             ].map((item) => (
               <Space key={item.label} size={6}>
                 <span
@@ -787,10 +824,26 @@ const AttendanceSummaryGrid: React.FC = () => {
                       >
                         <div style={{ fontSize: 11, fontWeight: 500 }}>{cell.label}</div>
                         {cell.time && <div style={{ fontSize: 11 }}>{cell.time}</div>}
+                        {cell.shift && (
+                          <div className="judged-shift" style={{ fontSize: 10, opacity: 0.75, whiteSpace: 'nowrap' }}>
+                            ກະ {cell.shift}
+                          </div>
+                        )}
                       </div>
                     );
                   }
-                  if (cell.kind === 'time') return <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{cell.time}</span>;
+                  if (cell.kind === 'time') {
+                    return (
+                      <div title={cell.title} style={{ textAlign: 'center', lineHeight: 1.3 }}>
+                        <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{cell.time}</span>
+                        {cell.shift && (
+                          <div className="judged-shift" style={{ fontSize: 10, color: '#8c8c8c', whiteSpace: 'nowrap' }}>
+                            ກະ {cell.shift}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
                   if (cell.kind === 'queued') return <span style={{ fontSize: 12, color: '#8c8c8c', whiteSpace: 'nowrap' }}>{cell.time}</span>;
                   if (cell.kind === 'badge') {
                     return (

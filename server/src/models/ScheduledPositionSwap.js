@@ -16,7 +16,7 @@ const shiftSnapshotSchema = new mongoose.Schema(
 // schedule set by hand that day, which the swap left alone).
 const swapDaySchema = new mongoose.Schema(
   {
-    kind: { type: String, enum: ['kept', 'extended', 'off', 'set'] },
+    kind: { type: String, enum: ['kept', 'extended', 'off', 'set', 'rest'] },
     status: { type: String },
     startTime: { type: String, default: null },
     endTime: { type: String, default: null },

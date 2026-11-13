@@ -169,6 +169,10 @@ export interface AttendanceDaily {
   lateMinutes: number;
   graceMinutes?: number | null; // the shift category's late policy in effect when this was computed — sizes the "ຊ້າ"/"ຊ້າເກີນ" label tiers, not a threshold that suppresses "late" itself
   severeLateMinutes?: number | null; // top-tier boundary in effect when this was computed
+  // The shift (HH:mm) the day was judged against, kept as it was then; null =
+  // judged with no shift; absent on days judged before 13/11/2026.
+  shiftStart?: string | null;
+  shiftEnd?: string | null;
   earlyLeaveMinutes: number;
   otHours: number;
   status: AttendanceStatus;
@@ -265,7 +269,7 @@ export interface PositionSwapPerson {
   next: PositionSwapShift | null;
   // The swap date itself: worked the old shift, worked through both halves of
   // the day, had no shift, or kept a schedule set by hand that day.
-  swapDay: { kind: 'kept' | 'extended' | 'off' | 'set'; status?: string; startTime?: string | null; endTime?: string | null } | null;
+  swapDay: { kind: 'kept' | 'extended' | 'off' | 'set' | 'rest'; status?: string; startTime?: string | null; endTime?: string | null } | null;
   restDay: { before: number[]; after: number[] } | null;
 }
 export interface PositionSwapDetails {
@@ -369,6 +373,35 @@ export interface ShiftChangeLogEntry {
   effectiveDate: string; // YYYY-MM-DD — first day of `next`
   previous?: ShiftSnapshot;
   next?: ShiftSnapshot;
+}
+
+// ປະຫວັດການແກ້ໄຂ of ແກ້ໄຂກະແບບກຸ່ມ (server/src/models/BulkEditRound.js):
+// one press of ຍ້າຍ there, for one person or many.
+export type BulkEditAction = 'department' | 'position' | 'shift';
+export interface BulkEditSide {
+  department: string | null;
+  position: string | null;
+  shift: string | null; // HH:mm-HH:mm
+}
+export interface BulkEditItem {
+  employee: string;
+  employeeCode: string | null;
+  name: string | null;
+  before: BulkEditSide;
+  after?: BulkEditSide;
+  status: 'pending' | 'ok' | 'failed' | 'skipped' | 'cancelled';
+  message: string | null;
+}
+export interface BulkEditRound {
+  _id: string;
+  action: BulkEditAction;
+  // Where it was done: ແກ້ໄຂກະແບບກຸ່ມ, the employee page, or ຕັ້ງຄ່າແຜນວຽກ.
+  source?: 'bulk' | 'employee' | 'planner';
+  target: { id: string | null; label: string | null; effectiveDate: string | null };
+  byEmail?: string;
+  items: BulkEditItem[];
+  finishedAt: string | null;
+  createdAt: string;
 }
 
 export type OvertimeStatus = 'pending' | 'approved' | 'rejected';

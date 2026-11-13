@@ -61,6 +61,8 @@ const SwapDay: React.FC<{ day: PositionSwapPerson['swapDay'] }> = ({ day }) => {
   if (day.kind === 'kept') return <Tag>ເຮັດກະເກົ່າ {time}</Tag>;
   if (day.kind === 'extended') return <Tag color="orange">ເຮັດຕໍ່ເນື່ອງ {time}</Tag>;
   if (day.kind === 'off') return <Tag color="blue">ບໍ່ມີກະ</Tag>;
+  // Their rest day: nothing was put on it, they start the new shift on their next working day.
+  if (day.kind === 'rest') return <Tag color="purple">ວັນພັກ</Tag>;
   return <Tag color="purple">ຕັ້ງໄວ້ເອງ{time ? ` ${time}` : ''}</Tag>;
 };
 

@@ -6,6 +6,7 @@ const Leave = require('../models/Leave');
 const AttendanceDaily = require('../models/AttendanceDaily');
 const { toDateKey } = require('./attendanceProcessor');
 const { recordShiftChange } = require('./shiftHistory');
+const { restDaysOnFor } = require('./restDaySchedule');
 
 // Tags the Shift row this creates so a later cancel can find and remove
 // exactly that row (and nothing an admin set by hand), same idea as
@@ -43,11 +44,18 @@ async function pinNewScheduleForEffectiveDate(employee, category, effectiveDate)
   if (substituted) throw refuse('ມື້ນີ້ມີຄົນມາແທນ ບໍ່ສາມາດຕັ້ງຈຸດເລີ່ມຕົ້ນກະໃໝ່ທີ່ມື້ນີ້ໄດ້');
   if (onLeave) throw refuse('ມື້ນີ້ລາ ບໍ່ສາມາດຕັ້ງຈຸດເລີ່ມຕົ້ນກະໃໝ່ທີ່ມື້ນີ້ໄດ້');
   const existing = await Shift.findOne({ employee: employee._id, date: effectiveDate });
+  // A start date that is their day off stays one: no working shift is put on
+  // it (that made a rest day a work day, and a no-show there a ຂາດ — seen
+  // 11/11/2026). The new shift is still theirs from this date on (the change
+  // itself is recorded as of it); they simply start on their next working day.
+  if (existing?.status === 'rest') return;
   if (existing) {
     const err = new Error('ມື້ນີ້ມີຕາຕະລາງຕັ້ງຄ່າໄວ້ແລ້ວ — ກະລຸນາລຶບ ຫຼື ຄືນຄ່າປົກກະຕິມື້ນີ້ກ່ອນ');
     err.status = 409;
     throw err;
   }
+  const restDays = await restDaysOnFor(employee._id, effectiveDate);
+  if (restDays.includes(new Date(`${effectiveDate}T00:00:00`).getDay())) return;
   await Shift.create({
     employee: employee._id,
     position: employee.position,

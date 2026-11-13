@@ -25,6 +25,13 @@ const attendanceDailySchema = new mongoose.Schema(
     // (the category's severeLateMinutes) — "ຊ້າເກີນ X" on the UI switches to
     // this once lateMinutes passes it, instead of a hardcoded 1-hour mark.
     severeLateMinutes: { type: Number, default: null },
+    // The shift (HH:mm) this day was judged against, kept as it was then —
+    // ປະຫວັດການສະແກນ shows it when it isn't the person's shift now, so a ຊ້າ
+    // judged by an earlier shift reads right. null = judged with no shift at
+    // all; absent on days judged before this was kept (the page then works it
+    // out from the day's schedule and the shift history).
+    shiftStart: { type: String },
+    shiftEnd: { type: String },
     // Minutes the last scan-out happened before the expected shift end (an
     // overnight shift's end time is understood to fall the next calendar
     // day) — "ກັບກ່ອນ" on ລາຍງານການສະແກນ. Purely informational; doesn't

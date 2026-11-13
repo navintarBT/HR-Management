@@ -1,9 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Edit, useForm, useSelect } from '@refinedev/antd';
-import { useNavigation } from '@refinedev/core';
-import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Divider, Button, Modal, Typography } from 'antd';
-import dayjs from 'dayjs';
-import type { Department, EmploymentType, Employee, ShiftCategory } from '../../types';
+import { useCustom, useNavigation, useNotification, useInvalidate } from '@refinedev/core';
+import { Link } from 'react-router-dom';
+import { Form, Input, InputNumber, Select, DatePicker, TimePicker, Row, Col, Divider, Button, Modal, Typography, Alert, Space, Tag, Popconfirm } from 'antd';
+import { ClockCircleOutlined } from '@ant-design/icons';
+import dayjs, { type Dayjs } from 'dayjs';
+import type { Department, EmploymentType, Employee, ShiftCategory, ScheduledShiftChange } from '../../types';
+import { API_URL } from '../../providers/axios';
+import { ShiftChangeFields, scheduleShiftChange, cancelScheduledShiftChange, shiftCategoryLabel } from '../../components/ShiftChangeAhead';
 import { EmployeePhotoUpload } from '../../components/EmployeePhotoUpload';
 import { ShiftCategoryQuickPicker } from '../../components/ShiftCategoryQuickPicker';
 import { usePositionsByDepartment } from '../../hooks/usePositionsByDepartment';
@@ -42,6 +46,62 @@ export const EmployeeEdit: React.FC = () => {
   });
   const record = query?.data?.data;
   recordRef.current = record;
+  // ພະແນກ, ຕຳແໜ່ງ and ໂມງເຂົ້າວຽກ are set when someone is added (a draft is
+  // still being added). After that they move only on ແກ້ໄຂກະແບບກຸ່ມ, which keeps
+  // a history of every round and moves a shift the one proper way (ຍ້າຍກະ) —
+  // the server refuses them from here too (routes/employees.js).
+  const workFieldsLocked = !!record && record.status !== 'draft';
+
+  // ຍ້າຍກະ: the regular shift moves the one way it moves everywhere (ແກ້ໄຂ
+  // ກະແບບກຸ່ມ, ຕັ້ງຄ່າແຜນວຽກ) — a new shift from a start date, the days
+  // before keeping the old one, called off any time before that date.
+  const { open: notify } = useNotification();
+  const invalidate = useInvalidate();
+  const { data: waitingData, refetch: refetchWaiting } = useCustom<ScheduledShiftChange[]>({
+    url: `${API_URL}/scheduled-shift-changes`,
+    method: 'get',
+    config: { query: { employee: record?._id, status: 'pending' } },
+    queryOptions: { enabled: workFieldsLocked },
+    errorNotification: false,
+  });
+  const waiting = (waitingData?.data ?? []).filter((c) => c.status === 'pending');
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveDate, setMoveDate] = useState<Dayjs | null>(null);
+  const [moveCategory, setMoveCategory] = useState<string>();
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const openMove = () => {
+    setMoveDate(dayjs().add(1, 'day'));
+    setMoveCategory(undefined);
+    setCreatingCategory(false);
+    setMoveOpen(true);
+  };
+  const submitMove = async () => {
+    if (!record || !moveCategory || !moveDate) return;
+    setMoving(true);
+    try {
+      await scheduleShiftChange(record._id, moveCategory, moveDate.format('YYYY-MM-DD'), undefined, 'employee');
+      notify?.({ type: 'success', message: `ຕັ້ງການຍ້າຍກະແລ້ວ — ມີຜົນວັນທີ ${moveDate.format('DD/MM/YYYY')}` });
+      setMoveOpen(false);
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
+      refetchWaiting();
+      query?.refetch();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍ້າຍກະບໍ່ສຳເລັດ' });
+    } finally {
+      setMoving(false);
+    }
+  };
+  const cancelMove = async (id: string) => {
+    try {
+      await cancelScheduledShiftChange(id);
+      notify?.({ type: 'success', message: 'ຍົກເລີກການຍ້າຍກະແລ້ວ' });
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
+    }
+    refetchWaiting();
+  };
   // refine auto-derives formProps.initialValues straight from the fetched
   // record — hireDate/workTime land there as raw strings, not dayjs objects.
   // Spreading that onto the Form would mount DatePicker/RangePicker with a
@@ -190,8 +250,8 @@ export const EmployeeEdit: React.FC = () => {
       onOk: () => saveValues(values),
     });
   };
-  const saveValues = (values: any) =>
-    formProps.onFinish?.({
+  const saveValues = (values: any) => {
+    const payload = {
       ...values,
       hireDate: values.hireDate ? dayjs(values.hireDate).toISOString() : undefined,
       defaultShiftCategory: values.defaultShiftCategory ?? null,
@@ -200,7 +260,12 @@ export const EmployeeEdit: React.FC = () => {
       workTime: undefined,
       salary: values.salary ?? null,
       annualLeaveDays: values.annualLeaveDays ?? null,
-    });
+    };
+    if (workFieldsLocked) {
+      for (const field of ['department', 'position', 'defaultShiftCategory', 'defaultShiftStart', 'defaultShiftEnd']) delete payload[field];
+    }
+    return formProps.onFinish?.(payload);
+  };
 
   const handleSaveDraft = () => {
     const values = form?.getFieldsValue(true) ?? {};
@@ -291,11 +356,27 @@ export const EmployeeEdit: React.FC = () => {
         </Row>
 
         <Divider orientation="left">ຂໍ້ມູນການເຮັດວຽກ</Divider>
+        {workFieldsLocked && (
+          <Alert
+            className="work-fields-locked"
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="ພະແນກ ແລະ ຕຳແໜ່ງ ປ່ຽນໄດ້ທີ່ໜ້າ ແກ້ໄຂກະແບບກຸ່ມ — ໂມງເຂົ້າວຽກ ປ່ຽນດ້ວຍປຸ່ມ ຍ້າຍກະ ລຸ່ມນີ້"
+            description={
+              <>
+                ຍ້າຍກະ ແມ່ນແບບດຽວກັບ <Link to="/schedule/bulk">ແກ້ໄຂກະແບບກຸ່ມ</Link> ແລະ ຕັ້ງຄ່າແຜນວຽກ: ກະໃໝ່ເລີ່ມແຕ່ວັນທີ່ເລືອກ, ມື້ກ່ອນນັ້ນຍັງໃຊ້ກະເກົ່າ,
+                ຍົກເລີກໄດ້ກ່ອນເຖິງວັນ — ທຸກຄັ້ງເກັບໄວ້ໃນປະຫວັດການແກ້ໄຂ
+              </>
+            }
+          />
+        )}
         <Row gutter={16}>
           <Col xs={24} md={12}>
-            <Form.Item label="ພະແນກ" name="department" rules={[{ required: true }]}>
+            <Form.Item label="ພະແນກ" name="department" rules={workFieldsLocked ? [] : [{ required: true }]}>
               <Select
                 {...departmentSelect}
+                disabled={workFieldsLocked}
                 placeholder="ເລືອກພະແນກ"
                 onChange={(value: any) => {
                   if (!value || !isValidForDepartment(form.getFieldValue('position'), value)) {
@@ -306,11 +387,11 @@ export const EmployeeEdit: React.FC = () => {
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
-            <Form.Item label="ຕຳແໜ່ງ" name="position" rules={[{ required: true }]}>
+            <Form.Item label="ຕຳແໜ່ງ" name="position" rules={workFieldsLocked ? [] : [{ required: true }]}>
               <Select
                 {...positionSelect}
                 options={positionOptions}
-                disabled={!departmentId}
+                disabled={workFieldsLocked || !departmentId}
                 placeholder={
                   !departmentId
                     ? 'ກະລຸນາເລືອກພະແນກກ່ອນ'
@@ -344,6 +425,7 @@ export const EmployeeEdit: React.FC = () => {
           <Col xs={24} md={12}>
             <Form.Item label="ໝວດໝູ່ກະ (ຜູກເວລາແບບ live)" name="defaultShiftCategory">
               <ShiftCategoryQuickPicker
+                disabled={workFieldsLocked}
                 onSelect={(category?: ShiftCategory) =>
                   form.setFieldValue(
                     'workTime',
@@ -359,9 +441,38 @@ export const EmployeeEdit: React.FC = () => {
               name="workTime"
               tooltip={defaultShiftCategoryId ? 'ດຶງມາຈາກໝວດໝູ່ກະທີ່ເລືອກໄວ້ — ລ້າງໝວດໝູ່ກະກ່ອນຖ້າຕ້ອງການຕັ້ງເວລາເອງ' : undefined}
             >
-              <TimePicker.RangePicker style={{ width: '100%' }} format="HH:mm" minuteStep={15} order={false} disabled={!!defaultShiftCategoryId} />
+              <TimePicker.RangePicker
+                style={{ width: '100%' }}
+                format="HH:mm"
+                minuteStep={15}
+                order={false}
+                disabled={workFieldsLocked || !!defaultShiftCategoryId}
+              />
             </Form.Item>
           </Col>
+          {workFieldsLocked && (
+            <Col xs={24} className="employee-shift-move" style={{ marginTop: -8, marginBottom: 16 }}>
+              <Space wrap>
+                <Button icon={<ClockCircleOutlined />} onClick={openMove}>
+                  ຍ້າຍກະ (ປ່ຽນກະປະຈຳ)
+                </Button>
+                {waiting.map((c) => (
+                  <Popconfirm
+                    key={c._id}
+                    title="ຍົກເລີກການຍ້າຍກະນີ້?"
+                    description="ກະເກົ່າຈະໃຊ້ຕໍ່ໄປຄືເກົ່າ"
+                    okText="ຍົກເລີກ"
+                    cancelText="ບໍ່"
+                    onConfirm={() => cancelMove(c._id)}
+                  >
+                    <Tag color="blue" className="waiting-shift-change" style={{ cursor: 'pointer' }} title="ກົດເພື່ອຍົກເລີກ">
+                      ຈາກ {dayjs(c.effectiveDate).format('DD/MM/YYYY')} → {shiftCategoryLabel(c.newShiftCategory)}
+                    </Tag>
+                  </Popconfirm>
+                ))}
+              </Space>
+            </Col>
+          )}
           <Col xs={24} md={12}>
             <Form.Item label="ສະຖານະ" name="status" rules={[{ required: true }]}>
               <Select
@@ -400,6 +511,31 @@ export const EmployeeEdit: React.FC = () => {
       </Form>
       )}
       {absenceSeverityModal}
+      <Modal
+        title={`ຍ້າຍກະ — ${record?.employeeCode ?? ''} ${record?.firstName ?? ''} ${record?.lastName ?? ''}`}
+        open={moveOpen}
+        onCancel={() => setMoveOpen(false)}
+        onOk={submitMove}
+        confirmLoading={moving}
+        okText="ຢືນຢັນຍ້າຍກະ"
+        okButtonProps={{ disabled: creatingCategory || !moveCategory || !moveDate }}
+        cancelText="ຍົກເລີກ"
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            ກະໃໝ່ມີຜົນແຕ່ວັນທີ່ເລືອກ — ມື້ກ່ອນນັ້ນຍັງໃຊ້ກະເກົ່າ. ຖ້າວັນນັ້ນເປັນວັນພັກ ຍັງເປັນວັນພັກ ແລະ ເລີ່ມກະໃໝ່ມື້ເຮັດວຽກຖັດໄປ
+          </Typography.Text>
+          <ShiftChangeFields
+            date={moveDate}
+            onDateChange={setMoveDate}
+            category={moveCategory}
+            onCategoryChange={setMoveCategory}
+            onCreatingChange={setCreatingCategory}
+            disabledDate={(d) => d.isBefore(dayjs(), 'day')}
+          />
+        </Space>
+      </Modal>
       {modalContext}
     </Edit>
   );

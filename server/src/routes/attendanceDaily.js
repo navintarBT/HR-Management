@@ -49,7 +49,7 @@ router.get('/scanned-before-hire', authenticate, requireRole('admin', 'manager')
 // the fields those pages read (no populated employee on every row).
 const RANGE_MAX_DAYS = 93;
 const RANGE_FIELDS =
-  'employee date firstIn lastOut workedHours expectedHours lateMinutes graceMinutes severeLateMinutes earlyLeaveMinutes otHours status disciplinaryNote autoFilledReason absenceSeverity absenceSeveritySetAt';
+  'employee date firstIn lastOut workedHours expectedHours lateMinutes graceMinutes severeLateMinutes shiftStart shiftEnd earlyLeaveMinutes otHours status disciplinaryNote autoFilledReason absenceSeverity absenceSeveritySetAt';
 
 router.get('/range', authenticate, requireRole('admin', 'manager', 'employee'), async (req, res, next) => {
   try {

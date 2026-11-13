@@ -20,7 +20,10 @@ export const ShiftCategoryQuickPicker: React.FC<{
   onChange?: (id?: string) => void;
   onSelect?: (category?: ShiftCategory) => void;
   placeholder?: string;
-}> = ({ value, onChange, onSelect, placeholder = 'ເລືອກໝວດໝູ່ກະ' }) => {
+  disabled?: boolean;
+  // Form.Item hands its field id down — kept on the select so its label points at it.
+  id?: string;
+}> = ({ value, onChange, onSelect, placeholder = 'ເລືອກໝວດໝູ່ກະ', disabled, id }) => {
   const { data, isLoading } = useList<ShiftCategory>({
     resource: 'shift-categories',
     pagination: { pageSize: 200 },
@@ -60,9 +63,11 @@ export const ShiftCategoryQuickPicker: React.FC<{
     <>
       <Space.Compact style={{ width: '100%' }}>
         <Select
+          id={id}
           value={value}
           onChange={handleChange}
           allowClear
+          disabled={disabled}
           loading={isLoading}
           placeholder={placeholder}
           style={{ width: '100%' }}
@@ -73,7 +78,7 @@ export const ShiftCategoryQuickPicker: React.FC<{
           }))}
           filterOption={(input, option) => ((option?.label as string) ?? '').toLowerCase().includes(input.toLowerCase())}
         />
-        <Button icon={<PlusOutlined />} onClick={() => setModalOpen(true)} title="ເພີ່ມໝວດໝູ່ກະໃໝ່" />
+        <Button icon={<PlusOutlined />} onClick={() => setModalOpen(true)} title="ເພີ່ມໝວດໝູ່ກະໃໝ່" disabled={disabled} />
       </Space.Compact>
 
       <Modal

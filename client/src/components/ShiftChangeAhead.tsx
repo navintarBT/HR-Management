@@ -11,8 +11,17 @@ import type { ScheduledShiftChange, ShiftCategory } from '../types';
 // ScheduledShiftChange, which sets the new shift on the start date itself and
 // switches the regular shift from then on (server/src/utils/scheduledShiftChange.js).
 // A start date of today or earlier takes effect right away.
-export function scheduleShiftChange(employee: string, newShiftCategory: string, effectiveDate: string) {
-  return axiosInstance.post<ScheduledShiftChange>(`${API_URL}/scheduled-shift-changes`, { employee, newShiftCategory, effectiveDate });
+// Every move lands in ປະຫວັດການແກ້ໄຂ: `bulkEditRound` is the ແກ້ໄຂກະແບບກຸ່ມ
+// round it belongs to; otherwise it's a round of one, from `source` (the
+// employee page, or ຕັ້ງຄ່າແຜນວຽກ when not given).
+export function scheduleShiftChange(
+  employee: string,
+  newShiftCategory: string,
+  effectiveDate: string,
+  bulkEditRound?: string,
+  source?: 'employee' | 'planner'
+) {
+  return axiosInstance.post<ScheduledShiftChange>(`${API_URL}/scheduled-shift-changes`, { employee, newShiftCategory, effectiveDate, bulkEditRound, source });
 }
 
 // Only a change still waiting for its date can be called off.
