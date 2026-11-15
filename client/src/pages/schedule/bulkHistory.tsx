@@ -189,7 +189,10 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
     }
   };
   const canCancel = (r: BulkEditRound) =>
-    canEdit && r.action === 'dayTime' && !r.cancelledAt && r.items.some((i) => (i.days ?? []).some((d) => d.status === 'ok'));
+    canEdit &&
+    r.action === 'dayTime' &&
+    !r.cancelledAt &&
+    r.items.some((i) => (i.days ?? []).some((d) => d.status === 'ok' && (d.shift || d.manualLogs?.length)));
   const rounds = data?.data?.data ?? [];
   const total = data?.data?.total ?? 0;
   // A phone gets one stacked column instead of four side by side.
@@ -213,6 +216,7 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
             : `ວັນທີ ${dayjs(r.target.effectiveDate).format('DD/MM/YYYY')}`}
         </Typography.Text>
       )}
+      {r.asWorked && <Tag color="purple">ບັນທຶກເຂົ້າ-ອອກຕາມເວລານີ້</Tag>}
       {r.cancelledAt && (
         <Tag className="day-time-cancelled">
           ຍົກເລີກທັງຮອບແລ້ວ {dayjs(r.cancelledAt).format('DD/MM HH:mm')}

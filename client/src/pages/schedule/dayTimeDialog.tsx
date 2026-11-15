@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useList, useNotification } from '@refinedev/core';
-import { Alert, DatePicker, Modal, Segmented, Select, Space, Table, Tag, TimePicker, Typography } from 'antd';
+import { Alert, Checkbox, DatePicker, Modal, Segmented, Select, Space, Table, Tag, TimePicker, Typography } from 'antd';
 import { ArrowRightOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL, axiosInstance } from '../../providers/axios';
@@ -30,6 +30,9 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
   const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [category, setCategory] = useState<string>();
   const [time, setTime] = useState<[Dayjs, Dayjs] | null>(null);
+  // ບັນທຶກເວລາເຂົ້າ-ອອກຕາມເວລານີ້: the days over are recorded as worked at the
+  // time itself, scans set aside (for whoever scanned that day).
+  const [asWorked, setAsWorked] = useState(false);
   const [preview, setPreview] = useState<{ key: string; plan?: DayTimePlan; error?: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -40,6 +43,7 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
     setRange(null);
     setCategory(undefined);
     setTime(null);
+    setAsWorked(false);
     setPreview(null);
   }, [open]);
 
@@ -72,8 +76,9 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
       startTime: time[0].format('HH:mm'),
       endTime: time[1].format('HH:mm'),
       category,
+      asWorked,
     };
-  }, [from, to, time, employeeIds, category]);
+  }, [from, to, time, employeeIds, category, asWorked]);
   const requestKey = request ? JSON.stringify(request) : null;
 
   useEffect(() => {
@@ -96,20 +101,35 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
   const plan = current?.plan;
   const skippedByReason = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const p of plan?.people ?? []) for (const d of p.days) if (!d.set && d.reason) counts.set(d.reason, (counts.get(d.reason) ?? 0) + 1);
+    for (const p of plan?.people ?? []) for (const d of p.days) if (!d.set && !d.rejudge && d.reason) counts.set(d.reason, (counts.get(d.reason) ?? 0) + 1);
     return [...counts];
   }, [plan]);
-  const peopleSet = (plan?.people ?? []).filter((p) => p.days.some((d) => d.set)).length;
+  const peopleSet = (plan?.people ?? []).filter((p) => p.days.some((d) => d.set || d.rejudge)).length;
+  // Days the save does something on: a time of their own, or judged again by their shift.
+  const doCount = (plan?.setCount ?? 0) + (plan?.rejudgeCount ?? 0);
 
   const save = async () => {
-    if (!request || !plan?.setCount) return;
+    if (!request || !doCount) return;
     setSaving(true);
     try {
-      const { data } = await axiosInstance.post<{ setCount: number; skipCount: number; pastCount: number }>(`${API_URL}/bulk-edits/day-time`, request);
+      const { data } = await axiosInstance.post<{
+        setCount: number;
+        rejudgeCount: number;
+        skipCount: number;
+        pastCount: number;
+        asWorkedCount?: number;
+      }>(`${API_URL}/bulk-edits/day-time`, request);
+      const judged = data.pastCount + data.rejudgeCount;
       notify?.({
         type: 'success',
-        message: `ປັບເວລາ ${plan.time} ແລ້ວ ${data.setCount} ມື້${data.skipCount ? ` · ຂ້າມ ${data.skipCount} ມື້` : ''}`,
-        description: data.pastCount ? `ຕັດສິນການສະແກນ ${data.pastCount} ມື້ທີ່ຜ່ານມາໃໝ່ຕາມເວລາໃໝ່ແລ້ວ` : undefined,
+        message: `${data.setCount ? `ປັບເວລາ ${plan!.time} ແລ້ວ ${data.setCount} ມື້` : 'ບັນທຶກແລ້ວ'}${data.skipCount ? ` · ຂ້າມ ${data.skipCount} ມື້` : ''}`,
+        description:
+          [
+            data.asWorkedCount ? `ບັນທຶກເຂົ້າ-ອອກຕາມເວລານີ້ ${data.asWorkedCount} ມື້` : '',
+            judged ? `ຕັດສິນການສະແກນໃໝ່ແລ້ວ ${judged} ມື້` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ') || undefined,
       });
       onSaved();
       onClose();
@@ -120,7 +140,14 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
     }
   };
 
-  const beforeOf = (p: Person) => [...new Set(p.days.filter((d) => d.set).map((d) => d.before))].join(', ');
+  // Days done that can't be recorded as worked, and why.
+  const asWorkedNotes = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of plan?.people ?? []) for (const d of p.days) if (d.asWorkedNote) counts.set(d.asWorkedNote, (counts.get(d.asWorkedNote) ?? 0) + 1);
+    return [...counts];
+  }, [plan]);
+
+  const beforeOf = (p: Person) => [...new Set(p.days.filter((d) => d.set || d.rejudge).map((d) => d.before))].join(', ');
 
   return (
     <Modal
@@ -129,8 +156,8 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
       onCancel={onClose}
       onOk={save}
       confirmLoading={saving}
-      okText={plan?.setCount ? `ບັນທຶກ (ປັບ ${plan.setCount} ມື້)` : 'ບັນທຶກ'}
-      okButtonProps={{ disabled: !plan?.setCount }}
+      okText={doCount ? `ບັນທຶກ (${doCount} ມື້)` : 'ບັນທຶກ'}
+      okButtonProps={{ disabled: !doCount }}
       cancelText="ປິດ"
       width={760}
       destroyOnClose
@@ -185,6 +212,18 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
             placeholder={['ເຂົ້າ', 'ອອກ']}
           />
         </Space>
+        <div>
+          <Checkbox className="day-time-as-worked" checked={asWorked} onChange={(e) => setAsWorked(e.target.checked)}>
+            ບັນທຶກເວລາເຂົ້າ-ອອກຕາມເວລານີ້ເລີຍ (ບໍ່ເອົາເວລາສະແກນ — ບໍ່ນັບຊ້າ / ອອກກ່ອນ)
+          </Checkbox>
+          {asWorked && (
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                ສະເພາະມື້ທີ່ຜ່ານມາແລ້ວ ແລະ ຄົນທີ່ມີການສະແກນມື້ນັ້ນ — ຄົນທີ່ບໍ່ໄດ້ສະແກນຍັງເປັນຂາດ. ການສະແກນຈິງບໍ່ຖືກລຶບ: ຍົກເລີກທັງຮອບແລ້ວກັບມາໃຊ້ຄືເກົ່າ
+              </Typography.Text>
+            </div>
+          )}
+        </div>
         {mode === 'range' && range && range[1].diff(range[0], 'day') + 1 > MAX_DAYS && (
           <Typography.Text type="danger">ເລືອກໄດ້ສູງສຸດ {MAX_DAYS} ມື້ຕໍ່ຮອບ</Typography.Text>
         )}
@@ -195,16 +234,28 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
           <>
             <Alert
               className="day-time-summary"
-              type={plan.setCount ? 'info' : 'warning'}
+              type={doCount ? 'info' : 'warning'}
               showIcon
               message={
-                plan.setCount
-                  ? `ຈະປັບເປັນ ${plan.time}: ${plan.setCount} ມື້ (${peopleSet} ຄົນ)${plan.skipCount ? ` · ຂ້າມ ${plan.skipCount} ມື້` : ''}`
+                doCount
+                  ? `ຈະໃຊ້ເວລາ ${plan.time}: ${doCount} ມື້ (${peopleSet} ຄົນ)${plan.skipCount ? ` · ຂ້າມ ${plan.skipCount} ມື້` : ''}`
                   : 'ບໍ່ມີມື້ໃດໃຫ້ປັບ — ທຸກມື້ທີ່ເລືອກຖືກຂ້າມ'
               }
               description={
                 <Space direction="vertical" size={2}>
+                  {plan.asWorked && (
+                    <span>
+                      ບັນທຶກເຂົ້າ-ອອກຕາມເວລານີ້ເລີຍ: {plan.asWorkedCount} ມື້
+                      {asWorkedNotes.length > 0 && ` (ບໍ່ໄດ້: ${asWorkedNotes.map(([note, n]) => `${note}${n > 1 ? ` ${n}` : ''}`).join(' · ')})`}
+                    </span>
+                  )}
                   {plan.pastCount > 0 && <span>ມື້ທີ່ຜ່ານມາແລ້ວ {plan.pastCount} ມື້ — ຈະຕັດສິນການສະແກນໃໝ່ຕາມເວລາໃໝ່</span>}
+                  {plan.rejudgeCount > 0 && (
+                    <span>
+                      {plan.rejudgeCount} ມື້ເວລາຄືກະປົກກະຕິຢູ່ແລ້ວ — ຈະຕັດສິນການສະແກນມື້ນັ້ນໃໝ່ຕາມກະ
+                      {!plan.asWorked && ' (ບໍ່ມີຫຍັງໃຫ້ຍົກເລີກພາຍຫຼັງ)'}
+                    </span>
+                  )}
                   {skippedByReason.length > 0 && (
                     <span>
                       ຂ້າມ: {skippedByReason.map(([reason, n]) => `${reason}${n > 1 ? ` (${n})` : ''}`).join(' · ')}
@@ -219,7 +270,8 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
               size="small"
               dataSource={plan.people}
               pagination={plan.people.length > 50 ? { pageSize: 50, size: 'small', showSizeChanger: false } : false}
-              scroll={{ x: 'max-content', y: 320 }}
+              // Long reasons wrap inside the dialog instead of scrolling it sideways.
+              scroll={{ y: 320 }}
             >
               <Table.Column<Person> title="ລະຫັດ" dataIndex="employeeCode" width={80} render={(v) => v ?? '-'} />
               <Table.Column<Person> title="ຊື່" dataIndex="name" width={170} render={(v) => v ?? '-'} />
@@ -227,7 +279,7 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
                 title="ເວລາ"
                 width={190}
                 render={(_, p) =>
-                  p.days.some((d) => d.set) ? (
+                  p.days.some((d) => d.set || d.rejudge) ? (
                     <span style={{ whiteSpace: 'nowrap' }}>
                       <Typography.Text type="secondary">{beforeOf(p)}</Typography.Text>
                       <ArrowRightOutlined style={{ fontSize: 10, margin: '0 6px' }} />
@@ -242,14 +294,29 @@ export const DayTimeDialog: React.FC<{ open: boolean; employeeIds: string[]; onC
                 title="ຜົນ"
                 render={(_, p) => {
                   const set = p.days.filter((d) => d.set);
+                  const rejudged = p.days.filter((d) => d.rejudge);
+                  const worked = p.days.filter((d) => d.asWorked);
+                  const notWorked = p.days.filter((d) => d.asWorkedNote);
                   // Left-out days grouped by why, with their dates on a run of days.
                   const skipped = new Map<string, string[]>();
-                  for (const d of p.days) if (!d.set) skipped.set(d.reason ?? '-', [...(skipped.get(d.reason ?? '-') ?? []), d.date]);
+                  for (const d of p.days) if (!d.set && !d.rejudge) skipped.set(d.reason ?? '-', [...(skipped.get(d.reason ?? '-') ?? []), d.date]);
                   return (
                     <Space direction="vertical" size={0}>
                       {set.length > 0 && (
                         <Tag color="green">{plan.dates.length > 1 ? `ປັບ ${set.length} ມື້` : 'ປັບ'}</Tag>
                       )}
+                      {rejudged.length > 0 && (
+                        <Tag color="blue">{plan.dates.length > 1 ? `ຕັດສິນໃໝ່ຕາມກະ ${rejudged.length} ມື້` : 'ຕັດສິນໃໝ່ຕາມກະ'}</Tag>
+                      )}
+                      {worked.length > 0 && (
+                        <Tag color="purple">{plan.dates.length > 1 ? `ບັນທຶກຕາມເວລານີ້ ${worked.length} ມື້` : 'ບັນທຶກຕາມເວລານີ້'}</Tag>
+                      )}
+                      {notWorked.map((d) => (
+                        <Typography.Text key={`w${d.date}`} type="secondary" style={{ fontSize: 12 }}>
+                          {plan.dates.length > 1 ? `${dayLabel(d.date)}: ` : ''}
+                          {d.asWorkedNote}
+                        </Typography.Text>
+                      ))}
                       {[...skipped].map(([reason, dates]) => (
                         <Typography.Text key={reason} type="secondary" style={{ fontSize: 12 }}>
                           ຂ້າມ — {reason}

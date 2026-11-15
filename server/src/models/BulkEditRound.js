@@ -26,6 +26,12 @@ const daySchema = new mongoose.Schema(
     before: { type: String, default: null }, // the time they had that day, HH:mm-HH:mm
     message: { type: String, default: null },
     shift: { type: mongoose.Schema.Types.ObjectId, ref: 'Shift', default: null },
+    // ບັນທຶກເວລາເຂົ້າ-ອອກຕາມເວລານີ້: the day's own scans set aside and the
+    // round's time put in their place (as ແກ້ໄຂການສະແກນ does) — kept so
+    // ຍົກເລີກທັງຮອບ can bring the scans back.
+    asWorked: { type: Boolean, default: false },
+    manualLogs: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AttendanceLog' }], default: undefined },
+    setAside: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'AttendanceLog' }], default: undefined },
   },
   { _id: false }
 );
@@ -66,6 +72,8 @@ const bulkEditRoundSchema = new mongoose.Schema(
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null },
     items: { type: [itemSchema], default: [] },
     finishedAt: { type: Date, default: null },
+    // ປັບເວລາສະເພາະມື້ with ບັນທຶກເວລາເຂົ້າ-ອອກຕາມເວລານີ້ ticked.
+    asWorked: { type: Boolean, default: false },
     // ປັບເວລາສະເພາະມື້ called off as a whole (ຍົກເລີກທັງຮອບ).
     cancelledAt: { type: Date, default: null },
     cancelledByEmail: { type: String, trim: true, default: null },

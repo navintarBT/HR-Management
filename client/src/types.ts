@@ -399,6 +399,8 @@ export interface BulkEditDay {
   before: string | null; // the time they had that day, HH:mm-HH:mm
   message: string | null;
   shift: string | null;
+  asWorked?: boolean; // recorded as worked at the round's time, scans set aside
+  manualLogs?: string[];
 }
 export interface BulkEditRound {
   _id: string;
@@ -410,6 +412,7 @@ export interface BulkEditRound {
   byEmail?: string;
   items: BulkEditItem[];
   finishedAt: string | null;
+  asWorked?: boolean; // ປັບເວລາສະເພາະມື້ with ບັນທຶກເວລາເຂົ້າ-ອອກຕາມເວລານີ້
   cancelledAt?: string | null; // ປັບເວລາສະເພາະມື້ called off as a whole
   cancelledByEmail?: string | null;
   createdAt: string;
@@ -428,11 +431,25 @@ export interface DayTimePlan {
     employee: string;
     employeeCode: string | null;
     name: string | null;
-    days: { date: string; set: boolean; before: string | null; reason: string | null }[];
+    // rejudge: a day already past whose time is their shift — judged again by it, no row.
+    // asWorked: recorded as worked at exactly the time (ບັນທຶກເວລາເຂົ້າ-ອອກຕາມເວລານີ້);
+    // asWorkedNote: why a day done can't be (no scan, fixed by hand, not over yet).
+    days: {
+      date: string;
+      set: boolean;
+      rejudge: boolean;
+      before: string | null;
+      reason: string | null;
+      asWorked?: boolean;
+      asWorkedNote?: string | null;
+    }[];
   }[];
   setCount: number;
+  rejudgeCount: number;
   skipCount: number;
   pastCount: number; // days set that have already happened — judged again
+  asWorked: boolean;
+  asWorkedCount: number;
 }
 
 export type OvertimeStatus = 'pending' | 'approved' | 'rejected';
