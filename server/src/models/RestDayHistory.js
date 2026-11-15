@@ -8,9 +8,9 @@ const mongoose = require('mongoose');
 // already paid included — was re-read as the new rest day.
 //
 // A change made by hand starts on a Monday after today — by default the
-// first Monday of the next month, as HR plans each month's rest days ahead —
-// so every Monday-to-Sunday week rests on one pattern; someone with no rest
-// day yet may start sooner (restDaySchedule.js startOfChange). Several can
+// next one — so every Monday-to-Sunday week rests on one pattern, and days up
+// to today are history, only to look at (restDaySchedule.js startOfChange).
+// Several can
 // be waiting at once, one per date, and any not yet in effect can be
 // cancelled. Employee.defaultRestDay holds whichever applies today.
 const restDayHistorySchema = new mongoose.Schema(
@@ -22,7 +22,8 @@ const restDayHistorySchema = new mongoose.Schema(
     // existed got the (local) day they were made, except the ones that first
     // set someone's rest day up: FROM_THE_START (restDaySchedule.js).
     effectiveDate: { type: String, trim: true },
-    // 'manual' (ຕັ້ງຄ່າແຜນວຽກ / the employee record), 'plan' (ວາງແຜນວັນພັກ),
+    // 'manual' (the 📅 dialog on ວາງແຜນວັນພັກ / the employee record), 'plan'
+    // (a week's moves on ວາງແຜນວັນພັກ),
     // 'position-swap', or 'migration' for rows recorded before
     // effectiveDate existed.
     source: { type: String, trim: true },

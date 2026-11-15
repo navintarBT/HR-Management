@@ -6,6 +6,7 @@ const Position = require('../models/Position');
 const ShiftCategory = require('../models/ShiftCategory');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { sidesOf, markDone } = require('../utils/bulkEditRounds');
+const { readDayTimeRequest, planDayTime, applyDayTime, cancelDayTimeRound } = require('../utils/dayTimeRounds');
 
 // ປະຫວັດການແກ້ໄຂ of ແກ້ໄຂກະແບບກຸ່ມ (models/BulkEditRound.js). The page opens a
 // round before moving anyone, passes its id along with each person's move —
@@ -22,7 +23,7 @@ router.get('/', authenticate, async (req, res, next) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
     const query = {};
-    if (['department', 'position', 'shift'].includes(req.query.action)) query.action = req.query.action;
+    if (['department', 'position', 'shift', 'dayTime'].includes(req.query.action)) query.action = req.query.action;
     if (['bulk', 'employee', 'planner'].includes(req.query.source)) query.source = req.query.source;
     if (isId(req.query.employee)) query['items.employee'] = req.query.employee;
     const [data, total] = await Promise.all([
@@ -80,6 +81,40 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
     });
     res.status(201).json(round);
   } catch (err) {
+    next(err);
+  }
+});
+
+// ປັບເວລາສະເພາະມື້ (utils/dayTimeRounds.js): what saving would do, then the
+// save itself — a round of its own, recorded and finished in one go.
+router.post('/day-time/preview', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    res.json(await planDayTime(await readDayTimeRequest(req.body)));
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    next(err);
+  }
+});
+
+router.post('/day-time', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    res.status(201).json(await applyDayTime(await readDayTimeRequest(req.body), req.user));
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    next(err);
+  }
+});
+
+// ຍົກເລີກທັງຮອບ of a ປັບເວລາສະເພາະມື້ round — by anyone who could have made it,
+// as any one of its days can be put back on ຕັ້ງຄ່າແຜນວຽກ.
+router.post('/:id/cancel', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
+  try {
+    if (!isId(req.params.id)) return res.status(404).json({ message: 'Not found' });
+    const round = await BulkEditRound.findById(req.params.id);
+    if (!round) return res.status(404).json({ message: 'Not found' });
+    res.json(await cancelDayTimeRound(round, req.user));
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ message: err.message });
     next(err);
   }
 });

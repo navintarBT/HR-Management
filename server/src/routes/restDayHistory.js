@@ -10,7 +10,7 @@ const { resolveRestDayForEmployee, resolveRestDayForPosition, mergeRestDayRule }
 const {
   loadRestDaySchedules,
   startOfChange,
-  firstMondayOfMonthAfter,
+  nextMondayAfter,
   recordRestDayChange,
   cancelRestDayChange,
   restDaysOn,
@@ -105,7 +105,7 @@ const changeSummary = (row) => ({ _id: row._id, effectiveDate: row.effectiveDate
 async function planChange(employee, requestedRestDays, requestedDate, now = new Date()) {
   const today = toDateKey(now);
   const restDays = await resolveRestDayForEmployee(employee, employee.position, requestedRestDays ?? []);
-  const { effectiveDate, setup, reason } = await startOfChange(employee, restDays, requestedDate, now);
+  const { effectiveDate, reason } = startOfChange(requestedDate, now);
   const dayBefore = addDays(effectiveDate, -1);
   const [schedules, sameDate, pending, queuedShifts, leavesAffected] = await Promise.all([
     loadRestDaySchedules([employee._id], dayBefore, dayBefore),
@@ -120,8 +120,7 @@ async function planChange(employee, requestedRestDays, requestedDate, now = new 
     redirected: !sameRestDays(restDays, requestedRestDays ?? []),
     effectiveDate,
     reason,
-    setup,
-    defaultStart: firstMondayOfMonthAfter(today),
+    defaultStart: nextMondayAfter(today),
     before,
     unchanged: sameRestDays(before, restDays),
     replaces: sameDate ? [changeSummary(sameDate)] : [],
@@ -143,7 +142,7 @@ router.post('/preview', authenticate, requireRole('admin', 'manager'), async (re
 });
 
 // Changes someone's recurring rest day from the Monday asked for (or
-// startOfChange's default) — never earlier than tomorrow, so the past is
+// startOfChange's default, next Monday) — never this week or earlier, so the past is
 // never rewritten (restDaySchedule.js). A waiting change on that same day is
 // replaced; waiting ones on other days stay. Their leaves from that day on
 // are worked out again.
@@ -174,9 +173,9 @@ router.post('/', authenticate, requireRole('admin', 'manager'), async (req, res,
 // waiting change goes); 'none' — or, in `error`, why it can't be saved.
 const MAX_PLAN_ROWS = 1000;
 async function planMany(effectiveDate, changes, now = new Date()) {
-  const today = toDateKey(now);
-  if (!isDateKey(effectiveDate) || effectiveDate <= today) throw badRequest('ວັນທີ່ມີຜົນຕ້ອງເປັນມື້ອື່ນ ຫຼື ຫຼັງຈາກນັ້ນ');
-  if (weekdayOf(effectiveDate) !== 1) throw badRequest('ວັນພັກໃໝ່ຕ້ອງເລີ່ມວັນຈັນ');
+  // A Monday after today, like any change by hand (startOfChange).
+  if (!effectiveDate) throw badRequest('ວັນພັກໃໝ່ຕ້ອງເລີ່ມວັນຈັນລ່ວງໜ້າ');
+  startOfChange(effectiveDate, now);
   if (!Array.isArray(changes) || !changes.length) throw badRequest('ບໍ່ມີການປ່ຽນໃຫ້ບັນທຶກ');
   if (changes.length > MAX_PLAN_ROWS) throw badRequest(`ບັນທຶກໄດ້ສູງສຸດ ${MAX_PLAN_ROWS} ຄົນຕໍ່ຄັ້ງ`);
   const requested = new Map();

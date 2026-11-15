@@ -528,9 +528,9 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     }
 
     // A recurring rest day isn't overwritten here — that re-read every earlier
-    // day as the new rest day. It's scheduled like ຕັ້ງຄ່າແຜນວຽກ does
-    // (routes/restDayHistory.js), from startOfChange's default day: the first
-    // Monday of the next month (sooner for someone with no rest day yet).
+    // day as the new rest day. It's scheduled like ວາງແຜນວັນພັກ does
+    // (routes/restDayHistory.js), from startOfChange's default day: next
+    // Monday.
     // 'defaultRestDay' in employeePayload (rather than a truthy check) also
     // catches deliberately clearing it back to none — cleanEmployeePayload
     // already strips the key entirely when the field wasn't touched at all.
@@ -562,7 +562,7 @@ router.patch('/:id', authenticate, requireRole('admin'), async (req, res, next) 
     if (requestedRestDay) {
       // Same as routes/restDayHistory.js: replaces a change already waiting
       // on that day.
-      const { effectiveDate } = await startOfChange(item, requestedRestDay);
+      const { effectiveDate } = startOfChange();
       await recordRestDayChange({
         employeeId: item._id,
         newRestDay: requestedRestDay,

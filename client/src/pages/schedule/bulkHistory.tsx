@@ -1,17 +1,18 @@
 import { useEffect, useState } from 'react';
-import { useCustom } from '@refinedev/core';
-import { Drawer, Segmented, Table, Tag, Typography, Space, Grid } from 'antd';
+import { useCustom, useGetIdentity, useInvalidate, useNotification } from '@refinedev/core';
+import { Button, Drawer, Popconfirm, Segmented, Table, Tag, Typography, Space, Grid } from 'antd';
 import { ArrowRightOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { API_URL } from '../../providers/axios';
-import type { BulkEditAction, BulkEditItem, BulkEditRound, BulkEditSide } from '../../types';
+import { API_URL, axiosInstance } from '../../providers/axios';
+import type { BulkEditAction, BulkEditItem, BulkEditRound, BulkEditSide, Identity } from '../../types';
 
 const ACTION_LABEL: Record<BulkEditAction, string> = {
   department: 'ຍ້າຍພະແນກ',
   position: 'ຍ້າຍຕຳແໜ່ງ',
   shift: 'ຍ້າຍກະ',
+  dayTime: 'ປັບເວລາສະເພາະມື້',
 };
-const ACTION_COLOR: Record<BulkEditAction, string> = { department: 'geekblue', position: 'purple', shift: 'cyan' };
+const ACTION_COLOR: Record<BulkEditAction, string> = { department: 'geekblue', position: 'purple', shift: 'cyan', dayTime: 'gold' };
 const FIELD_LABEL: Record<keyof BulkEditSide, string> = { department: 'ພະແນກ', position: 'ຕຳແໜ່ງ', shift: 'ໂມງເຂົ້າວຽກ' };
 const SOURCE_LABEL: Record<string, string> = { employee: 'ໜ້າພະນັກງານ', planner: 'ຕັ້ງຄ່າແຜນວຽກ' };
 const PAGE_SIZE = 20;
@@ -19,7 +20,7 @@ const PAGE_SIZE = 20;
 // What a round is about, shown first; the other fields only where they changed
 // too (a department move clears a position the new department doesn't have).
 function changedFields(action: BulkEditAction, item: BulkEditItem): (keyof BulkEditSide)[] {
-  const main = action;
+  const main = action === 'dayTime' ? 'shift' : action;
   const others = (['department', 'position', 'shift'] as const).filter(
     (f) => f !== main && item.after && (item.after[f] ?? null) !== (item.before?.[f] ?? null)
   );
@@ -34,7 +35,41 @@ const StatusTag: React.FC<{ item: BulkEditItem; finished: boolean }> = ({ item, 
   return <Tag color="orange">{finished ? 'ບໍ່ຮູ້ຜົນ' : 'ກຳລັງດຳເນີນ'}</Tag>;
 };
 
+// ປັບເວລາສະເພາະມື້: each day of the round for this person — the time it had
+// and the new one, or why it was left out, or that it was put back.
+const DayChanges: React.FC<{ round: BulkEditRound; item: BulkEditItem }> = ({ round, item }) => (
+  <Space direction="vertical" size={0} className="day-time-history-days">
+    {(item.days ?? []).map((d) => (
+      <span key={d.date} style={{ whiteSpace: 'nowrap' }}>
+        <Typography.Text type="secondary">{dayjs(d.date).format('ddd DD/MM')}: </Typography.Text>
+        {d.status === 'skipped' ? (
+          <Typography.Text type="secondary">ຂ້າມ — {d.message ?? '-'}</Typography.Text>
+        ) : (
+          <>
+            <Typography.Text type="secondary">{d.before ?? '-'}</Typography.Text>
+            <ArrowRightOutlined style={{ fontSize: 10, margin: '0 6px' }} />
+            {d.status === 'cancelled' ? (
+              <Typography.Text delete type="secondary">
+                {round.target.label}
+              </Typography.Text>
+            ) : (
+              <Typography.Text strong>{round.target.label}</Typography.Text>
+            )}
+            {d.status === 'cancelled' && <Tag style={{ marginLeft: 6 }}>ຍົກເລີກແລ້ວ</Tag>}
+            {d.message && (
+              <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                {d.message}
+              </Typography.Text>
+            )}
+          </>
+        )}
+      </span>
+    ))}
+  </Space>
+);
+
 const Change: React.FC<{ round: BulkEditRound; item: BulkEditItem }> = ({ round, item }) => {
+  if (round.action === 'dayTime') return <DayChanges round={round} item={item} />;
   const fromDate = round.action === 'shift' && round.target.effectiveDate ? ` (ຈາກ ${dayjs(round.target.effectiveDate).format('DD/MM/YYYY')})` : '';
   const fields = changedFields(round.action, item);
   return (
@@ -117,6 +152,11 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
   const [page, setPage] = useState(1);
   const [action, setAction] = useState<BulkEditAction | 'all'>('all');
   const screens = Grid.useBreakpoint();
+  const { data: identity } = useGetIdentity<Identity>();
+  const canEdit = identity?.role === 'admin' || identity?.role === 'manager';
+  const invalidate = useInvalidate();
+  const { open: notify } = useNotification();
+  const [cancelling, setCancelling] = useState<string | null>(null);
   const { data, isFetching, refetch } = useCustom<{ data: BulkEditRound[]; total: number }>({
     url: `${API_URL}/bulk-edits`,
     method: 'get',
@@ -128,6 +168,28 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
     if (open) refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+  // ຍົກເລີກທັງຮອບ (ປັບເວລາສະເພາະມື້): every day it set goes back to the regular
+  // time, the days already past judged again (server/src/utils/dayTimeRounds.js).
+  const cancelRound = async (round: BulkEditRound) => {
+    setCancelling(round._id);
+    try {
+      const { data: res } = await axiosInstance.post<{ cancelled: number; kept: number }>(`${API_URL}/bulk-edits/${round._id}/cancel`);
+      notify?.({
+        type: 'success',
+        message: `ຍົກເລີກທັງຮອບແລ້ວ — ຄືນເວລາປົກກະຕິ ${res.cancelled} ມື້`,
+        description: res.kept ? `${res.kept} ມື້ຖືກແກ້ໄຂອີກຫຼັງຈາກນັ້ນ ຈຶ່ງບໍ່ໄດ້ແຕະ` : undefined,
+      });
+      invalidate({ resource: 'shifts', invalidates: ['list'] });
+      invalidate({ resource: 'attendance-daily', invalidates: ['list'] });
+      refetch();
+    } catch (err: any) {
+      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
+    } finally {
+      setCancelling(null);
+    }
+  };
+  const canCancel = (r: BulkEditRound) =>
+    canEdit && r.action === 'dayTime' && !r.cancelledAt && r.items.some((i) => (i.days ?? []).some((d) => d.status === 'ok'));
   const rounds = data?.data?.data ?? [];
   const total = data?.data?.total ?? 0;
   // A phone gets one stacked column instead of four side by side.
@@ -143,6 +205,33 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
       )}
       {r.action === 'shift' && r.target.effectiveDate && (
         <Typography.Text type="secondary">ມີຜົນ {dayjs(r.target.effectiveDate).format('DD/MM/YYYY')}</Typography.Text>
+      )}
+      {r.action === 'dayTime' && r.target.effectiveDate && (
+        <Typography.Text type="secondary">
+          {r.target.toDate && r.target.toDate !== r.target.effectiveDate
+            ? `${dayjs(r.target.effectiveDate).format('DD/MM')} – ${dayjs(r.target.toDate).format('DD/MM/YYYY')}`
+            : `ວັນທີ ${dayjs(r.target.effectiveDate).format('DD/MM/YYYY')}`}
+        </Typography.Text>
+      )}
+      {r.cancelledAt && (
+        <Tag className="day-time-cancelled">
+          ຍົກເລີກທັງຮອບແລ້ວ {dayjs(r.cancelledAt).format('DD/MM HH:mm')}
+          {r.cancelledByEmail ? ` · ${r.cancelledByEmail}` : ''}
+        </Tag>
+      )}
+      {canCancel(r) && (
+        <Popconfirm
+          title="ຍົກເລີກທັງຮອບ?"
+          description="ທຸກມື້ທີ່ຮອບນີ້ປັບ ຈະກັບໄປໃຊ້ເວລາປົກກະຕິ ແລະ ມື້ທີ່ຜ່ານມາຈະຕັດສິນການສະແກນໃໝ່"
+          okText="ຍົກເລີກທັງຮອບ"
+          okButtonProps={{ danger: true }}
+          cancelText="ບໍ່"
+          onConfirm={() => cancelRound(r)}
+        >
+          <Button size="small" danger className="day-time-cancel" loading={cancelling === r._id} onClick={(e) => e.stopPropagation()}>
+            ຍົກເລີກທັງຮອບ
+          </Button>
+        </Popconfirm>
       )}
     </Space>
   );
@@ -163,7 +252,7 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
 
   return (
     <Drawer
-      title="ປະຫວັດການແກ້ໄຂ ພະແນກ / ຕຳແໜ່ງ / ກະ"
+      title="ປະຫວັດການແກ້ໄຂ ພະແນກ / ຕຳແໜ່ງ / ກະ / ເວລາສະເພາະມື້"
       open={open}
       onClose={onClose}
       width={screens.md ? 980 : '100%'}
@@ -182,6 +271,7 @@ export const BulkEditHistory: React.FC<{ open: boolean; onClose: () => void }> =
           { label: ACTION_LABEL.department, value: 'department' },
           { label: ACTION_LABEL.position, value: 'position' },
           { label: ACTION_LABEL.shift, value: 'shift' },
+          { label: ACTION_LABEL.dayTime, value: 'dayTime' },
         ]}
       />
       <Table<BulkEditRound>

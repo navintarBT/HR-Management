@@ -1,15 +1,17 @@
-import { useDeferredValue, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useSelect } from '@refinedev/antd';
-import { useList, useCustom, useCreate, useDelete, useInvalidate, useNotification } from '@refinedev/core';
+import { useList, useCustom, useCreate, useDelete, useInvalidate, useNotification, useGetIdentity } from '@refinedev/core';
 import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker, Segmented, Grid, Tooltip, Alert } from 'antd';
-import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined, LinkOutlined } from '@ant-design/icons';
+import { LeftOutlined, RightOutlined, DeleteOutlined, PlusOutlined, PrinterOutlined, LinkOutlined, CalendarOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
-import type { Department, Employee, Leave, Position, RestDayScheduleRow, Shift, ShiftChangeLogEntry } from '../../types';
+import type { Department, Employee, Identity, Leave, Position, RestDayScheduleRow, Shift, ShiftChangeLogEntry } from '../../types';
 import { API_URL } from '../../providers/axios';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
-import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
+import { groupRestRowsByEmployee, restDaysOn, upcomingMondays, effectiveRestrictedRestDays } from '../../utils/restDays';
+import { createPlanDraft, PlannedCell, RestDayPlanBar, useRestDayPlanSchedule } from './restDayPlanShared';
+import { RecurringRestDialog } from './recurringRestDialog';
 import { preferredOverride } from '../../utils/dayOverride';
 import { groupLogsByEmployee, shiftOnDate, regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
@@ -102,11 +104,6 @@ const PRINT_TONE = {
   coveredBy: { bg: '#f6ffed', text: '#237804' },
 };
 type PrintLegendItem = { label: string; tone: keyof typeof PRINT_TONE; text: string };
-const PRINT_LEGEND_WEEK: PrintLegendItem[] = [
-  { label: 'ພ', tone: 'rest', text: 'ພັກ' },
-  { label: 'ແທນ', tone: 'covering', text: 'ໄປເຮັດແທນຄົນອື່ນ' },
-  { label: 'ແທນໂດຍ', tone: 'coveredBy', text: 'ມີຄົນມາແທນ (×ຈຳນວນຄັ້ງໃນເດືອນ)' },
-];
 const PRINT_LEGEND_DATES: PrintLegendItem[] = [
   { label: 'ພ', tone: 'rest', text: 'ພັກ' },
   { label: 'ລາ', tone: 'leave', text: 'ລາ' },
@@ -117,11 +114,15 @@ const PRINT_LEGEND_DATES: PrintLegendItem[] = [
 type PrintDay = { key: string; header: ReactNode; cell: (emp: Employee) => { tone?: { bg: string; text: string }; lines: ReactNode } };
 
 
-// 'month': one column per date. 'week': the same month by weekday, with no
-// dates — who rests which day, and the covers as a standing weekly roster.
+// 'month': one column per date of the month (or of the dates picked). 'week':
+// one dated week picked from a dropdown, the same day cells (since 15/11/2026;
+// it used to be the month by weekday, read-only).
 type CoverView = 'month' | 'week';
-// Monday first, the way the week is counted everywhere else.
-const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
+// ວາງແຜນວັນພັກ (the `planner` mode): one week at a time, back to the first week
+// there is anything to look at (the system went live in October 2026).
+const FIRST_WEEK = '2026-09-28';
+const weekLabel = (monday: Dayjs) => `ຈັນ ${monday.format('DD/MM')} – ອາທິດ ${monday.add(6, 'day').format('DD/MM/YYYY')}`;
+const sameRest = (a: number[], b: number[]) => a.length === b.length && a.every((d) => b.includes(d));
 
 // Someone's own day, worked out the way ຕັ້ງຄ່າແຜນວຽກ does it (monthly.tsx
 // computeCell): approved leave first, then a one-off day off / blank swap day /
@@ -155,10 +156,6 @@ const isOff = (status: DayStatus) => status.kind === 'rest' || status.kind === '
 // One person's day in the month grid: their own day, the covers they do, and
 // who covers them.
 type DayInfo = { status: DayStatus; covering: Shift[]; coveredBy: Shift[] };
-// The same on the weekly roster: covers grouped when the same people at the
-// same time repeat on that weekday, with how many times this month.
-type WeekdayCover = { key: string; shift: Shift; count: number };
-type WeekdayInfo = { resting: boolean; covering: WeekdayCover[]; coveredBy: WeekdayCover[] };
 
 const OFF_STYLE: Record<'rest' | 'leave', CSSProperties> = {
   rest: { background: 'rgba(128, 128, 128, 0.12)' },
@@ -166,17 +163,6 @@ const OFF_STYLE: Record<'rest' | 'leave', CSSProperties> = {
 };
 // A normal working day someone else is covering.
 const COVERED_WORK_STYLE: CSSProperties = { background: 'rgba(22, 119, 255, 0.08)' };
-
-function groupRepeats(shifts: Shift[], keyOf: (s: Shift) => string): WeekdayCover[] {
-  const list: WeekdayCover[] = [];
-  for (const s of shifts) {
-    const key = keyOf(s);
-    const same = list.find((c) => c.key === key);
-    if (same) same.count += 1;
-    else list.push({ key, shift: s, count: 1 });
-  }
-  return list.sort((a, b) => (a.shift.startTime ?? '').localeCompare(b.shift.startTime ?? ''));
-}
 
 // On every ordinary cell of the month, thousands with everyone showing, so a
 // plain button: antd's Button and Tooltip there made drawing the table far slower.
@@ -194,17 +180,52 @@ const AddCoverButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
 // covering in turn: C covers B covers A. The weekly roster shows the same month
 // by weekday with no dates, to read only. Covers are also created from
 // ຕັ້ງຄ່າແຜນວຽກ (click a day → ໄປເຮັດແທນຄົນອື່ນ) or with ມອບໝາຍການເຮັດແທນ.
-export const ScheduleCoversGrid: React.FC = () => {
+// `planner`: the ວາງແຜນວັນພັກ page (agreed 15/11/2026) — the same people, rest
+// days and covers, one dated week picked from a dropdown, and on a coming week a
+// click moves that person's recurring rest day (from that week's Monday). Past
+// weeks and this one are only to look at. Without it, the ການເຮັດແທນ page as is.
+export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = false }) => {
   const [view, setView] = useState<CoverView>('month');
   const [monthStart, setMonthStart] = useState(() => dayjs().startOf('month'));
+  const thisMonday = useMemo(() => {
+    const today = dayjs().startOf('day');
+    return today.subtract((today.day() + 6) % 7, 'day');
+  }, []);
+  // ວາງແຜນວັນພັກ opens on the first week a rest-day move can start (next Monday);
+  // ການເຮັດແທນ on this week.
+  const [weekMonday, setWeekMonday] = useState(() => (planner ? upcomingMondays(dayjs())[0] : thisMonday).format('YYYY-MM-DD'));
+  const plannableMondays = useMemo(() => new Set(upcomingMondays(dayjs()).map((m) => m.format('YYYY-MM-DD'))), []);
+  const weekOptions = useMemo(() => {
+    const past: Dayjs[] = [];
+    for (let m = thisMonday; !m.isBefore(dayjs(FIRST_WEEK), 'day'); m = m.subtract(7, 'day')) past.push(m);
+    return [
+      {
+        label: planner ? 'ອາທິດຂ້າງໜ້າ — ຍ້າຍວັນພັກໄດ້' : 'ອາທິດຂ້າງໜ້າ',
+        options: upcomingMondays(dayjs()).map((m) => ({
+          value: m.format('YYYY-MM-DD'),
+          label: `${weekLabel(m)}${m.date() <= 7 ? ' · ຈັນທຳອິດຂອງເດືອນ' : ''}`,
+        })),
+      },
+      {
+        label: planner ? 'ອາທິດນີ້ ແລະ ທີ່ຜ່ານມາ — ເບິ່ງຢ່າງດຽວ' : 'ອາທິດນີ້ ແລະ ທີ່ຜ່ານມາ',
+        options: past.map((m) => ({ value: m.format('YYYY-MM-DD'), label: `${weekLabel(m)}${m.isSame(thisMonday, 'day') ? ' (ອາທິດນີ້)' : ''}` })),
+      },
+    ];
+  }, [thisMonday, planner]);
+  // One dated week: ວາງແຜນວັນພັກ always, and ການເຮັດແທນ's ລາຍອາທິດ (agreed
+  // 15/11/2026 — covers are assigned there day by day, like the month view).
+  const datedWeek = planner || view === 'week';
+  const editableWeek = planner && plannableMondays.has(weekMonday);
+  // A week before this one, on ວາງແຜນວັນພັກ: history, only to look at.
+  const pastWeek = planner && weekMonday < thisMonday.format('YYYY-MM-DD');
   // Dates picked in the month view, up to MAX_PRINT_DAYS and across a month end
   // if need be: the table shows just those, and they're what prints. The weekly
   // roster always reads the whole month.
   const [dayRange, setDayRange] = useState<[Dayjs, Dayjs] | null>(null);
   const usingRange = view === 'month' && !!dayRange;
-  const rangeStart = usingRange ? dayRange[0].startOf('day') : monthStart;
-  const rangeEnd = usingRange ? dayRange[1].startOf('day') : monthStart.endOf('month').startOf('day');
-  const periodText = usingRange ? 'ໃນຊ່ວງທີ່ເລືອກ' : 'ໃນເດືອນນີ້';
+  const rangeStart = datedWeek ? dayjs(weekMonday) : usingRange ? dayRange[0].startOf('day') : monthStart;
+  const rangeEnd = datedWeek ? dayjs(weekMonday).add(6, 'day') : usingRange ? dayRange[1].startOf('day') : monthStart.endOf('month').startOf('day');
+  const periodText = datedWeek ? 'ໃນອາທິດທີ່ເລືອກ' : usingRange ? 'ໃນຊ່ວງທີ່ເລືອກ' : 'ໃນເດືອນນີ້';
   const startKey = rangeStart.format('YYYY-MM-DD');
   const endKey = rangeEnd.format('YYYY-MM-DD');
   const rangeDays = useMemo(
@@ -266,7 +287,7 @@ export const ScheduleCoversGrid: React.FC = () => {
   const allEmployees = useMemo(() => allEmployeesData?.data ?? [], [allEmployeesData?.data]);
 
   // What each day is for each person — the same sources ຕັ້ງຄ່າແຜນວຽກ reads.
-  const { data: restScheduleData } = useCustom<RestDayScheduleRow[]>({
+  const { data: restScheduleData, refetch: refetchRestSchedule } = useCustom<RestDayScheduleRow[]>({
     url: `${API_URL}/rest-day-history/schedule`,
     method: 'get',
     config: { query: { from: startKey, to: endKey } },
@@ -436,30 +457,6 @@ export const ScheduleCoversGrid: React.FC = () => {
     return null;
   };
 
-  // The weekly roster — each person's rest day as it stands today, and this
-  // month's covers by weekday.
-  const weekInfo = useMemo(() => {
-    const map = new Map<string, WeekdayInfo>();
-    for (const emp of infoRows) {
-      for (const dow of WEEK_ORDER) {
-        const days = rangeDays.filter((d) => d.day() === dow).map((d) => `${emp._id}_${d.format('YYYY-MM-DD')}`);
-        map.set(`${emp._id}_${dow}`, {
-          resting: (emp.defaultRestDay ?? []).includes(dow),
-          covering: groupRepeats(
-            days.flatMap((k) => shiftIndex.covering.get(k) ?? []),
-            (s) => `${idOf(s.coveringFor as Employee)}_${idOf(s.position as Position)}_${s.startTime}_${s.endTime}`
-          ),
-          coveredBy: groupRepeats(
-            days.flatMap((k) => shiftIndex.coveredBy.get(k) ?? []),
-            (s) => `${idOf(s.employee as Employee)}_${s.startTime}_${s.endTime}`
-          ),
-        });
-      }
-    }
-    return map;
-  }, [infoRows, rangeDays, shiftIndex]);
-  const weekInfoOf = (emp: Employee, dow: number) => weekInfo.get(`${emp._id}_${dow}`) ?? { resting: false, covering: [], coveredBy: [] };
-
   // This month's covers involving anyone shown — doing it or covered — for the totals.
   const covers = useMemo(() => {
     const shown = new Set(rows.map((e) => e._id));
@@ -475,9 +472,11 @@ export const ScheduleCoversGrid: React.FC = () => {
   const selectedDepartment = allDepartments.find((d) => d._id === departmentFilter);
   const selectedPosition = allPositions.find((p) => p._id === positionFilter);
   const selectedPerson = allEmployees.find((e) => e._id === personFilter);
-  const printPeriod = usingRange
-    ? `ວັນທີ ${rangeStart.format('DD/MM/YYYY')} - ${rangeEnd.format('DD/MM/YYYY')}`
-    : `ປະຈໍາເດືອນ ${monthStart.format('MMMM YYYY')}`;
+  const printPeriod = datedWeek
+    ? `ອາທິດ ${rangeStart.format('DD/MM/YYYY')} - ${rangeEnd.format('DD/MM/YYYY')}`
+    : usingRange
+      ? `ວັນທີ ${rangeStart.format('DD/MM/YYYY')} - ${rangeEnd.format('DD/MM/YYYY')}`
+      : `ປະຈໍາເດືອນ ${monthStart.format('MMMM YYYY')}`;
   // Worded the way ສະຫຼຸບເງິນເດືອນ words its own.
   const printTitle = (() => {
     let base = 'ຕາຕະລາງການເຮັດແທນ';
@@ -494,6 +493,156 @@ export const ScheduleCoversGrid: React.FC = () => {
   const { mutate: deleteShift } = useDelete();
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
+
+  // ---- ວາງແຜນວັນພັກ (planner mode). On a coming week each day pressed moves that
+  // person's rest day to it (Ctrl adds another, pressing a rest day takes it
+  // off); saved for good from that week's Monday — every week rests on one
+  // pattern — after the same check as before (restDayPlanShared.tsx). The picks
+  // live in planDraft, so a click redraws that person's row, not the table.
+  const { data: identity } = useGetIdentity<Identity>();
+  const canPlan = planner && (identity?.role === 'admin' || identity?.role === 'manager');
+  const [planDraft] = useState(createPlanDraft);
+  const plan = useRestDayPlanSchedule(editableWeek ? weekMonday : null);
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  useEffect(() => {
+    planDraft.setMonday(editableWeek ? weekMonday : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editableWeek, weekMonday]);
+  useEffect(() => {
+    planDraft.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan.rowsByEmployee]);
+  const employeeById = useMemo(() => new Map(allEmployees.map((e) => [e._id, e])), [allEmployees]);
+  // Another week with picks not saved yet: asked first, they don't carry over.
+  const changeWeek = (monday: string) => {
+    const unsaved = Object.keys(planDraft.all()).length;
+    if (!unsaved) {
+      setWeekMonday(monday);
+      return;
+    }
+    Modal.confirm({
+      title: `ຖິ້ມການແກ້ໄຂ ${unsaved} ຄົນທີ່ຍັງບໍ່ໄດ້ບັນທຶກ?`,
+      okText: 'ຖິ້ມ ແລະ ປ່ຽນອາທິດ',
+      cancelText: 'ບໍ່',
+      onOk: () => {
+        planDraft.clear();
+        setWeekMonday(monday);
+      },
+    });
+  };
+  const afterRestChange = (effectiveDate?: string) => {
+    // Saved from 📅: show the week it starts on.
+    if (planner && effectiveDate) {
+      const d = dayjs(effectiveDate);
+      const monday = d.subtract((d.day() + 6) % 7, 'day').format('YYYY-MM-DD');
+      if (monday !== weekMonday) changeWeek(monday);
+    }
+    refetchRestSchedule();
+    invalidate({ resource: 'employees', invalidates: ['list'] });
+    invalidate({ resource: 'leaves', invalidates: ['list'] });
+  };
+  const afterPlanSaved = () => {
+    plan.refetch();
+    afterRestChange();
+    planDraft.clear();
+  };
+  // A move always starts on a coming Monday: pressed on this week, the page
+  // goes to the first week it can start on and makes the same move there, once
+  // that week's rest days are in. Earlier weeks are history and take no clicks.
+  const firstPlannableMonday = useMemo(() => upcomingMondays(dayjs())[0].format('YYYY-MM-DD'), []);
+  const [carriedPick, setCarriedPick] = useState<{ emp: Employee; dow: number; adding: boolean } | null>(null);
+  useEffect(() => {
+    if (!carriedPick || weekMonday !== firstPlannableMonday || plan.isLoading || !plan.rowsByEmployee) return;
+    const { emp, dow, adding } = carriedPick;
+    setCarriedPick(null);
+    togglePlanDay(emp, dow, adding);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carriedPick, weekMonday, plan.isLoading, plan.rowsByEmployee]);
+  const togglePlanDay = (emp: Employee, dow: number, adding: boolean) => {
+    if (!canPlan || emp.status !== 'active' || pastWeek) return;
+    if (!editableWeek) {
+      notify?.({
+        type: 'success',
+        message: `ການຍ້າຍວັນພັກມີຜົນແຕ່ວັນຈັນ — ໄປອາທິດ ${dayjs(firstPlannableMonday).format('DD/MM')} – ${dayjs(firstPlannableMonday).add(6, 'day').format('DD/MM/YYYY')} ໃຫ້ແລ້ວ`,
+      });
+      setCarriedPick({ emp, dow, adding });
+      setWeekMonday(firstPlannableMonday);
+      return;
+    }
+    if (planRef.current.isLoading) return;
+    const planned = planRef.current.plannedOf(emp);
+    const current = planDraft.get(emp._id) ?? planned;
+    if (!current.includes(dow) && effectiveRestrictedRestDays(emp).includes(dow)) {
+      notify?.({ type: 'error', message: `ຕຳແໜ່ງນີ້ຫ້າມພັກ${WEEKDAY_OPTIONS[dow].label}` });
+      return;
+    }
+    const next = current.includes(dow) ? current.filter((d) => d !== dow) : adding ? [...current, dow] : [dow];
+    planDraft.set(emp._id, sameRest(next, planned) ? undefined : next);
+  };
+  // One day on ວາງແຜນວັນພັກ: rest (as picked, on a coming week) or leave or the
+  // shift, and the covers that day — who they cover and who covers them.
+  const planCell = (emp: Employee, dateKey: string, picked: number[] | undefined) => {
+    const info = infoOn(emp, dateKey);
+    const dow = dayjs(dateKey).day();
+    const planned = editableWeek ? planRef.current.plannedOf(emp) : [];
+    // On a coming week the regular rest day is the one being planned; a day off
+    // set for that date alone (or the shop closed) stays off either way.
+    const own = shiftIndex.own.get(`${emp._id}_${dateKey}`);
+    const restingRecurring = editableWeek ? (picked ?? planned).includes(dow) : false;
+    const resting = editableWeek ? restingRecurring || own?.status === 'rest' : info.status.kind === 'rest';
+    const onLeave = info.status.kind === 'leave';
+    // A regular rest day moved away is a working day again: their shift that day.
+    const work = info.status.kind === 'work' ? info.status : !resting && info.status.kind === 'rest' ? regularTimeOn(emp, dateKey) : null;
+    const changed = editableWeek && !!picked && picked.includes(dow) !== planned.includes(dow);
+    const clickable = planner && canPlan && emp.status === 'active' && !pastWeek;
+    const blocked = clickable && editableWeek && !restingRecurring && effectiveRestrictedRestDays(emp).includes(dow);
+    return (
+      <div
+        className="rest-plan-cell"
+        onClick={(event) => togglePlanDay(emp, dow, event.ctrlKey || event.metaKey)}
+        title={blocked ? `ຕຳແໜ່ງນີ້ຫ້າມພັກ${WEEKDAY_OPTIONS[dow].label}` : undefined}
+        style={{
+          minHeight: 44,
+          padding: '4px',
+          borderRadius: 4,
+          cursor: !clickable ? 'default' : blocked ? 'not-allowed' : 'pointer',
+          background: resting ? OFF_STYLE.rest.background : onLeave ? OFF_STYLE.leave.background : undefined,
+          outline: changed ? '2px dashed #1677ff' : undefined,
+          outlineOffset: -2,
+        }}
+      >
+        <div style={{ textAlign: 'center', fontSize: 12 }}>
+          {resting ? (
+            <span style={{ color: '#722ed1', fontWeight: 600 }}>{info.status.kind === 'rest' && info.status.holidayName ? 'ຮ້ານປິດ' : 'ພັກ'}</span>
+          ) : onLeave ? (
+            <span style={{ color: '#ad6800', fontWeight: 600 }}>ລາ</span>
+          ) : work ? (
+            <span style={{ color: '#8c8c8c' }}>
+              {work.start}-{work.end}
+            </span>
+          ) : info.status.kind === 'swapped' ? (
+            <span style={{ color: '#c41d7f' }}>ສະຫຼັບກະ</span>
+          ) : (
+            <span style={{ color: '#bfbfbf' }}>-</span>
+          )}
+          {changed && <div style={{ fontSize: 10, color: '#1677ff', fontWeight: 600 }}>{restingRecurring ? 'ຈະພັກ' : 'ຈະເຮັດວຽກ'}</div>}
+        </div>
+        {info.covering.map((s) => (
+          <div key={s._id} style={{ fontSize: 11, color: '#531dab', lineHeight: 1.3 }}>
+            ແທນ {codeOf(s.coveringFor as Employee)} {firstNameOf(s.coveringFor as Employee)} {s.startTime}-{s.endTime}
+          </div>
+        ))}
+        {info.coveredBy.map((s) => (
+          <div key={s._id} style={{ fontSize: 11, color: '#237804', lineHeight: 1.3 }}>
+            ແທນໂດຍ {codeOf(s.employee as Employee)} {firstNameOf(s.employee as Employee)}
+          </div>
+        ))}
+      </div>
+    );
+  };
+  // ຕັ້ງວັນພັກປະຈຳອາທິດ for one person (📅 by the name, planner mode).
+  const [recurringRestFor, setRecurringRestFor] = useState<Employee | null>(null);
   const { mutate: createShift, isLoading: creatingCover } = useCreate();
 
   const afterCoverChange = () => {
@@ -800,18 +949,6 @@ export const ScheduleCoversGrid: React.FC = () => {
     );
   };
 
-  const weekdayCell = (emp: Employee, dow: number) => {
-    const info = weekInfoOf(emp, dow);
-    if (!info.resting && !info.covering.length && !info.coveredBy.length) return <span style={{ color: '#bfbfbf' }}>-</span>;
-    return (
-      <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        {info.resting && <div style={{ color: '#8c8c8c', fontSize: 12 }}>ພັກ</div>}
-        {info.coveredBy.map((c) => coveredByLine(c.shift, c.key, c.count))}
-        {info.covering.map((c) => coverCard(c.shift, c.key, c.count))}
-      </Space>
-    );
-  };
-
   // Header lines for each column: how many in the group are off, how many of
   // them have someone covering, and how many normal working days are covered.
   const dateSummary = (dateKey: string, list: Employee[] = rows) => {
@@ -829,7 +966,6 @@ export const ScheduleCoversGrid: React.FC = () => {
     }
     return { off, covered, workCovered };
   };
-  const restingOnWeekday = (dow: number, list: Employee[] = rows) => list.filter((emp) => weekInfoOf(emp, dow).resting).length;
 
   // The dialogs' state sits on this component, and with everyone showing this
   // table is thousands of cells: without this, every click in ຫາຄົນແທນ draws all
@@ -856,6 +992,16 @@ export const ScheduleCoversGrid: React.FC = () => {
             <>
               <div style={{ fontWeight: 600 }}>
                 {emp.employeeCode} {fullName(emp)}
+                {canPlan && (
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<CalendarOutlined />}
+                    title="ຕັ້ງວັນພັກປະຈຳອາທິດ"
+                    aria-label="ຕັ້ງວັນພັກປະຈຳອາທິດ"
+                    onClick={() => setRecurringRestFor(emp)}
+                  />
+                )}
               </div>
               <div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -872,24 +1018,7 @@ export const ScheduleCoversGrid: React.FC = () => {
         />
         <Table.Column title="ພະແນກ" width={130} render={(_, emp: Employee) => deptOf(emp)} />
         <Table.Column title="ຕຳແໜ່ງ" width={130} render={(_, emp: Employee) => positionOf(emp)} />
-        {view === 'week'
-          ? WEEK_ORDER.map((dow) => (
-              <Table.Column
-                key={`dow-${dow}`}
-                width={150}
-                title={
-                  <div style={{ textAlign: 'center' }}>
-                    <div>{WEEKDAY_OPTIONS[dow].label}</div>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                      ພັກ {restingOnWeekday(dow)} ຄົນ
-                    </Typography.Text>
-                  </div>
-                }
-                onCell={(emp: Employee) => (weekInfoOf(emp, dow).resting ? { style: OFF_STYLE.rest } : {})}
-                render={(_, emp: Employee) => weekdayCell(emp, dow)}
-              />
-            ))
-          : rangeDays.map((day) => {
+        {rangeDays.map((day) => {
               const dateKey = day.format('YYYY-MM-DD');
               const summary = dateSummary(dateKey);
               return (
@@ -898,9 +1027,9 @@ export const ScheduleCoversGrid: React.FC = () => {
                   width={150}
                   title={
                     <div style={{ textAlign: 'center' }}>
-                      <div>{day.format('D')}</div>
+                      <div>{datedWeek ? WEEKDAY_OPTIONS[day.day()].label : day.format('D')}</div>
                       <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                        {day.format('ddd')}
+                        {datedWeek ? day.format('DD/MM') : day.format('ddd')}
                       </Typography.Text>
                       {summary.off > 0 && (
                         <div style={{ fontSize: 11, fontWeight: 400, color: summary.covered < summary.off ? '#d46b08' : '#389e0d' }}>
@@ -912,15 +1041,21 @@ export const ScheduleCoversGrid: React.FC = () => {
                       )}
                     </div>
                   }
-                  onCell={(emp: Employee) => dayCellStyle(infoOn(emp, dateKey))}
-                  render={(_, emp: Employee) => dateCell(emp, dateKey)}
+                  onCell={(emp: Employee) => (planner ? {} : dayCellStyle(infoOn(emp, dateKey)))}
+                  render={(_, emp: Employee) =>
+                    planner ? (
+                      <PlannedCell draft={planDraft} employeeId={emp._id} render={(picked) => planCell(emp, dateKey, picked)} />
+                    ) : (
+                      dateCell(emp, dateKey)
+                    )
+                  }
                 />
               );
             })}
       </Table>
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view, rows, rangeDays, dayInfo, weekInfo, shiftIndex, isLoading, employeesLoading, pinToolbar, offsetHeader, stackTop]
+    [view, rows, rangeDays, dayInfo, shiftIndex, isLoading, employeesLoading, pinToolbar, offsetHeader, stackTop, planner, editableWeek, pastWeek, plan.rowsByEmployee, canPlan]
   );
   // New data draws it in the background, so ຫາຄົນແທນຕໍ່ right after saving doesn't
   // wait for the reload that the save set off.
@@ -941,30 +1076,7 @@ export const ScheduleCoversGrid: React.FC = () => {
   // The columns for one printed table — its header counts are for the people in
   // it (`list`).
   const printDaysFor = (list: Employee[]): PrintDay[] | null =>
-    view === 'week'
-      ? WEEK_ORDER.map((dow) => ({
-          key: `dow-${dow}`,
-          header: (
-            <>
-              <div>{WEEKDAY_OPTIONS[dow].label}</div>
-              <div style={{ fontWeight: 400, fontSize: 7, color: '#8c8c8c' }}>ພັກ {restingOnWeekday(dow, list)} ຄົນ</div>
-            </>
-          ),
-          cell: (emp) => {
-            const info = weekInfoOf(emp, dow);
-            return {
-              tone: info.resting ? PRINT_TONE.rest : info.covering.length ? PRINT_TONE.covering : undefined,
-              lines: (
-                <>
-                  {info.resting && <div style={{ fontWeight: 700, textAlign: 'center' }}>ພ</div>}
-                  {info.coveredBy.map((c) => coverLine(c, true))}
-                  {info.covering.map((c) => coverLine(c, false))}
-                </>
-              ),
-            };
-          },
-        }))
-      : usingRange
+    datedWeek || usingRange
         ? rangeDays.map((day) => {
             const dateKey = day.format('YYYY-MM-DD');
             return {
@@ -1047,6 +1159,17 @@ export const ScheduleCoversGrid: React.FC = () => {
         style={{ position: pinToolbar ? 'sticky' : 'static', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}
       >
         <Space wrap>
+          {planner ? (
+            <>
+              <Select className="covers-week" value={weekMonday} onChange={(v: string) => changeWeek(v)} options={weekOptions} style={{ width: 300 }} />
+              {!editableWeek && (
+                <Typography.Text type="secondary" className="covers-week-note">
+                  {pastWeek ? 'ອາທິດທີ່ຜ່ານມາ — ເບິ່ງປະຫວັດໄດ້ຢ່າງດຽວ' : 'ອາທິດນີ້ — ກົດມື້ໃດ ຈະໄປຍ້າຍແຕ່ວັນຈັນໜ້າ'}
+                </Typography.Text>
+              )}
+            </>
+          ) : (
+            <>
           <Segmented
             value={view}
             onChange={(v) => setView(v as CoverView)}
@@ -1055,12 +1178,18 @@ export const ScheduleCoversGrid: React.FC = () => {
               { label: 'ລາຍອາທິດ', value: 'week' },
             ]}
           />
-          <Button icon={<LeftOutlined />} onClick={() => goToMonth(monthStart.subtract(1, 'month'))} />
-          <Typography.Text strong>{monthStart.format('MMMM YYYY')}</Typography.Text>
-          <Button icon={<RightOutlined />} onClick={() => goToMonth(dayjs())}>
-            ເດືອນນີ້
-          </Button>
-          <Button icon={<RightOutlined />} onClick={() => goToMonth(monthStart.add(1, 'month'))} />
+          {view === 'week' ? (
+            <Select className="covers-week" value={weekMonday} onChange={(v: string) => setWeekMonday(v)} options={weekOptions} style={{ width: 300 }} />
+          ) : (
+            <>
+              <Button icon={<LeftOutlined />} onClick={() => goToMonth(monthStart.subtract(1, 'month'))} />
+              <Typography.Text strong>{monthStart.format('MMMM YYYY')}</Typography.Text>
+              <Button icon={<RightOutlined />} onClick={() => goToMonth(dayjs())}>
+                ເດືອນນີ້
+              </Button>
+              <Button icon={<RightOutlined />} onClick={() => goToMonth(monthStart.add(1, 'month'))} />
+            </>
+          )}
           {view === 'month' && (
             <DatePicker.RangePicker
               className="covers-range"
@@ -1080,6 +1209,8 @@ export const ScheduleCoversGrid: React.FC = () => {
                 if (picked) setMonthStart(picked[0].startOf('month'));
               }}
             />
+          )}
+            </>
           )}
           <Select
             {...departmentSelect}
@@ -1117,14 +1248,18 @@ export const ScheduleCoversGrid: React.FC = () => {
             value={personFilter}
             onChange={(v: any) => setPersonFilter(v)}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            ມອບໝາຍການເຮັດແທນ
-          </Button>
-          <Tooltip title={view === 'month' && !dayRange ? `ເລືອກຊ່ວງວັນທີ (ບໍ່ເກີນ ${MAX_PRINT_DAYS} ວັນ) ກ່ອນພິມ` : undefined}>
-            <Button icon={<PrinterOutlined />} disabled={!printDays} onClick={() => setPrintPickerOpen(true)}>
-              ພິມ
-            </Button>
-          </Tooltip>
+          {!planner && (
+            <>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                ມອບໝາຍການເຮັດແທນ
+              </Button>
+              <Tooltip title={view === 'month' && !dayRange ? `ເລືອກຊ່ວງວັນທີ (ບໍ່ເກີນ ${MAX_PRINT_DAYS} ວັນ) ກ່ອນພິມ` : undefined}>
+                <Button icon={<PrinterOutlined />} disabled={!printDays} onClick={() => setPrintPickerOpen(true)}>
+                  ພິມ
+                </Button>
+              </Tooltip>
+            </>
+          )}
         </Space>
       </div>
 
@@ -1140,8 +1275,10 @@ export const ScheduleCoversGrid: React.FC = () => {
         </Card>
       </Space>
       <Typography.Paragraph type="secondary" className="covers-no-print">
-        {view === 'week'
-          ? 'ວັນພັກຂອງແຕ່ລະຄົນຕາມທີ່ເປັນຢູ່ຕອນນີ້ ແລະ ການເຮັດແທນຂອງເດືອນນີ້ ຈັດຕາມວັນໃນອາທິດ — ແທນຄົນດຽວກັນ ເວລາດຽວກັນ ລວມເປັນລາຍການດຽວ (×ຈຳນວນຄັ້ງໃນເດືອນ). ມອບໝາຍຄົນແທນໄດ້ໃນແບບລາຍເດືອນ'
+        {planner
+          ? 'ວັນພັກ, ມື້ລາ ແລະ ການເຮັດແທນຂອງແຕ່ລະມື້ໃນອາທິດທີ່ເລືອກ. ກົດຊ່ອງວັນເພື່ອຍ້າຍວັນພັກໄປວັນນັ້ນ (ກົດ Ctrl ຄ້າງໄວ້: ເພີ່ມອີກວັນ · ກົດວັນພັກອີກເທື່ອ: ເອົາອອກ), ແລ້ວກົດ ກວດ ແລະ ບັນທຶກ — ການຍ້າຍມີຜົນແຕ່ວັນຈັນຂອງອາທິດທີ່ສະແດງ; ກົດໃນອາທິດນີ້ ຫຼື ທີ່ຜ່ານມາ ໜ້າຈໍຈະໄປອາທິດໜ້າໃຫ້ (ອາທິດທຳອິດທີ່ຍ້າຍໄດ້). 📅 ຂ້າງຊື່: ຕັ້ງວັນພັກປະຈຳຂອງຄົນນັ້ນ (ລວມທັງຄົນໃໝ່ທີ່ຍັງບໍ່ມີວັນພັກ)'
+          : view === 'week'
+          ? 'ອາທິດທີ່ເລືອກ — ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ: ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ'
           : 'ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ — ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ ບໍ່ແມ່ນກະປົກກະຕິຂອງຕົນເອງ'}
       </Typography.Paragraph>
 
@@ -1153,7 +1290,7 @@ export const ScheduleCoversGrid: React.FC = () => {
         return (
         <div key={block.key} className="covers-print-block" style={blockIndex ? { breakBefore: 'page', pageBreakBefore: 'always' } : undefined}>
           <div className="covers-print-only" style={{ flexWrap: 'wrap', gap: 12, fontSize: 9, marginBottom: 4 }}>
-            {(view === 'week' ? PRINT_LEGEND_WEEK : PRINT_LEGEND_DATES).map((item) => (
+            {PRINT_LEGEND_DATES.map((item) => (
               <span key={item.tone} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <span
                   style={{
@@ -1388,6 +1525,20 @@ export const ScheduleCoversGrid: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+      {editableWeek && canPlan && (
+        <>
+          <div style={{ height: 96 }} />
+          <RestDayPlanBar
+            draft={planDraft}
+            start={weekMonday}
+            employeeById={employeeById}
+            plannedOf={plan.plannedOf}
+            ready={!plan.isLoading}
+            onSaved={afterPlanSaved}
+          />
+        </>
+      )}
+      {planner && <RecurringRestDialog employee={recurringRestFor} onClose={() => setRecurringRestFor(null)} onSaved={afterRestChange} />}
     </div>
   );
 };

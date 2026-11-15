@@ -408,7 +408,14 @@ async function recomputeDay(employeeId, dateKey, { force = false } = {}) {
 // absence sweep judges it like any other — unless that record isn't from scans
 // (an outage fill-in), or it's a leave day, which the leave decides.
 async function rejudgeAroundDay(employeeId, dateKey) {
-  for (const day of [addDays(dateKey, -1), dateKey, addDays(dateKey, 1)]) {
+  return rejudgeDayList(employeeId, [addDays(dateKey, -1), dateKey, addDays(dateKey, 1)]);
+}
+
+// Each of these days judged again, in order — what rejudgeAroundDay does for
+// one day's neighbours, for a run of days at once (a ປັບເວລາສະເພາະມື້ round,
+// utils/dayTimeRounds.js) without judging the shared days twice.
+async function rejudgeDayList(employeeId, dayKeys) {
+  for (const day of dayKeys) {
     // eslint-disable-next-line no-await-in-loop
     const judged = await recomputeDay(employeeId, day);
     if (judged) continue;
@@ -854,6 +861,7 @@ module.exports = {
   isOvernightShift,
   recomputeDay,
   rejudgeAroundDay,
+  rejudgeDayList,
   markAbsent,
   markPresentFromShift,
   bulkMarkPresentForOutage,

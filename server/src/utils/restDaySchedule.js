@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 const RestDayHistory = require('../models/RestDayHistory');
 const Employee = require('../models/Employee');
-const Shift = require('../models/Shift');
 
 // Which weekdays an employee rests on, as of any given date — from their
 // RestDayHistory rows (models/RestDayHistory.js). Everything that judges a
@@ -31,13 +30,10 @@ function mondayOf(dateKey) {
 }
 const isDateKey = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
-// The first Monday after today that opens a month (falls on its 1st–7th) —
-// where HR's plan for that month's rest days starts. Mirrored in
-// client/src/utils/restDays.ts.
-function firstMondayOfMonthAfter(today) {
-  let monday = addDays(mondayOf(today), 7);
-  while (Number(monday.slice(8)) > 7) monday = addDays(monday, 7);
-  return monday;
+// The Monday after today — the soonest a rest-day change made by hand can
+// start (startOfChange below).
+function nextMondayAfter(today) {
+  return addDays(mondayOf(today), 7);
 }
 
 function badRequest(message) {
@@ -122,64 +118,20 @@ async function restDaysOnFor(employeeId, dateKey) {
   return restDaysOn(schedules.get(String(employeeId)), employee?.defaultRestDay, dateKey);
 }
 
-// The soonest a change can start: tomorrow, if they haven't had their rest
-// day yet this week and one of the new rest days is still ahead in it;
-// otherwise next Monday — so the week it changes in still gets exactly one
-// rest day. Never today or earlier: a rest day isn't changed after the fact.
-// "Rested" counts their recurring rest day (as it stood on each day) or a
-// personal one-off ພັກ — not a day a queued shift brought them in on, and
-// not a company holiday. Only someone with no recurring rest day yet starts
-// this soon (startOfChange below).
-async function effectiveDateForChange(employee, newRestDays, now = new Date()) {
+// When a change made by hand starts: the Monday asked for, which must be
+// after today, else the next Monday. Days up to today are history — only to
+// look at — so a rest day already in force is never changed after the fact,
+// and starting on a Monday keeps every Monday-to-Sunday week on one pattern,
+// with none getting two rest days or none. The same for everyone, someone
+// with no rest day yet included (decided 15/11/2026). `reason`: 'chosen' or
+// 'nextMonday' (none asked for).
+function startOfChange(requestedDate, now = new Date()) {
   const today = toDateKey(now);
-  const weekStart = mondayOf(today);
-  const weekEnd = addDays(weekStart, 6);
-  const tomorrow = addDays(today, 1);
-  const nextMonday = addDays(weekStart, 7);
-
-  const [schedules, overrides] = await Promise.all([
-    loadRestDaySchedules([employee._id], weekStart, weekEnd),
-    Shift.find({ employee: employee._id, date: { $gte: weekStart, $lte: weekEnd }, status: { $in: ['scheduled', 'rest', 'swapped'] } }, 'date status holiday').lean(),
-  ]);
-  const rows = schedules.get(String(employee._id)) ?? [];
-  const workingDates = new Set(overrides.filter((o) => o.status === 'scheduled').map((o) => o.date));
-  const personalRestDates = new Set(overrides.filter((o) => o.status === 'rest' && !o.holiday).map((o) => o.date));
-
-  let restedThisWeek = false;
-  for (let d = weekStart; d <= today; d = addDays(d, 1)) {
-    if (personalRestDates.has(d)) restedThisWeek = true;
-    else if (!workingDates.has(d) && restDaysOn(rows, employee.defaultRestDay, d).includes(weekdayOf(d))) restedThisWeek = true;
-  }
-  let newDayAhead = false;
-  for (let d = tomorrow; d <= weekEnd; d = addDays(d, 1)) {
-    if (newRestDays.includes(weekdayOf(d)) && !workingDates.has(d)) newDayAhead = true;
-  }
-
-  if (!restedThisWeek && newDayAhead) return { effectiveDate: tomorrow, reason: 'thisWeek' };
-  return { effectiveDate: nextMonday, reason: restedThisWeek ? 'restedThisWeek' : 'newDayPassed' };
-}
-
-// When a change made by hand starts: on a Monday after today — the one asked
-// for, else the first Monday of the next month to begin, where HR's monthly
-// plan starts — so every Monday-to-Sunday week rests on one pattern from
-// start to end, and none gets two rest days or none. Someone with no
-// recurring rest day today has nothing to rest on twice: unless a date is
-// asked for, theirs starts as soon as effectiveDateForChange allows, and
-// that day may be asked for too. `reason` says which: 'chosen', 'monthStart',
-// or effectiveDateForChange's own.
-async function startOfChange(employee, newRestDays, requestedDate, now = new Date()) {
-  const today = toDateKey(now);
-  const schedules = await loadRestDaySchedules([employee._id], today, today);
-  const setup = !restDaysOn(schedules.get(String(employee._id)), employee.defaultRestDay, today).length;
-  const soonest = setup ? await effectiveDateForChange(employee, newRestDays, now) : null;
-  if (!requestedDate) {
-    return soonest
-      ? { effectiveDate: soonest.effectiveDate, setup, reason: soonest.reason }
-      : { effectiveDate: firstMondayOfMonthAfter(today), setup, reason: 'monthStart' };
-  }
-  if (!isDateKey(requestedDate) || requestedDate <= today) throw badRequest('ວັນທີ່ມີຜົນຕ້ອງເປັນມື້ອື່ນ ຫຼື ຫຼັງຈາກນັ້ນ');
-  if (weekdayOf(requestedDate) !== 1 && requestedDate !== soonest?.effectiveDate) throw badRequest('ວັນພັກໃໝ່ຕ້ອງເລີ່ມວັນຈັນ');
-  return { effectiveDate: requestedDate, setup, reason: 'chosen' };
+  if (!requestedDate) return { effectiveDate: nextMondayAfter(today), reason: 'nextMonday' };
+  if (!isDateKey(requestedDate)) throw badRequest('ວັນທີ່ມີຜົນບໍ່ຖືກຕ້ອງ');
+  if (requestedDate <= today) throw badRequest('ມື້ທີ່ຜ່ານມາແລ້ວ ແກ້ວັນພັກບໍ່ໄດ້ (ເບິ່ງໄດ້ແຕ່ປະຫວັດ) — ເລືອກວັນຈັນລ່ວງໜ້າ');
+  if (weekdayOf(requestedDate) !== 1) throw badRequest('ວັນພັກໃໝ່ຕ້ອງເລີ່ມວັນຈັນລ່ວງໜ້າ');
+  return { effectiveDate: requestedDate, reason: 'chosen' };
 }
 
 // Records "from effectiveDate on, `employeeId` rests on newRestDay" — the
@@ -329,9 +281,8 @@ module.exports = {
   restDaysOn,
   loadRestDaySchedules,
   restDaysOnFor,
-  effectiveDateForChange,
   startOfChange,
-  firstMondayOfMonthAfter,
+  nextMondayAfter,
   recordRestDayChange,
   cancelRestDayChange,
   removeRestDayChange,

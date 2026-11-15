@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useInvalidate, useNotification } from '@refinedev/core';
 import { Table, Select, Button, Space, Typography, Modal, Input, Tag, Popconfirm } from 'antd';
-import { ApartmentOutlined, IdcardOutlined, ClockCircleOutlined, SearchOutlined, HistoryOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, IdcardOutlined, ClockCircleOutlined, SearchOutlined, HistoryOutlined, FieldTimeOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { API_URL, axiosInstance } from '../../providers/axios';
 import type { Employee, Department, Position, ScheduledShiftChange, BulkEditAction, BulkEditRound } from '../../types';
@@ -17,6 +17,7 @@ import {
   shiftCategoryLabel,
 } from '../../components/ShiftChangeAhead';
 import { BulkEditHistory } from './bulkHistory';
+import { DayTimeDialog } from './dayTimeDialog';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -33,10 +34,11 @@ function resolveDefaultShiftTime(employee: Employee): { start: string; end: stri
 }
 
 // This page manages employees in GROUPS — permanently moving them to a
-// different department/position, or moving their regular shift from a chosen
-// date (the same ຍ້າຍກະລ່ວງໜ້າ as ຕັ້ງຄ່າແຜນວຽກ). Day-to-day per-person
-// adjustments (a single rest day, a one-off time change) belong on
-// ຕັ້ງຄ່າແຜນວຽກ instead.
+// different department/position, moving their regular shift from a chosen
+// date (the same ຍ້າຍກະລ່ວງໜ້າ as ຕັ້ງຄ່າແຜນວຽກ), or setting a working time
+// for chosen days only (ປັບເວລາສະເພາະມື້, dayTimeDialog.tsx — the group form
+// of ຕັ້ງຄ່າແຜນວຽກ's ກຳນົດເວລາພິເສດ). Other per-person day adjustments (a
+// single rest day, a cover) belong on ຕັ້ງຄ່າແຜນວຽກ.
 export const BulkShiftEditPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>();
@@ -317,6 +319,14 @@ export const BulkShiftEditPage: React.FC = () => {
     refetchShiftChanges();
   };
 
+  // ---- 4. ປັບເວລາສະເພາະມື້ ----
+  const [dayTimeOpen, setDayTimeOpen] = useState(false);
+  const afterDayTime = () => {
+    setSelectedIds([]);
+    invalidate({ resource: 'shifts', invalidates: ['list'] });
+    invalidate({ resource: 'attendance-daily', invalidates: ['list'] });
+  };
+
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
   return (
@@ -353,7 +363,8 @@ export const BulkShiftEditPage: React.FC = () => {
           />
           <Select
             {...positionSelect}
-            options={positionOptionsForFilter}
+            // Every position until a department narrows them down.
+            options={positionOptionsForFilter ?? positionSelect.options}
             placeholder="ກອງຕາມຕຳແໜ່ງ"
             allowClear
             style={{ width: 180 }}
@@ -374,6 +385,9 @@ export const BulkShiftEditPage: React.FC = () => {
           </Button>
           <Button icon={<ClockCircleOutlined />} disabled={!selectedIds.length} onClick={openMoveShift}>
             ຍ້າຍກະ (ປ່ຽນກະປະຈຳ)
+          </Button>
+          <Button icon={<FieldTimeOutlined />} disabled={!selectedIds.length} onClick={() => setDayTimeOpen(true)}>
+            ປັບເວລາສະເພາະມື້
           </Button>
         </Space>
       </div>
@@ -515,6 +529,7 @@ export const BulkShiftEditPage: React.FC = () => {
       </Modal>
       {modalContext}
       {absenceSeverityModal}
+      <DayTimeDialog open={dayTimeOpen} employeeIds={selectedIds} onClose={() => setDayTimeOpen(false)} onSaved={afterDayTime} />
       <BulkEditHistory open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </List>
   );

@@ -53,12 +53,10 @@ export interface RestDayChangePlan {
   restDays: number[];
   redirected: boolean;
   effectiveDate: string;
-  // 'chosen': the Monday asked for; 'monthStart': none asked, so the first
-  // Monday of the next month; the rest: the soonest day for someone with no
-  // rest day yet, and why (server/src/utils/restDaySchedule.js).
-  reason: 'chosen' | 'monthStart' | 'thisWeek' | 'restedThisWeek' | 'newDayPassed';
-  setup: boolean; // no recurring rest day today, so it may start before a Monday
-  defaultStart: string; // the first Monday of the next month
+  // 'chosen': the Monday asked for; 'nextMonday': none asked
+  // (server/src/utils/restDaySchedule.js startOfChange).
+  reason: 'chosen' | 'nextMonday';
+  defaultStart: string; // next Monday — the soonest a change can start
   before: number[]; // what they rest on the day before effectiveDate
   unchanged: boolean;
   replaces: { _id: string; effectiveDate: string; newRestDay: number[] }[]; // the change already waiting on effectiveDate
@@ -377,7 +375,8 @@ export interface ShiftChangeLogEntry {
 
 // ປະຫວັດການແກ້ໄຂ of ແກ້ໄຂກະແບບກຸ່ມ (server/src/models/BulkEditRound.js):
 // one press of ຍ້າຍ there, for one person or many.
-export type BulkEditAction = 'department' | 'position' | 'shift';
+// 'dayTime': ປັບເວລາສະເພາະມື້ — the working time for chosen days only.
+export type BulkEditAction = 'department' | 'position' | 'shift' | 'dayTime';
 export interface BulkEditSide {
   department: string | null;
   position: string | null;
@@ -391,17 +390,49 @@ export interface BulkEditItem {
   after?: BulkEditSide;
   status: 'pending' | 'ok' | 'failed' | 'skipped' | 'cancelled';
   message: string | null;
+  // ປັບເວລາສະເພາະມື້ only: each day of the round for this person.
+  days?: BulkEditDay[];
+}
+export interface BulkEditDay {
+  date: string;
+  status: 'ok' | 'skipped' | 'cancelled';
+  before: string | null; // the time they had that day, HH:mm-HH:mm
+  message: string | null;
+  shift: string | null;
 }
 export interface BulkEditRound {
   _id: string;
   action: BulkEditAction;
   // Where it was done: ແກ້ໄຂກະແບບກຸ່ມ, the employee page, or ຕັ້ງຄ່າແຜນວຽກ.
   source?: 'bulk' | 'employee' | 'planner';
-  target: { id: string | null; label: string | null; effectiveDate: string | null };
+  // ປັບເວລາສະເພາະມື້: effectiveDate is the first day and toDate the last.
+  target: { id: string | null; label: string | null; effectiveDate: string | null; toDate?: string | null };
   byEmail?: string;
   items: BulkEditItem[];
   finishedAt: string | null;
+  cancelledAt?: string | null; // ປັບເວລາສະເພາະມື້ called off as a whole
+  cancelledByEmail?: string | null;
   createdAt: string;
+}
+
+// What a ປັບເວລາສະເພາະມື້ would do (POST /bulk-edits/day-time/preview).
+export interface DayTimePlan {
+  from: string;
+  to: string;
+  dates: string[];
+  startTime: string;
+  endTime: string;
+  time: string;
+  category: { _id: string; name: string | null } | null;
+  people: {
+    employee: string;
+    employeeCode: string | null;
+    name: string | null;
+    days: { date: string; set: boolean; before: string | null; reason: string | null }[];
+  }[];
+  setCount: number;
+  skipCount: number;
+  pastCount: number; // days set that have already happened — judged again
 }
 
 export type OvertimeStatus = 'pending' | 'approved' | 'rejected';

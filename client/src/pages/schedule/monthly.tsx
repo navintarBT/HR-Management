@@ -41,13 +41,9 @@ import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
 import {
   groupRestRowsByEmployee,
   restDaysOn,
-  firstMondayOfMonthAfter,
-  upcomingMondays,
-  mondayOptionLabel,
   effectiveRestrictedRestDays,
 } from '../../utils/restDays';
 import { followsIrregularRule } from '../../utils/substituteRule';
-import { useRestDayPlanReview, useRestDayPlanSchedule } from './restDayPlanShared';
 
 // One action in the cell menu — a full-width button with a title and a one-line hint.
 const ChoiceButton: React.FC<{ title: string; description: string; onClick: () => void; disabled?: boolean }> = ({
@@ -81,19 +77,6 @@ function categoryLabel(category: ShiftCategory | string | undefined | null): str
   return category.name ? `${category.name} (${category.startTime}-${category.endTime})` : `${category.startTime}-${category.endTime}`;
 }
 
-// The start-date choice for someone with no rest day yet: as soon as the
-// week allows, worked out by the server from the days picked.
-const SOONEST = 'soonest';
-
-// Why the soonest day is the day it is (restDaySchedule.js
-// effectiveDateForChange): from tomorrow while this week's rest is still
-// ahead, otherwise from next Monday. A Monday picked needs no reason.
-const REST_CHANGE_REASON: Partial<Record<RestDayChangePlan['reason'], string>> = {
-  thisWeek: 'ອາທິດນີ້ຍັງບໍ່ທັນໄດ້ພັກ ຈຶ່ງເລີ່ມໄດ້ແຕ່ມື້ອື່ນ',
-  restedThisWeek: 'ອາທິດນີ້ພັກແລ້ວ ຈຶ່ງເລີ່ມອາທິດໜ້າ',
-  newDayPassed: 'ອາທິດນີ້ບໍ່ເຫຼືອວັນພັກໃໝ່ໃຫ້ພັກແລ້ວ ຈຶ່ງເລີ່ມອາທິດໜ້າ',
-};
-const restChangeReason = (plan: RestDayChangePlan) => REST_CHANGE_REASON[plan.reason];
 
 const sameDays = (a: number[], b: number[]) => a.length === b.length && a.every((d) => b.includes(d));
 
@@ -167,149 +150,6 @@ const CELL_STYLE: Record<Cell['kind'], React.CSSProperties> = {
   substituted: { background: '#e6fffb' },
   leave: { background: '#fffbe6' },
   swapped: { background: '#fff0f6' },
-};
-
-// The Monday being planned from and the rest days picked, not saved yet. Lives
-// outside the page's state so a click redraws that person's row, and starting
-// to plan redraws no cell at all, instead of every cell in the table.
-function createPlanDraft() {
-  let monday: string | null = null;
-  let edits: Record<string, number[]> = {};
-  const everyone = new Set<() => void>();
-  const byEmployee = new Map<string, Set<() => void>>();
-  const emit = (employeeId?: string) => {
-    everyone.forEach((listener) => listener());
-    if (employeeId) byEmployee.get(employeeId)?.forEach((listener) => listener());
-    else byEmployee.forEach((listeners) => listeners.forEach((listener) => listener()));
-  };
-  // New arrays, so the rows with picks draw again and no others.
-  const refresh = () => {
-    edits = Object.fromEntries(Object.entries(edits).map(([employeeId, days]) => [employeeId, [...days]]));
-    emit();
-  };
-  return {
-    monday: () => monday,
-    setMonday(next: string | null) {
-      monday = next;
-      refresh();
-    },
-    refresh,
-    all: () => edits,
-    get: (employeeId: string): number[] | undefined => edits[employeeId],
-    set(employeeId: string, days: number[] | undefined) {
-      const next = { ...edits };
-      if (days) next[employeeId] = days;
-      else delete next[employeeId];
-      edits = next;
-      emit(employeeId);
-    },
-    clear() {
-      edits = {};
-      emit();
-    },
-    subscribeAll(listener: () => void) {
-      everyone.add(listener);
-      return () => {
-        everyone.delete(listener);
-      };
-    },
-    subscribe(employeeId: string, listener: () => void) {
-      const listeners = byEmployee.get(employeeId) ?? new Set<() => void>();
-      byEmployee.set(employeeId, listeners);
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
-}
-type PlanDraft = ReturnType<typeof createPlanDraft>;
-
-// A day that follows what's picked for this person. Wraps every day, planning or
-// not: swapping it in only on starting to plan rebuilt thousands of cells at once.
-const PlannedCell: React.FC<{ draft: PlanDraft; employeeId: string; render: (picked: number[] | undefined) => React.ReactNode }> = ({
-  draft,
-  employeeId,
-  render,
-}) => {
-  const subscribe = useCallback((listener: () => void) => draft.subscribe(employeeId, listener), [draft, employeeId]);
-  const picked = useSyncExternalStore(subscribe, () => draft.get(employeeId));
-  return <>{render(picked)}</>;
-};
-
-// ວາງແຜນວັນພັກ on this page: which Monday, how many people so far, and the way
-// on to the same check and save as that page (restDayPlanShared.tsx).
-const RestDayPlanBar: React.FC<{
-  draft: PlanDraft;
-  start: string;
-  mondayOptions: { value: string; label: string }[];
-  onStartChange: (monday: string) => void;
-  employeeById: Map<string, Employee>;
-  plannedOf: (emp: Employee) => number[];
-  ready: boolean;
-  onSaved: () => void;
-  onExit: () => void;
-}> = ({ draft, start, mondayOptions, onStartChange, employeeById, plannedOf, ready, onSaved, onExit }) => {
-  // Here, not on the page: the dialog's state then doesn't redraw the whole table.
-  const { checkPlan, checking, reviewModal } = useRestDayPlanReview(start, onSaved);
-  const edits = useSyncExternalStore(
-    useCallback((listener: () => void) => draft.subscribeAll(listener), [draft]),
-    draft.all
-  );
-  // Picking another Monday keeps what's picked; someone whose picks match what's
-  // set for the new one simply has nothing to save.
-  const changes = ready
-    ? Object.entries(edits).flatMap(([employee, restDays]) => {
-        const emp = employeeById.get(employee);
-        return emp && !sameDays(restDays, plannedOf(emp)) ? [{ employee, restDays }] : [];
-      })
-    : [];
-  const { setWarnWhen } = useWarnAboutChange();
-  useEffect(() => {
-    setWarnWhen(changes.length > 0);
-    return () => setWarnWhen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [changes.length]);
-
-  return (
-    // Floats over the page: the save stays in reach however far down the list you
-    // are, and nothing moves, which would make the table lay itself out again.
-    <div
-      className="rest-plan-bar"
-      style={{
-        position: 'fixed',
-        bottom: 16,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: 20,
-        width: 'max-content',
-        maxWidth: 'calc(100vw - 32px)',
-        padding: '8px 12px',
-        background: '#e6f4ff',
-        border: '1px solid #91caff',
-        borderRadius: 6,
-        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.2)',
-      }}
-    >
-      <Space wrap>
-        <Typography.Text strong>ວາງແຜນວັນພັກ — ມີຜົນແຕ່</Typography.Text>
-        <Select style={{ width: 300 }} options={mondayOptions} value={start} onChange={(v: string) => onStartChange(v)} />
-        <Button disabled={!Object.keys(edits).length} onClick={() => draft.clear()}>
-          ລ້າງການແກ້ໄຂ
-        </Button>
-        <Button type="primary" disabled={!changes.length} loading={checking} onClick={() => checkPlan(changes)}>
-          ກວດ ແລະ ບັນທຶກ ({changes.length} ຄົນ)
-        </Button>
-        <Popconfirm title={`ຖິ້ມການແກ້ໄຂ ${changes.length} ຄົນ?`} okText="ຖິ້ມ" cancelText="ບໍ່" disabled={!changes.length} onConfirm={onExit}>
-          <Button onClick={() => !changes.length && onExit()}>ອອກ</Button>
-        </Popconfirm>
-      </Space>
-      <div style={{ marginTop: 6, fontSize: 12, color: '#595959' }}>
-        ກົດຊ່ອງໃນອາທິດສີຟ້າ: ຍ້າຍວັນພັກໄປວັນນັ້ນ · ກົດ Ctrl ຄ້າງໄວ້: ເພີ່ມອີກວັນ · ກົດວັນພັກອີກເທື່ອ: ເອົາອອກ — ຍັງບໍ່ບັນທຶກຈົນກວ່າຈະກົດ ກວດ ແລະ ບັນທຶກ
-      </div>
-      {reviewModal}
-    </div>
-  );
 };
 
 // Just the calendar grid itself, no page chrome — MonthlySchedulePage below
@@ -589,184 +429,6 @@ export const MonthlyScheduleGrid: React.FC = () => {
   const { open: notify } = useNotification();
   const saving = creating || updating || deleting;
 
-  // A recurring weekly rest day — set once here and it applies to every
-  // matching weekday automatically, with no per-day clicking and no Shift
-  // rows. A change never rewrites days already past: it starts on the Monday
-  // picked (by default the first Monday of the next month, as HR plans each
-  // month ahead), so every week rests on one pattern — or, for someone with
-  // no rest day yet, as soon as the week allows. The server checks that
-  // (routes/restDayHistory.js), and the dialog shows it, with any change
-  // still waiting to take effect, before anything is saved.
-  const [recurringRestFor, setRecurringRestFor] = useState<Employee | null>(null);
-  // Changes not in effect yet, earliest first; null while loading.
-  const [waitingRestChanges, setWaitingRestChanges] = useState<RestDayChangePlan['pending'] | null>(null);
-  // No recurring rest day today — offered the soonest day besides Mondays.
-  const [restSetup, setRestSetup] = useState(false);
-  // The Monday it starts (YYYY-MM-DD), or SOONEST; null until loaded.
-  const [restStart, setRestStart] = useState<string | null>(null);
-  // The days picked in the dialog; null until the waiting changes are in.
-  const [recurringRestDay, setRecurringRestDay] = useState<number[] | null>(null);
-  // Once days are picked by hand, moving the start date keeps them.
-  const [restDaysTouched, setRestDaysTouched] = useState(false);
-  const [restPlan, setRestPlan] = useState<{ days: number[]; start: string; plan?: RestDayChangePlan; error?: string } | null>(null);
-  const [restReload, setRestReload] = useState(0);
-  const [savingRestDay, setSavingRestDay] = useState(false);
-
-  // What's set for the start date picked: the waiting change on or before it
-  // (for SOONEST, the first one waiting — someone with no rest day yet has
-  // only their setup to correct), else what applies today. The picker starts
-  // there, so nothing changes until a day is actually picked.
-  const restDaysSetFor = (start: string | null, waiting = waitingRestChanges) => {
-    const from = !start ? todayKey : start === SOONEST ? waiting?.[0]?.effectiveDate ?? todayKey : start;
-    const inForce = (waiting ?? []).filter((c) => c.effectiveDate <= from);
-    return inForce.length ? inForce[inForce.length - 1].newRestDay : recurringRestFor?.defaultRestDay ?? [];
-  };
-  const plannedRestDays = useMemo(() => restDaysSetFor(restStart), [recurringRestFor, waitingRestChanges, restStart]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Whose dialog the last load was for — a reload after cancelling a waiting
-  // change keeps the date picked; opening the dialog starts afresh.
-  const restLoadedFor = useRef<string | null>(null);
-  useEffect(() => {
-    if (!recurringRestFor) {
-      restLoadedFor.current = null;
-      return;
-    }
-    let stale = false;
-    setWaitingRestChanges(null);
-    setRecurringRestDay(null);
-    setRestPlan(null);
-    // What's waiting doesn't depend on the days asked about, and asking about
-    // none can't trip over the position's ຂໍ້ຈຳກັດວັນພັກ.
-    axiosInstance
-      .post<RestDayChangePlan>(`${API_URL}/rest-day-history/preview`, { employee: recurringRestFor._id, restDays: [] })
-      .then(({ data }) => {
-        if (stale) return;
-        const waiting = [...data.replaces, ...data.pending].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
-        // Fresh, it starts from HR's usual Monday (or the soonest day, for a setup).
-        const reloading = restLoadedFor.current === recurringRestFor._id && restStart;
-        restLoadedFor.current = recurringRestFor._id;
-        const start = reloading ? restStart : data.setup ? SOONEST : data.defaultStart;
-        setWaitingRestChanges(waiting);
-        setRestSetup(data.setup);
-        setRestStart(start);
-        setRestDaysTouched(false);
-        setRecurringRestDay(restDaysSetFor(start, waiting));
-      })
-      .catch((err) => {
-        if (stale) return;
-        setWaitingRestChanges([]);
-        setRestSetup(false);
-        setRestStart(firstMondayOfMonthAfter(dayjs()).format('YYYY-MM-DD'));
-        setRecurringRestDay(recurringRestFor.defaultRestDay ?? []);
-        notify?.({ type: 'error', message: err?.response?.data?.message || 'ໂຫຼດການປ່ຽນວັນພັກບໍ່ສຳເລັດ' });
-      });
-    return () => {
-      stale = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recurringRestFor, restReload]);
-
-  const pickRestStart = (start: string) => {
-    setRestStart(start);
-    if (!restDaysTouched) setRecurringRestDay(restDaysSetFor(start));
-  };
-  const pickRestDays = (days: number[]) => {
-    setRestDaysTouched(true);
-    setRecurringRestDay(days);
-  };
-
-  // What saving the picked days from the picked date would do, asked again
-  // whenever either changes.
-  useEffect(() => {
-    if (!recurringRestFor || !recurringRestDay || !restStart || sameDays(recurringRestDay, plannedRestDays)) return;
-    let stale = false;
-    const days = recurringRestDay;
-    const start = restStart;
-    axiosInstance
-      .post<RestDayChangePlan>(`${API_URL}/rest-day-history/preview`, {
-        employee: recurringRestFor._id,
-        restDays: days,
-        effectiveDate: start === SOONEST ? undefined : start,
-      })
-      .then(({ data }) => {
-        if (!stale) setRestPlan({ days, start, plan: data });
-      })
-      .catch((err) => {
-        if (!stale) setRestPlan({ days, start, error: err?.response?.data?.message || 'ກວດການປ່ຽນວັນພັກບໍ່ສຳເລັດ' });
-      });
-    return () => {
-      stale = true;
-    };
-  }, [recurringRestFor, recurringRestDay, restStart, plannedRestDays]);
-
-  const restDayChanged = !!recurringRestDay && !sameDays(recurringRestDay, plannedRestDays);
-  // Only the answer for the days and date picked right now — an older one is
-  // still on its way out while the next is asked.
-  const currentRestPlan =
-    restDayChanged && restPlan && restPlan.start === restStart && sameDays(restPlan.days, recurringRestDay!) ? restPlan : null;
-  // A pick that lands on what's already in force that day only cancels the
-  // waiting change(s) it replaces — with none, there's nothing to save.
-  const canSaveRestDay = !!currentRestPlan?.plan && !(currentRestPlan.plan.unchanged && !currentRestPlan.plan.replaces.length);
-  const shownRestPlan = currentRestPlan?.plan;
-  const clearingRestDay = restDayChanged && recurringRestDay!.length === 0;
-
-  const restStartOptions = useMemo(
-    () => [
-      ...(restSetup ? [{ value: SOONEST, label: 'ໄວທີ່ສຸດ — ຍັງບໍ່ມີວັນພັກປະຈຳ' }] : []),
-      ...upcomingMondays(dayjs()).map((monday) => ({ value: monday.format('YYYY-MM-DD'), label: mondayOptionLabel(monday) })),
-    ],
-    [restSetup]
-  );
-
-  const restrictedDaysForRecurring = effectiveRestrictedRestDays(recurringRestFor);
-  const weekdayOptionsForRecurringRest = useMemo(
-    () => WEEKDAY_OPTIONS.map((opt) => ({ ...opt, disabled: restrictedDaysForRecurring.includes(opt.value) })),
-    [restrictedDaysForRecurring]
-  );
-
-  const afterRestDayChange = () => {
-    refetchRestSchedule();
-    invalidate({ resource: 'employees', invalidates: ['list'] });
-    invalidate({ resource: 'leaves', invalidates: ['list'] });
-  };
-
-  // Queued shifts on a new rest day are listed in the dialog itself
-  // (plan.conflicts), so saving needs no second confirm.
-  const saveRecurringRest = async () => {
-    if (!recurringRestFor || !recurringRestDay || !restStart || !canSaveRestDay) return;
-    setSavingRestDay(true);
-    try {
-      const { data } = await axiosInstance.post<RestDayChangePlan>(`${API_URL}/rest-day-history`, {
-        employee: recurringRestFor._id,
-        restDays: recurringRestDay,
-        effectiveDate: restStart === SOONEST ? undefined : restStart,
-      });
-      notify?.({
-        type: 'success',
-        message: data.unchanged ? 'ຍົກເລີກການປ່ຽນທີ່ລໍຖ້າແລ້ວ' : `ບັນທຶກສຳເລັດ — ມີຜົນແຕ່ ${dayjs(data.effectiveDate).format('DD/MM/YYYY')}`,
-      });
-      setRecurringRestFor(null);
-      afterRestDayChange();
-    } catch (err: any) {
-      notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
-    } finally {
-      setSavingRestDay(false);
-    }
-  };
-
-  // Only a change that hasn't taken effect yet can be cancelled — one in
-  // effect is changed by picking new days instead.
-  const cancelWaitingRestChange = async (id: string) => {
-    try {
-      await axiosInstance.delete(`${API_URL}/rest-day-history/${id}`);
-      notify?.({ type: 'success', message: 'ຍົກເລີກການປ່ຽນວັນພັກທີ່ລໍຖ້າແລ້ວ' });
-      afterRestDayChange();
-      setRestReload((n) => n + 1);
-    } catch (err: any) {
-      notify?.({ type: 'error', message: err?.response?.data?.message || 'ຍົກເລີກບໍ່ສຳເລັດ' });
-    }
-  };
-
   const [choice, setChoice] = useState<'rest' | 'time' | 'cover' | 'editCover' | 'substitute' | 'shiftChange' | null>(null);
   useEffect(() => {
     setChoice(null);
@@ -1041,75 +703,11 @@ export const MonthlyScheduleGrid: React.FC = () => {
     }
   };
 
-  // ວາງແຜນວັນພັກ from the grid: every Monday a change can start on carries a mark
-  // in its header, and pressing it starts picking people's rest days from that
-  // Monday — a week at a time, as on that page, so no week rests twice.
-  const [planMonday, setPlanMonday] = useState<string | null>(null);
-  const [planDraft] = useState(createPlanDraft);
-  const plan = useRestDayPlanSchedule(planMonday);
-  // Read when a click or a row with picks needs it: the table doesn't draw again
-  // for planning (scheduleTable below), so what it closed over may be older.
-  const planRef = useRef(plan);
-  planRef.current = plan;
-  useEffect(() => {
-    planDraft.refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan.rowsByEmployee]);
-  const isInPlanWeek = (dateKey: string) => {
-    const monday = planDraft.monday();
-    return !!monday && dateKey >= monday && dateKey <= dayjs(monday).add(6, 'day').format('YYYY-MM-DD');
-  };
-  const plannableMondays = useMemo(() => upcomingMondays(dayjs()).map((monday) => monday.format('YYYY-MM-DD')), []);
-  const planMondayOptions = useMemo(
-    () => upcomingMondays(dayjs()).map((monday) => ({ value: monday.format('YYYY-MM-DD'), label: mondayOptionLabel(monday) })),
-    []
-  );
-  const employeeById = useMemo(() => new Map(allEmployees.map((e) => [e._id, e])), [allEmployees]);
-  const changePlanMonday = (monday: string | null) => {
-    planDraft.setMonday(monday);
-    setPlanMonday(monday);
-  };
-  const startPlan = (monday: string) => {
-    changePlanMonday(monday);
-    if (!dayjs(monday).isSame(monthStart, 'month')) setMonthStart(dayjs(monday).startOf('month'));
-  };
-  const exitPlan = () => {
-    planDraft.clear();
-    changePlanMonday(null);
-  };
-  const afterPlanSaved = () => {
-    plan.refetch();
-    exitPlan();
-    afterRestDayChange();
-  };
-  // Moves their rest day to this one; with Ctrl it's added to what they have.
-  // Pressing a rest day takes it off, so back to what's set clears the pick.
-  const togglePlanDay = (emp: Employee, dateKey: string, adding: boolean) => {
-    if (planRef.current.isLoading) return;
-    const dow = dayjs(dateKey).day();
-    const planned = planRef.current.plannedOf(emp);
-    const current = planDraft.get(emp._id) ?? planned;
-    if (!current.includes(dow) && effectiveRestrictedRestDays(emp).includes(dow)) {
-      notify?.({ type: 'error', message: `ຕຳແໜ່ງນີ້ຫ້າມພັກ${WEEKDAY_OPTIONS[dow].label}` });
-      return;
-    }
-    const next = current.includes(dow) ? current.filter((d) => d !== dow) : adding ? [...current, dow] : [dow];
-    planDraft.set(emp._id, sameDays(next, planned) ? undefined : next);
-  };
-  // What they rest on that day with a pick applied: from the plan's Monday until
-  // the next change already waiting, which still takes over on its own date.
-  const restDaysWithDraft = (emp: Employee, dateKey: string, picked?: number[]) => {
-    const monday = planDraft.monday();
-    if (!picked || !monday || dateKey < monday) return restDaysFor(emp, dateKey);
-    const laterChange = restRowsByEmployee.get(emp._id)?.some((r) => r.effectiveDate > monday && r.effectiveDate <= dateKey);
-    return laterChange ? restDaysFor(emp, dateKey) : picked;
-  };
-
-  const dayCell = (emp: Employee, dateKey: string, picked?: number[]) => {
+  const dayCell = (emp: Employee, dateKey: string) => {
     const override = overrideByEmpDate[`${emp._id}_${dateKey}`];
     const isSubstituted = !!substitutedByEmpDate[`${emp._id}_${dateKey}`];
     const isOnLeave = hasApprovedLeaveOn(emp._id, dateKey);
-    const cell = computeCell(restDaysWithDraft(emp, dateKey, picked), dateKey, override, isSubstituted, isOnLeave, regularTimeOn(emp, dateKey));
+    const cell = computeCell(restDaysFor(emp, dateKey), dateKey, override, isSubstituted, isOnLeave, regularTimeOn(emp, dateKey));
     const isOverride = (cell.kind === 'rest' || cell.kind === 'work') && cell.isOverride;
     // Auto-created by a position swap (see positionSwap.js) — an
     // admin editing this by hand could put the employee back on a
@@ -1118,10 +716,6 @@ export const MonthlyScheduleGrid: React.FC = () => {
     // read-only cell for a non-manager.
     const isLocked = cell.kind === 'swapped';
     const clickable = isManager && !isLocked;
-    const dow = dayjs(dateKey).day();
-    const pickedThisWeek = !!picked && isInPlanWeek(dateKey);
-    const planned = pickedThisWeek ? planRef.current.plannedOf(emp) : [];
-    const planChangesThisDay = pickedThisWeek && picked.includes(dow) !== planned.includes(dow);
     // Heads-up only — the cell's own content above is untouched,
     // since nothing actually changes until effectiveDate arrives.
     const pendingSwapWith = pendingSwapByPositionDate[`${idOf(emp.position)}_${dateKey}`];
@@ -1139,17 +733,9 @@ export const MonthlyScheduleGrid: React.FC = () => {
     ];
     const body = (
       <div
-        // While planning only the plan's own week takes clicks, and they set the
-        // recurring rest day instead of opening the day's menu.
-        onClick={(event) => {
-          if (planDraft.monday()) {
-            if (isInPlanWeek(dateKey) && emp.status === 'active') togglePlanDay(emp, dateKey, event.ctrlKey || event.metaKey);
-          } else if (clickable) {
-            setEditing({ employee: emp, dateKey });
-          }
+        onClick={() => {
+          if (clickable) setEditing({ employee: emp, dateKey });
         }}
-        data-no-plan={emp.status !== 'active' || undefined}
-        data-no-rest={effectiveRestrictedRestDays(emp).includes(dow) || undefined}
         title={
           isLocked
             ? 'ສ້າງໂດຍລະບົບຕອນສະຫຼັບຕຳແໜ່ງ — ແກ້ໄຂຢູ່ນີ້ບໍ່ໄດ້'
@@ -1164,8 +750,8 @@ export const MonthlyScheduleGrid: React.FC = () => {
         style={{
           ...CELL_STYLE[cell.kind],
           borderLeft: isOverride ? '3px solid #d46b08' : CELL_STYLE[cell.kind].borderLeft,
-          outline: planChangesThisDay ? '2px dashed #1677ff' : pendingSwapWith ? '2px dashed #9254de' : undefined,
-          outlineOffset: planChangesThisDay || pendingSwapWith ? -2 : undefined,
+          outline: pendingSwapWith ? '2px dashed #9254de' : undefined,
+          outlineOffset: pendingSwapWith ? -2 : undefined,
           cursor: clickable ? 'pointer' : 'default',
           minHeight: 40,
           padding: '4px 6px',
@@ -1195,13 +781,7 @@ export const MonthlyScheduleGrid: React.FC = () => {
         {pendingSwapWith && (
           <div style={{ fontSize: 9, color: '#9254de', fontWeight: 600 }}>ສະຫຼັບ</div>
         )}
-        {pickedThisWeek && dateKey === planDraft.monday() && !sameDays(picked, planned) ? (
-          <div style={{ fontSize: 9, color: '#1677ff', fontWeight: 600 }}>
-            {planRef.current.waitingOf(emp) && sameDays(picked, planRef.current.beforeOf(emp)) ? 'ຍົກເລີກແຜນ' : 'ຈະປ່ຽນ'}
-          </div>
-        ) : (
-          restChange && <div style={{ fontSize: 9, color: '#722ed1', fontWeight: 600 }}>ປ່ຽນວັນພັກ</div>
-        )}
+        {restChange && <div style={{ fontSize: 9, color: '#722ed1', fontWeight: 600 }}>ປ່ຽນວັນພັກ</div>}
         {coveredBy.length > 0 && (
           <div style={{ fontSize: 12, color: '#08979c', lineHeight: 1 }}>
             <UserSwitchOutlined aria-label="ມີຄົນມາແທນ" />
@@ -1224,27 +804,11 @@ export const MonthlyScheduleGrid: React.FC = () => {
 
   const { ref: toolbarRef, stackTop, offsetHeader } = useTableStickyOffset();
 
-  // The week being planned stands out and the other days fade, by rules in one
-  // style rather than on each cell: writing to thousands of them takes seconds.
-  const planWeekStyle = useMemo(() => {
-    if (!planMonday) return '';
-    const week = Array.from({ length: 7 }, (_, i) => dayjs(planMonday).add(i, 'day').format('YYYY-MM-DD'));
-    const inWeek = (suffix: string) => week.map((key) => `.monthly-planning td.plan-date-${key}${suffix}`).join(', ');
-    return `
-      .monthly-planning { padding-bottom: 96px; }
-      .monthly-planning td.plan-day > div { color: #bfbfbf; cursor: default !important; }
-      ${inWeek('')}, ${week.map((key) => `.monthly-planning th.plan-date-${key}`).join(', ')} { background: #e6f4ff !important; }
-      ${inWeek(' > div')} { color: inherit; cursor: pointer !important; }
-      ${inWeek(' > div[data-no-rest]')} { cursor: not-allowed !important; }
-      ${inWeek(' > div[data-no-plan]')} { color: #bfbfbf; cursor: default !important; }
-      .rest-plan-monday[data-monday="${planMonday}"], .rest-plan-monday[data-monday="${planMonday}"] .anticon { background: #1677ff; border-color: #1677ff; color: #fff !important; }
-    `;
-  }, [planMonday]);
 
   // Thousands of cells, and this page's dialogs keep their state here: without
   // this, opening one or picking in it draws them all again. Lists what the
-  // cells show; what they call on a click reads nothing else from the page, and
-  // planning reaches them through planDraft and planRef.
+  // cells show; what they call on a click reads nothing else from the page.
+  // (Moving rest days lives on ການເຮັດແທນ — ລາຍລະອຽດ, weekly, since 15/11/2026.)
   const scheduleTable = useMemo(
     () => (
       <Table
@@ -1291,15 +855,6 @@ export const MonthlyScheduleGrid: React.FC = () => {
               <span>
                 {emp.firstName} {emp.lastName}
               </span>
-              {isManager && (
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<CalendarOutlined />}
-                  title="ຕັ້ງວັນພັກປະຈຳອາທິດ"
-                  onClick={() => setRecurringRestFor(emp)}
-                />
-              )}
             </Space>
           )}
         />
@@ -1314,26 +869,10 @@ export const MonthlyScheduleGrid: React.FC = () => {
                   <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                     {day.format('ddd')}
                   </Typography.Text>
-                  {isManager && plannableMondays.includes(dateKey) && (
-                    <div>
-                      <Tooltip title={`ຕັ້ງວັນພັກລ່ວງໜ້າ ມີຜົນແຕ່ ${day.format('DD/MM')} — ກົດເພື່ອເລີ່ມ`}>
-                        <Button
-                          className="rest-plan-monday"
-                          aria-label={`ວາງແຜນວັນພັກແຕ່ ${day.format('DD/MM')}`}
-                          data-monday={dateKey}
-                          size="small"
-                          icon={<ScheduleOutlined style={day.date() <= 7 ? { color: '#1677ff' } : undefined} />}
-                          onClick={() => startPlan(dateKey)}
-                        />
-                      </Tooltip>
-                    </div>
-                  )}
                 </div>
               }
               width={72}
-              onHeaderCell={() => ({ className: `plan-date-${dateKey}` })}
-              onCell={() => ({ className: `plan-day plan-date-${dateKey}` })}
-              render={(_, emp: Employee) => <PlannedCell draft={planDraft} employeeId={emp._id} render={(picked) => dayCell(emp, dateKey, picked)} />}
+              render={(_, emp: Employee) => dayCell(emp, dateKey)}
             />
           );
         })}
@@ -1356,13 +895,11 @@ export const MonthlyScheduleGrid: React.FC = () => {
       restChangeByEmpDate,
       pendingSwapByPositionDate,
       coveredByEmpDate,
-      plannableMondays,
     ]
   );
 
   return (
     <>
-      {planWeekStyle && <style>{planWeekStyle}</style>}
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Space>
@@ -1445,32 +982,11 @@ export const MonthlyScheduleGrid: React.FC = () => {
                 ມີຄົນມາແທນ (ຊີ້ເພື່ອເບິ່ງວ່າແມ່ນໃຜ)
               </Typography.Text>
             </Space>
-            {isManager && (
-              <Space size={6}>
-                <ScheduleOutlined style={{ fontSize: 14, color: '#1677ff' }} />
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  ວັນຈັນທີ່ຕັ້ງວັນພັກລ່ວງໜ້າໄດ້ (ກົດເພື່ອເລີ່ມວາງແຜນ)
-                </Typography.Text>
-              </Space>
-            )}
           </Space>
         </Space>
       </div>
 
-      <div className={planMonday ? 'monthly-planning' : undefined}>{scheduleTable}</div>
-      {planMonday && (
-        <RestDayPlanBar
-          draft={planDraft}
-          start={planMonday}
-          mondayOptions={planMondayOptions}
-          onStartChange={startPlan}
-          employeeById={employeeById}
-          plannedOf={plan.plannedOf}
-          ready={!plan.isLoading}
-          onSaved={afterPlanSaved}
-          onExit={exitPlan}
-        />
-      )}
+      {scheduleTable}
 
       <Modal
         title={editing ? `${editing.employee.firstName} ${editing.employee.lastName} — ${dayjs(editing.dateKey).format('DD MMMM YYYY')}` : ''}
@@ -1717,146 +1233,6 @@ export const MonthlyScheduleGrid: React.FC = () => {
         </Space>
       </Modal>
 
-      <Modal
-        title={recurringRestFor ? `ຕັ້ງວັນພັກປະຈຳອາທິດ — ${recurringRestFor.firstName} ${recurringRestFor.lastName}` : ''}
-        open={!!recurringRestFor}
-        onOk={saveRecurringRest}
-        onCancel={() => setRecurringRestFor(null)}
-        confirmLoading={savingRestDay}
-        okText={clearingRestDay ? 'ຢືນຢັນຍົກເລີກວັນພັກປະຈຳ' : 'ບັນທຶກ'}
-        okButtonProps={{ disabled: !canSaveRestDay, danger: clearingRestDay }}
-        cancelText="ປິດ"
-        destroyOnClose
-      >
-        <Typography.Paragraph type="secondary">
-          ເລືອກວັນໃນອາທິດທີ່ຄົນນີ້ພັກປະຈຳ (ເລືອກໄດ້ຫຼາຍວັນ) — ລະບົບຈະຕັ້ງເປັນວັນພັກໃຫ້ທຸກວັນນັ້ນອັດຕະໂນມັດ ນັບແຕ່ວັນທີ່ມີຜົນເປັນຕົ້ນໄປ ໂດຍບໍ່ຕ້ອງກົດເລືອກທີລະວັນ — ມື້ທີ່ຜ່ານມາແລ້ວຍັງຄືເກົ່າ
-        </Typography.Paragraph>
-        <Typography.Paragraph style={{ marginBottom: 8 }}>
-          ວັນພັກປະຈຸບັນ: <Typography.Text strong>{restDaysLabel(recurringRestFor?.defaultRestDay ?? [])}</Typography.Text>
-        </Typography.Paragraph>
-        {!!waitingRestChanges?.length && (
-          <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f9f0ff', borderRadius: 6 }}>
-            <Typography.Text strong>ລໍຖ້າມີຜົນ</Typography.Text>
-            {waitingRestChanges.map((c) => (
-              <div key={c._id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 4 }}>
-                <span>
-                  ແຕ່ {dayjs(c.effectiveDate).format('dddd DD/MM/YYYY')}: {restDaysLabel(c.newRestDay)}
-                </span>
-                <Popconfirm
-                  title="ຍົກເລີກການປ່ຽນນີ້?"
-                  okText="ຍົກເລີກການປ່ຽນ"
-                  cancelText="ບໍ່"
-                  onConfirm={() => cancelWaitingRestChange(c._id)}
-                >
-                  <Button size="small" type="link" danger>
-                    ຍົກເລີກ
-                  </Button>
-                </Popconfirm>
-              </div>
-            ))}
-          </div>
-        )}
-        <div style={{ marginBottom: 12 }}>
-          <Typography.Text>ເລີ່ມມີຜົນແຕ່</Typography.Text>
-          <Select
-            style={{ width: '100%', marginTop: 4 }}
-            options={restStartOptions}
-            loading={!restStart}
-            disabled={!restStart}
-            value={restStart ?? undefined}
-            onChange={(v: string) => pickRestStart(v)}
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {restSetup
-              ? 'ຍັງບໍ່ມີວັນພັກປະຈຳ ຈຶ່ງເລີ່ມໄດ້ໄວທີ່ສຸດ ຫຼື ວັນຈັນທີ່ເລືອກ'
-              : 'ເລີ່ມວັນຈັນ — ແຕ່ລະອາທິດຈຶ່ງພັກຕາມແບບດຽວກັນທັງອາທິດ ບໍ່ມີອາທິດທີ່ພັກ 2 ເທື່ອ'}
-          </Typography.Text>
-        </div>
-        <Typography.Text>ວັນພັກ</Typography.Text>
-        <Select
-          mode="multiple"
-          style={{ width: '100%', marginTop: 4 }}
-          options={weekdayOptionsForRecurringRest}
-          placeholder="ບໍ່ມີວັນພັກປະຈຳ"
-          loading={!recurringRestDay}
-          disabled={!recurringRestDay}
-          value={recurringRestDay ?? []}
-          onChange={(v) => pickRestDays(v)}
-        />
-        {restrictedDaysForRecurring.length > 0 && (
-          <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }}>
-            ຕຳແໜ່ງນີ້ຫ້າມພັກ: {restrictedDaysForRecurring.map((d: number) => WEEKDAY_OPTIONS[d].label).join(', ')}
-          </Typography.Paragraph>
-        )}
-        {restDayChanged && (
-          <div style={{ marginTop: 12, padding: '8px 12px', border: '1px solid var(--app-border-color, #d9d9d9)', borderRadius: 6 }}>
-            {!currentRestPlan && <Typography.Text type="secondary">ກຳລັງກວດ…</Typography.Text>}
-            {currentRestPlan?.error && <Typography.Text type="danger">{currentRestPlan.error}</Typography.Text>}
-            {shownRestPlan && (
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                {shownRestPlan.unchanged ? (
-                  <Typography.Text type={shownRestPlan.replaces.length ? undefined : 'secondary'}>
-                    {shownRestPlan.replaces.length
-                      ? `ຈະຍົກເລີກການປ່ຽນທີ່ລໍຖ້າຢູ່ — ວັນພັກຍັງເປັນ ${restDaysLabel(shownRestPlan.restDays)} ຄືເກົ່າ`
-                      : 'ບໍ່ມີຫຍັງປ່ຽນ — ວັນພັກເປັນແບບນີ້ຢູ່ແລ້ວ'}
-                  </Typography.Text>
-                ) : (
-                  <>
-                    <div>
-                      {shownRestPlan.restDays.length ? `ພັກ ${restDaysLabel(shownRestPlan.restDays)}` : 'ຍົກເລີກວັນພັກປະຈຳ'} ມີຜົນແຕ່{' '}
-                      <Typography.Text strong>{dayjs(shownRestPlan.effectiveDate).format('dddd DD/MM/YYYY')}</Typography.Text>
-                      {restChangeReason(shownRestPlan) && (
-                        <div>
-                          <Typography.Text type="secondary">{restChangeReason(shownRestPlan)}</Typography.Text>
-                        </div>
-                      )}
-                    </div>
-                    {shownRestPlan.redirected && (
-                      <Typography.Text type="warning">
-                        ຕຳແໜ່ງນີ້ຫ້າມພັກບາງວັນທີ່ເລືອກ — ຈະບັນທຶກເປັນ: {restDaysLabel(shownRestPlan.restDays)}
-                      </Typography.Text>
-                    )}
-                    {shownRestPlan.replaces.length > 0 && (
-                      <Typography.Text type="secondary">
-                        ແທນການປ່ຽນທີ່ລໍຖ້າຢູ່:{' '}
-                        {shownRestPlan.replaces
-                          .map((r) => `${restDaysLabel(r.newRestDay)} ແຕ່ ${dayjs(r.effectiveDate).format('DD/MM/YYYY')}`)
-                          .join('; ')}
-                      </Typography.Text>
-                    )}
-                    {shownRestPlan.conflicts.length > 0 && (
-                      <div>
-                        <Typography.Text type="warning">ມື້ຕໍ່ໄປນີ້ມີຄິວເຮັດວຽກຈັດໄວ້ແລ້ວ ຈະບໍ່ໄດ້ພັກຈົນກວ່າຈະລຶບຄິວອອກ:</Typography.Text>
-                        <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                          {shownRestPlan.conflicts.map((c) => (
-                            <li key={c.date}>
-                              {dayjs(c.date).format('dddd DD/MM/YYYY')}
-                              {c.startTime && c.endTime ? ` (${c.startTime}-${c.endTime})` : ''}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {clearingRestDay && (
-                      <Typography.Text type="danger">ຫຼັງຈາກນັ້ນຈະບໍ່ມີວັນພັກປະຈຳອາທິດອີກ — ຕ້ອງໄປຕັ້ງວັນພັກເອງທີລະວັນຖ້າຕ້ອງການ</Typography.Text>
-                    )}
-                  </>
-                )}
-                {canSaveRestDay && shownRestPlan.leavesAffected > 0 && (
-                  <Typography.Text type="secondary">ໃບລາ {shownRestPlan.leavesAffected} ໃບ ຈະຖືກຄິດມື້ລາໃໝ່ຕາມວັນພັກໃໝ່</Typography.Text>
-                )}
-              </Space>
-            )}
-          </div>
-        )}
-        {/* Clearing the picker by hand works too — this is the findable way,
-            and either way saving asks again with a red button. */}
-        {plannedRestDays.length > 0 && !!recurringRestDay?.length && (
-          <Button danger style={{ marginTop: 12 }} onClick={() => pickRestDays([])}>
-            ຍົກເລີກວັນພັກປະຈຳ
-          </Button>
-        )}
-      </Modal>
     </>
   );
 };
@@ -1892,11 +1268,6 @@ export const MonthlySchedulePage: React.FC = () => {
       breadcrumb={false}
       headerButtons={
         <Space>
-          {canPlanRestDays && view === 'monthly' && (
-            <Button icon={<CalendarOutlined />} onClick={() => goToList('rest-day-plan')}>
-              ວາງແຜນວັນພັກ
-            </Button>
-          )}
           <Select value={view} onChange={handleViewChange} options={SCHEDULE_VIEW_OPTIONS} style={{ minWidth: 220 }} />
         </Space>
       }
