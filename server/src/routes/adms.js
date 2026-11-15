@@ -136,7 +136,7 @@ async function fixedByHandAfter(employeeId, dateKey, timestamp) {
   }));
 }
 
-// Stores a batch of punches and works out the days they fall on. A punch
+// Stores a batch of punches, then works out the days they fall on. A punch
 // already stored — the terminal re-sending it (its retry, ດຶງການສະແກນຍ້ອນຫຼັງ)
 // — is left exactly as it is: still with whoever had the PIN when it was
 // first stored (not whoever has it now, if the PIN has been handed on since),
@@ -144,50 +144,90 @@ async function fixedByHandAfter(employeeId, dateKey, timestamp) {
 // still worked out again, so a batch that failed half-way is completed on
 // the retry. Keyed on (device, PIN, time) — a unique index, so the same punch
 // can never be stored twice.
+//
+// Only the storing is done before the terminal gets its "OK": a few queries
+// for the whole batch. The rest — each new punch's in/out and whether HR had
+// fixed its day by hand, and judging the days — is `finish`, run after the
+// reply. A terminal gives up on a reply after a few seconds and sends the same
+// batch again; judging 128 punches one by one took 3–16 s, so a SenseFace 2A
+// asked for 12–16/11 re-sent its first 128 lines for good (16/11/2026) and
+// never reached the days it was asked for.
 async function ingestAttLog(SN, body) {
-  const rows = parseAttLog(body);
-  const affected = new Map();
-  let stored = 0;
-  let unmatched = 0;
-
-  for (const row of rows) {
+  const rows = [];
+  const seen = new Set();
+  for (const row of parseAttLog(body)) {
     const timestamp = new Date(row.dateTime.replace(' ', 'T'));
     if (Number.isNaN(timestamp.getTime())) continue;
-    const key = { deviceId: SN, deviceUserId: row.pin, timestamp };
+    const k = `${row.pin}|${timestamp.getTime()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    rows.push({ ...row, timestamp });
+  }
+  const pins = [...new Set(rows.map((r) => r.pin))];
+  const [existingLogs, employees] = await Promise.all([
+    rows.length
+      ? AttendanceLog.find({ deviceId: SN, deviceUserId: { $in: pins }, timestamp: { $in: rows.map((r) => r.timestamp) } }, 'deviceUserId timestamp employee').lean()
+      : [],
+    pins.length ? Employee.find({ deviceUserId: { $in: pins } }, '_id deviceUserId').lean() : [],
+  ]);
+  const existing = new Map(existingLogs.map((l) => [`${l.deviceUserId}|${l.timestamp.getTime()}`, l]));
+  const employeeByPin = new Map(employees.map((e) => [e.deviceUserId, e._id]));
 
-    let employeeId = null;
-    let dateKey = null;
-    const existing = await AttendanceLog.findOne(key, 'employee').lean();
-    if (existing) {
-      employeeId = existing.employee ?? null;
-      if (employeeId) dateKey = await resolveShiftDateKey(employeeId, timestamp);
-    } else {
-      const employee = await Employee.findOne({ deviceUserId: row.pin });
-      employeeId = employee ? employee._id : null;
-      let type = 'auto';
-      let voided = false;
-      if (employeeId) {
-        dateKey = await resolveShiftDateKey(employeeId, timestamp);
-        type = await inferType(employeeId, timestamp);
-        voided = await fixedByHandAfter(employeeId, dateKey, timestamp);
-      }
-      try {
-        await AttendanceLog.create({ ...key, employee: employeeId ?? undefined, type, voided, raw: { line: row.raw } });
-        stored += 1;
-      } catch (err) {
-        // The same punch stored a moment ago by an overlapping request.
-        if (err?.code !== 11000) throw err;
-      }
-    }
+  const fresh = [];
+  const again = [];
+  let unmatched = 0;
+  for (const row of rows) {
+    const old = existing.get(`${row.pin}|${row.timestamp.getTime()}`);
+    const employeeId = old ? old.employee ?? null : employeeByPin.get(row.pin) ?? null;
     if (!employeeId) unmatched += 1;
-    else affected.set(`${employeeId}|${dateKey}`, true);
+    if (old) {
+      if (employeeId) again.push({ employeeId, timestamp: row.timestamp });
+    } else {
+      fresh.push({ deviceId: SN, deviceUserId: row.pin, timestamp: row.timestamp, employee: employeeId ?? undefined, type: 'auto', voided: false, raw: { line: row.raw } });
+    }
   }
 
-  for (const key of affected.keys()) {
-    const [employeeId, dateKey] = key.split('|');
-    await recomputeDay(employeeId, dateKey);
+  let storedDocs = [];
+  if (fresh.length) {
+    try {
+      storedDocs = await AttendanceLog.insertMany(fresh, { ordered: false });
+    } catch (err) {
+      // Some of them stored a moment ago by an overlapping request — the rest went in.
+      const onlyDuplicates = err?.writeErrors?.length && err.writeErrors.every((w) => (w.code ?? w.err?.code) === 11000);
+      if (!onlyDuplicates) throw err;
+      storedDocs = err.insertedDocs ?? [];
+    }
   }
-  return { lines: rows.length, stored, unmatched };
+
+  const finish = async () => {
+    const affected = new Map();
+    // New punches in time order, so each one's in/out follows the one before it.
+    const newOnes = storedDocs.filter((d) => d.employee).sort((a, b) => a.timestamp - b.timestamp);
+    for (const log of newOnes) {
+      const dateKey = await resolveShiftDateKey(log.employee, log.timestamp);
+      const type = await inferType(log.employee, log.timestamp);
+      const voided = await fixedByHandAfter(log.employee, dateKey, log.timestamp);
+      await AttendanceLog.updateOne({ _id: log._id }, voided ? { type, voided } : { type });
+      affected.set(`${log.employee}|${dateKey}`, true);
+    }
+    for (const { employeeId, timestamp } of again) {
+      affected.set(`${employeeId}|${await resolveShiftDateKey(employeeId, timestamp)}`, true);
+    }
+    for (const key of affected.keys()) {
+      const [employeeId, dateKey] = key.split('|');
+      await recomputeDay(employeeId, dateKey);
+    }
+  };
+  return { lines: rows.length, stored: storedDocs.length, unmatched, finish };
+}
+
+// Runs a batch's `finish` once the terminal has its reply — never failing the
+// request, and logged when it goes wrong (the punches are stored either way;
+// the next scan, re-pull or the absence sweep judges those days again).
+function finishAfterReply(SN, finish) {
+  setImmediate(() => {
+    finish().catch((err) => console.error(`[adms] SN=${SN} judging a stored batch failed:`, err));
+  });
 }
 
 // A real MB10 answers "DATA QUERY USERINFO" inconsistently — sometimes
@@ -312,13 +352,16 @@ router.post('/iclock/cdata', express.text({ type: '*/*', limit: '10mb' }), async
     }
 
     if (table.toUpperCase() === 'ATTLOG') {
-      const { lines, stored, unmatched } = await ingestAttLog(SN, req.body);
+      const { lines, stored, unmatched, finish } = await ingestAttLog(SN, req.body);
 
       if (Stamp) {
         await Device.updateOne({ serialNumber: SN }, { attStamp: Math.max(device.attStamp, Number(Stamp) || 0) });
       }
 
       console.log(`[adms] SN=${SN} ATTLOG batch: ${lines} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
+      res.type('text/plain').send('OK');
+      finishAfterReply(SN, finish);
+      return;
     } else if (RECORD_TABLES.includes(table.toUpperCase())) {
       // Users and templates — the reply to a queued "DATA QUERY USERINFO" /
       // "DATA QUERY BIODATA" (a real MB10 answers as either BIODATA or
@@ -464,9 +507,11 @@ router.post('/iclock/querydata', express.text({ type: '*/*', limit: '10mb' }), a
     // firmware answers here rather than with an ATTLOG upload to /cdata, and
     // they used to be taken for user records and dropped.
     if (/^(attlog|transaction)$/i.test(tablename)) {
-      const { lines, stored, unmatched } = await ingestAttLog(SN, req.body);
+      const { lines, stored, unmatched, finish } = await ingestAttLog(SN, req.body);
       console.log(`[adms] SN=${SN} querydata ${tablename}: ${lines} lines, ${stored} new punches stored, ${unmatched} with no matching employee`);
-      return res.type('text/plain').send('OK');
+      res.type('text/plain').send('OK');
+      finishAfterReply(SN, finish);
+      return;
     }
     const result = await ingestRecordUpload(device, req.body);
     if (!result.pins) {
