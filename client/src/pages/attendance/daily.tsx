@@ -10,7 +10,7 @@ import { lateTier, formatMinutes } from '../../utils/lateSeverity';
 import { API_URL } from '../../providers/axios';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { downloadCsv, downloadXlsx, type SheetCell, type SheetSpec } from '../../utils/exportSheet';
-import { PrintPickerModal, groupBySection, pickedScope, sectionHeading, type PrintSection } from '../../components/PrintPicker';
+import { PrintPickerModal, groupBySection, pickedScope, positionRows, sectionHeading, type PrintSection } from '../../components/PrintPicker';
 
 const { RangePicker } = DatePicker;
 // The most the server's /attendance-daily/range serves per request — about a
@@ -270,8 +270,8 @@ export const AttendanceDailyPage: React.FC = () => {
         header('ມື້ຂາດວຽກ (ວັນ)', 12, 'absent'),
       ],
       rows: groups
-        ? groups.flatMap(({ section, items }) => [{ section: sectionHeading(section, items.length) }, ...items.map(rowCells)])
-        : employees.map(rowCells),
+        ? groups.flatMap(({ section, items }) => [{ section: sectionHeading(section, items.length) }, ...positionRows(items, (e) => e, rowCells)])
+        : positionRows(employees, (e) => e, rowCells),
       totals: [
         'ລວມ',
         { value: `${exported.length} ຄົນ`, align: 'left' },

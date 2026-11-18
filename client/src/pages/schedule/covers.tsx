@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useSelect } from '@refinedev/antd';
 import { useList, useCustom, useCreate, useDelete, useInvalidate, useNotification, useGetIdentity } from '@refinedev/core';
 import { Table, Button, Space, Typography, Popconfirm, Statistic, Card, Select, Modal, Form, DatePicker, TimePicker, Segmented, Grid, Tooltip, Alert } from 'antd';
@@ -15,7 +15,7 @@ import { RecurringRestDialog } from './recurringRestDialog';
 import { preferredOverride } from '../../utils/dayOverride';
 import { groupLogsByEmployee, shiftOnDate, regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
-import { PrintPickerModal, positionsNote, usePrintJob } from '../../components/PrintPicker';
+import { PrintPickerModal, groupByPosition, positionHeading, positionsNote, usePrintJob } from '../../components/PrintPicker';
 
 function idOf(value: { _id: string } | string | null | undefined) {
   if (!value) return undefined;
@@ -80,6 +80,17 @@ const PRINT_TH: CSSProperties = {
   color: '#5C4315',
   fontWeight: 600,
 };
+// The row above a position's people in the printed table.
+const PRINT_POSITION_ROW: CSSProperties = {
+  border: '1px solid #999',
+  padding: '3px 8px',
+  background: '#FBF3E0',
+  color: '#5C4315',
+  fontWeight: 700,
+  fontSize: 9,
+  textAlign: 'left',
+};
+
 const PRINT_TD: CSSProperties = {
   border: '1px solid #ccc',
   padding: '2px 3px',
@@ -1351,7 +1362,18 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
               </tr>
             </thead>
             <tbody>
-              {block.rows.map((emp, idx) => (
+              {(() => {
+                let n = 0;
+                return groupByPosition(block.rows, (emp) => emp).map((group) => (
+                  <Fragment key={group.key}>
+                    <tr className="print-position-row">
+                      <td colSpan={PRINT_FIXED_COLS.length + blockDays.length} style={PRINT_POSITION_ROW}>
+                        {positionHeading(group.name, group.items.length)}
+                      </td>
+                    </tr>
+                    {group.items.map((emp) => {
+                      const idx = n++;
+                      return (
                 <tr key={emp._id}>
                   <td style={PRINT_TD}>{idx + 1}</td>
                   <td style={PRINT_TD}>{emp.employeeCode || '-'}</td>
@@ -1370,7 +1392,11 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
                     );
                   })}
                 </tr>
-              ))}
+                      );
+                    })}
+                  </Fragment>
+                ));
+              })()}
             </tbody>
           </table>
 

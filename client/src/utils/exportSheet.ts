@@ -15,8 +15,9 @@ export type SheetCell = {
 };
 type CellInput = SheetCell | string | number | null | undefined;
 // A dividing row above a department's rows — a heading across the whole width
-// (Excel), or a blank line and the heading (CSV).
-export type SheetSectionRow = { section: string };
+// (Excel), or a blank line and the heading (CSV). `level: 2` is the lighter one
+// above a position's rows within a department.
+export type SheetSectionRow = { section: string; level?: 1 | 2 };
 type RowInput = CellInput[] | SheetSectionRow;
 const isSection = (row: RowInput): row is SheetSectionRow => !Array.isArray(row);
 
@@ -67,7 +68,9 @@ export function downloadCsv(spec: SheetSpec) {
     [`ພິມ: ${spec.printedAt}`],
     [],
     spec.columns.map((c) => c.header),
-    ...spec.rows.flatMap((row, i) => (isSection(row) ? [...(i ? [[]] : []), [row.section]] : [row.map((cell) => asCell(cell).value)])),
+    ...spec.rows.flatMap((row, i) =>
+      isSection(row) ? [...(i && row.level !== 2 ? [[]] : []), [row.section]] : [row.map((cell) => asCell(cell).value)]
+    ),
     ...(spec.totals ? [spec.totals.map((cell) => asCell(cell).value)] : []),
   ].map((line) => line.map(quote).join(','));
   download(new Blob([`﻿${lines.join('\r\n')}`], { type: 'text/csv;charset=utf-8;' }), `${spec.fileName}.csv`);
@@ -135,6 +138,18 @@ export async function downloadXlsx(spec: SheetSpec) {
   let stripe = 0;
   spec.rows.forEach((row, r) => {
     const sheetRow = sheet.getRow(headerRow + 1 + r);
+    if (isSection(row) && row.level === 2) {
+      stripe = 0;
+      sheet.mergeCells(headerRow + 1 + r, 1, headerRow + 1 + r, lastColumn);
+      const cell = sheetRow.getCell(1);
+      cell.value = row.section;
+      cell.font = { bold: true, size: 11, color: { argb: argb(HEADER_TEXT) } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: argb(HEADER_FILL) } };
+      cell.alignment = { horizontal: 'left', vertical: 'middle', indent: 2 };
+      cell.border = { top: { style: 'thin', color: { argb: 'FF999999' } }, bottom: { style: 'thin', color: { argb: 'FF999999' } } };
+      sheetRow.height = 20;
+      return;
+    }
     if (isSection(row)) {
       stripe = 0;
       sheet.mergeCells(headerRow + 1 + r, 1, headerRow + 1 + r, lastColumn);

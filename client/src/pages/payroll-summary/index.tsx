@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/core';
@@ -13,7 +13,19 @@ import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
 import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
-import { PrintPickerModal, positionsNote, usePrintJob, groupBySection, pickedScope, sectionHeading, type PrintSection } from '../../components/PrintPicker';
+import {
+  PrintPickerModal,
+  positionsNote,
+  usePrintJob,
+  groupBySection,
+  groupByPosition,
+  inPositionOrder,
+  pickedScope,
+  positionHeading,
+  positionRows,
+  sectionHeading,
+  type PrintSection,
+} from '../../components/PrintPicker';
 
 const { RangePicker } = DatePicker;
 
@@ -298,6 +310,17 @@ const PRINT_TH: CSSProperties = {
   color: '#5C4315',
   fontWeight: 600,
 };
+// The row above a position's people in the printed list.
+const PRINT_POSITION_ROW: CSSProperties = {
+  border: '1px solid #999',
+  padding: '3px 8px',
+  background: '#FBF3E0',
+  color: '#5C4315',
+  fontWeight: 700,
+  fontSize: 9,
+  textAlign: 'left',
+};
+
 const PRINT_TD: CSSProperties = {
   border: '1px solid #ccc',
   padding: '2px 3px',
@@ -1057,9 +1080,9 @@ const PayrollSummaryGrid: React.FC = () => {
       rows: scope
         ? groupBySection(scope.sections, allRows, (r) => r.employee._id).flatMap(({ section, items }) => [
             { section: sectionHeading(section, items.length) },
-            ...items.map(rowCells),
+            ...positionRows(items, (r) => r.employee, rowCells),
           ])
-        : rows.map(rowCells),
+        : positionRows(rows, (r) => r.employee, rowCells),
     };
   };
   // ສົ່ງອອກ Excel / CSV ask what to export first (PrintPicker).
@@ -1090,11 +1113,12 @@ const PayrollSummaryGrid: React.FC = () => {
   const { job: printJob, print: printSections } = usePrintJob();
   const handlePrintClick = () => setPrintPickerOpen(true);
   const printBlocks = useMemo(() => {
-    if (!printJob) return [{ key: 'shown', title: printTitle, rows }];
+    // Position by position, as every print and export lists people.
+    if (!printJob) return [{ key: 'shown', title: printTitle, rows: inPositionOrder(rows, (r) => r.employee) }];
     return printJob.map((section) => ({
       key: section.key,
       title: `ລາຍຊື່ພະນັກງານ${section.departmentName}${positionsNote(section)} ${periodLabel}`,
-      rows: allRows.filter((r) => section.employeeIds.has(r.employee._id)),
+      rows: groupBySection([section], allRows, (r) => r.employee._id)[0]?.items ?? [],
     }));
   }, [printJob, printTitle, rows, allRows, periodLabel]);
 
@@ -1651,7 +1675,18 @@ const PayrollSummaryGrid: React.FC = () => {
           </tr>
         </thead>
         <tbody>
-          {block.rows.map((r, idx) => (
+          {(() => {
+            let n = 0;
+            return groupByPosition(block.rows, (r) => r.employee).map((group) => (
+              <Fragment key={group.key}>
+                <tr className="print-position-row">
+                  <td colSpan={printTotalColumns} style={PRINT_POSITION_ROW}>
+                    {positionHeading(group.name, group.items.length)}
+                  </td>
+                </tr>
+                {group.items.map((r) => {
+                  const idx = n++;
+                  return (
             <tr key={r.employee._id} className={r.employee.status === 'resigned' ? 'payroll-resigned-row' : undefined}>
               <td style={PRINT_TD}>{idx + 1}</td>
               <td style={PRINT_TD}>{r.employee.employeeCode || '-'}</td>
@@ -1683,7 +1718,11 @@ const PayrollSummaryGrid: React.FC = () => {
               <td style={PRINT_TD}>{r.otHours}</td>
               <td style={PRINT_TD}>{r.otDays}</td>
             </tr>
-          ))}
+                  );
+                })}
+              </Fragment>
+            ));
+          })()}
         </tbody>
       </table>
 

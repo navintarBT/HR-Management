@@ -24,7 +24,7 @@ import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { ScanEvidenceView } from '../../components/ScanEvidenceView';
 import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
-import { PrintPickerModal, groupBySection, pickedScope, sectionHeading, type PrintSection } from '../../components/PrintPicker';
+import { PrintPickerModal, groupBySection, pickedScope, positionRows, sectionHeading, type PrintSection } from '../../components/PrintPicker';
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -575,9 +575,9 @@ const AttendanceSummaryGrid: React.FC = () => {
       rows: (scope
         ? groupBySection(scope.sections, allEmployees, (e) => e._id).flatMap(({ section, items }) => [
             { section: sectionHeading(section, items.length) },
-            ...items.map(rowCells),
+            ...positionRows(items, (e) => e, (e) => rowCells(e)),
           ])
-        : employees.map(rowCells)),
+        : positionRows(employees, (e) => e, (e) => rowCells(e))),
     };
   };
   const rowCells = (emp: Employee) => [

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Modal, Radio, Space, Typography } from 'antd';
 import { DownOutlined, RightOutlined } from '@ant-design/icons';
 import type { Employee } from '../types';
+import type { SheetSectionRow } from '../utils/exportSheet';
 
 // ພິມ / ສົ່ງອອກ on the pages with a staff table (ສະຫຼຸບເງິນເດືອນ, ການເຮັດແທນ,
 // ປະຫວັດການສະແກນ, ລາຍງານການສະແກນ): pick what to print or export instead of
@@ -79,11 +80,47 @@ export const sectionHeading = (section: PrintSection, count: number) =>
   `${section.departmentName === NO_DEPARTMENT ? '' : 'ພະແນກ '}${section.departmentName}${positionsNote(section)} · ${count} ຄົນ`;
 
 // Items in the sections' order, each group under its section — `idOf` gives an
-// item's employee id. Empty groups are left out.
+// item's employee id. Empty groups are left out. Within a section the items go
+// position by position (the section's own order: positions by name, each in the
+// page's order) — every print and export lists a position's people together
+// (asked for 2026-11-19).
 export function groupBySection<T>(sections: PrintSection[], items: T[], idOf: (item: T) => string) {
   return sections
-    .map((section) => ({ section, items: items.filter((item) => section.employeeIds.has(idOf(item))) }))
+    .map((section) => {
+      const rank = new Map([...section.employeeIds].map((id, i) => [id, i]));
+      const inSection = items.filter((item) => section.employeeIds.has(idOf(item)));
+      return { section, items: inSection.sort((a, b) => rank.get(idOf(a))! - rank.get(idOf(b))!) };
+    })
     .filter((g) => g.items.length);
+}
+
+// Items position by position — positions by name, no position last — each
+// keeping the order it came in.
+export function groupByPosition<T>(items: T[], employeeOf: (item: T) => Employee) {
+  const groups = new Map<string, { key: string; name: string; items: T[] }>();
+  for (const item of items) {
+    const emp = employeeOf(item);
+    const key = keyOf(emp.position);
+    if (!groups.has(key)) groups.set(key, { key, name: key === NONE ? NO_POSITION : nameOf(emp.position, NO_POSITION), items: [] });
+    groups.get(key)!.items.push(item);
+  }
+  return [...groups.values()].sort((a, b) => (a.key === NONE ? 1 : b.key === NONE ? -1 : a.name.localeCompare(b.name)));
+}
+
+export const inPositionOrder = <T,>(items: T[], employeeOf: (item: T) => Employee) =>
+  groupByPosition(items, employeeOf).flatMap((g) => g.items);
+
+// The row above a position's people in a print or export.
+export const positionHeading = (name: string, count: number) => `ຕຳແໜ່ງ ${name} · ${count} ຄົນ`;
+
+// An export's rows position by position, each under its ຕຳແໜ່ງ row; `toRow`
+// gets the item's place counting down the whole list (for a ລ/ດ column).
+export function positionRows<T, R>(items: T[], employeeOf: (item: T) => Employee, toRow: (item: T, index: number) => R): (R | SheetSectionRow)[] {
+  let n = 0;
+  return groupByPosition(items, employeeOf).flatMap((g) => [
+    { section: positionHeading(g.name, g.items.length), level: 2 as const },
+    ...g.items.map((item) => toRow(item, n++)),
+  ]);
 }
 
 type Mode = 'all' | 'pick' | 'current';
