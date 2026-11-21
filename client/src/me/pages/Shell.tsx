@@ -188,7 +188,10 @@ export const Shell: React.FC<{ user: MeUser }> = ({ user }) => {
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-wine-600 text-lg font-bold text-white">{initials}</div>
             <div className="min-w-0 leading-tight">
               <div className="truncate font-semibold">{name || '-'}</div>
-              <div className="text-xs text-stone-500">ລະຫັດ {employee?.employeeCode ?? '-'}</div>
+              <div className="text-xs text-stone-500">
+                ລະຫັດ {employee?.employeeCode ?? '-'}
+                {user.username ? ` · ${user.username}` : ''}
+              </div>
             </div>
             <div className="ml-auto hidden md:block">
               <IonSegment value={tab} onIonChange={(e) => setTab(e.detail.value as Tab)} className="w-72">

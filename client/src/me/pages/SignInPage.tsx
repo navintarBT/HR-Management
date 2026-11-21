@@ -14,7 +14,11 @@ import {
 import { alertCircle, cameraOutline, shieldCheckmarkOutline } from 'ionicons/icons';
 import { meApi, signIn, errorMessage } from '../api';
 
-type Mode = 'login' | 'setup';
+type Mode = 'login' | 'register';
+
+// Same rule as the server (routes/auth.js): English letters and digits (plus
+// . _ -), starting with a letter, so it never looks like an employee code.
+const USERNAME_RULE = /^[a-z][a-z0-9._-]{2,29}$/;
 
 const Field: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-1 transition focus-within:border-wine-600 focus-within:bg-white focus-within:ring-2 focus-within:ring-wine-100">
@@ -22,16 +26,17 @@ const Field: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   </div>
 );
 
-// Sign-in for the employees' app. "Set password" is both the first time and
-// after HR resets a forgotten one: employee code + the phone number HR has on
-// file, then a password of their own (server: routes/auth.js employee-setup).
+// Sign-in for the employees' app. "ລົງທະບຽນ" is both the first time and after
+// HR resets a forgotten password: a username of their own, their employee code
+// and a password — nothing else (server: routes/auth.js employee-register).
+// They then sign in with the username or the employee code.
 export const SignInPage: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn }) => {
   const [mode, setMode] = useState<Mode>('login');
-  const [code, setCode] = useState('');
+  const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
-  const [phone, setPhone] = useState('');
+  const [username, setUsername] = useState('');
+  const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -41,17 +46,19 @@ export const SignInPage: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn })
   };
 
   const login = async () => {
-    if (!code.trim() || !password) return setError('ກະລຸນາປ້ອນລະຫັດພະນັກງານ ແລະ ລະຫັດຜ່ານ');
+    if (!loginId.trim() || !password) return setError('ກະລຸນາປ້ອນຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດພະນັກງານ ແລະ ລະຫັດຜ່ານ');
     setError(null);
     setBusy(true);
     try {
-      const { data } = await meApi.post('/auth/login', { employeeCode: code.trim(), password });
+      const { data } = await meApi.post('/auth/login', { login: loginId.trim(), password });
       signIn(data.token, data.user);
       onSignedIn();
     } catch (err: any) {
       if (err?.response?.data?.needsSetup) {
-        setMode('setup');
-        setError('ບັນຊີນີ້ຍັງບໍ່ໄດ້ຕັ້ງລະຫັດຜ່ານ — ກະລຸນາຕັ້ງລະຫັດຜ່ານກ່ອນ');
+        // Only an employee code gets here — carry it over to the form.
+        if (/^\d+$/.test(loginId.trim())) setCode(loginId.trim());
+        setMode('register');
+        setError('ລະຫັດພະນັກງານນີ້ຍັງບໍ່ໄດ້ລົງທະບຽນ — ກະລຸນາລົງທະບຽນກ່ອນ');
       } else {
         setError(errorMessage(err, 'ເຂົ້າລະບົບບໍ່ສຳເລັດ — ກວດອິນເຕີເນັດແລ້ວລອງໃໝ່'));
       }
@@ -60,18 +67,21 @@ export const SignInPage: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn })
     }
   };
 
-  const setup = async () => {
-    if (!code.trim() || !phone.trim() || !newPassword) return setError('ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ');
+  const register = async () => {
+    const name = username.trim().toLowerCase();
+    if (!name || !code.trim() || !newPassword) return setError('ກະລຸນາປ້ອນຂໍ້ມູນໃຫ້ຄົບ');
+    if (!USERNAME_RULE.test(name)) {
+      return setError('ຊື່ຜູ້ໃຊ້ຕ້ອງເປັນຕົວອັກສອນອັງກິດ ຫຼື ຕົວເລກ 3–30 ໂຕ ຂຶ້ນຕົ້ນດ້ວຍຕົວອັກສອນ ແລະ ບໍ່ມີຍະຫວ່າງ — ຕົວຢ່າງ: somphone');
+    }
     if (newPassword.length < 6) return setError('ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ 6 ຕົວ');
-    if (newPassword !== confirm) return setError('ລະຫັດຜ່ານທັງສອງບໍ່ກົງກັນ');
     setError(null);
     setBusy(true);
     try {
-      const { data } = await meApi.post('/auth/employee-setup', { employeeCode: code.trim(), phone, newPassword });
+      const { data } = await meApi.post('/auth/employee-register', { username: name, employeeCode: code.trim(), password: newPassword });
       signIn(data.token, data.user);
       onSignedIn();
     } catch (err: any) {
-      setError(errorMessage(err, 'ຕັ້ງລະຫັດຜ່ານບໍ່ສຳເລັດ — ກວດອິນເຕີເນັດແລ້ວລອງໃໝ່'));
+      setError(errorMessage(err, 'ລົງທະບຽນບໍ່ສຳເລັດ — ກວດອິນເຕີເນັດແລ້ວລອງໃໝ່'));
     } finally {
       setBusy(false);
     }
@@ -100,81 +110,86 @@ export const SignInPage: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn })
               className="mx-auto w-full max-w-md rounded-3xl bg-white p-5 shadow-2xl sm:p-7"
               onSubmit={(e) => {
                 e.preventDefault();
-                void (mode === 'login' ? login() : setup());
+                void (mode === 'login' ? login() : register());
               }}
             >
               <IonSegment value={mode} onIonChange={(e) => switchTo(e.detail.value as Mode)} className="mb-5">
                 <IonSegmentButton value="login">
                   <IonLabel>ເຂົ້າສູ່ລະບົບ</IonLabel>
                 </IonSegmentButton>
-                <IonSegmentButton value="setup">
-                  <IonLabel>ຕັ້ງລະຫັດຜ່ານ</IonLabel>
+                <IonSegmentButton value="register">
+                  <IonLabel>ລົງທະບຽນ</IonLabel>
                 </IonSegmentButton>
               </IonSegment>
 
-              {mode === 'setup' && (
+              {mode === 'register' && (
                 <p className="mb-4 rounded-2xl bg-wine-50 px-4 py-3 text-sm leading-relaxed text-wine-900">
-                  ເທື່ອທຳອິດ ຫຼື ຫຼັງ HR ຣີເຊັດໃຫ້: ໃສ່ລະຫັດພະນັກງານ ແລະ ເບີໂທທີ່ໃຫ້ HR ໄວ້ ແລ້ວຕັ້ງລະຫັດຜ່ານຂອງທ່ານເອງ
+                  ເທື່ອທຳອິດ ຫຼື ຫຼັງ HR ຣີເຊັດໃຫ້: ຕັ້ງຊື່ຜູ້ໃຊ້, ໃສ່ລະຫັດພະນັກງານ ແລະ ຕັ້ງລະຫັດຜ່ານຂອງທ່ານເອງ
                 </p>
               )}
 
               <div className="space-y-3">
-                <Field>
-                  <IonInput
-                    label="ລະຫັດພະນັກງານ"
-                    labelPlacement="stacked"
-                    inputmode="numeric"
-                    autocomplete="username"
-                    value={code}
-                    onIonInput={(e) => setCode(String(e.detail.value ?? ''))}
-                  />
-                </Field>
                 {mode === 'login' ? (
-                  <Field>
-                    <IonInput
-                      label="ລະຫັດຜ່ານ"
-                      labelPlacement="stacked"
-                      type="password"
-                      autocomplete="current-password"
-                      value={password}
-                      onIonInput={(e) => setPassword(String(e.detail.value ?? ''))}
-                    >
-                      <IonInputPasswordToggle slot="end" />
-                    </IonInput>
-                  </Field>
-                ) : (
                   <>
                     <Field>
                       <IonInput
-                        label="ເບີໂທ (ເບີທີ່ໃຫ້ HR ໄວ້)"
+                        label="ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດພະນັກງານ"
                         labelPlacement="stacked"
-                        inputmode="tel"
-                        autocomplete="tel"
-                        placeholder="020 xxxx xxxx"
-                        value={phone}
-                        onIonInput={(e) => setPhone(String(e.detail.value ?? ''))}
+                        autocomplete="username"
+                        autocapitalize="off"
+                        autocorrect="off"
+                        spellcheck={false}
+                        value={loginId}
+                        onIonInput={(e) => setLoginId(String(e.detail.value ?? ''))}
                       />
                     </Field>
                     <Field>
                       <IonInput
-                        label="ລະຫັດຜ່ານໃໝ່ (ຢ່າງໜ້ອຍ 6 ຕົວ)"
+                        label="ລະຫັດຜ່ານ"
+                        labelPlacement="stacked"
+                        type="password"
+                        autocomplete="current-password"
+                        value={password}
+                        onIonInput={(e) => setPassword(String(e.detail.value ?? ''))}
+                      >
+                        <IonInputPasswordToggle slot="end" />
+                      </IonInput>
+                    </Field>
+                  </>
+                ) : (
+                  <>
+                    <Field>
+                      <IonInput
+                        label="ຊື່ຜູ້ໃຊ້ (ພາສາອັງກິດ)"
+                        labelPlacement="stacked"
+                        placeholder="ຕົວຢ່າງ: somphone"
+                        autocomplete="username"
+                        autocapitalize="off"
+                        autocorrect="off"
+                        spellcheck={false}
+                        maxlength={30}
+                        value={username}
+                        onIonInput={(e) => setUsername(String(e.detail.value ?? '').toLowerCase())}
+                      />
+                    </Field>
+                    <Field>
+                      <IonInput
+                        label="ລະຫັດພະນັກງານ"
+                        labelPlacement="stacked"
+                        inputmode="numeric"
+                        autocomplete="off"
+                        value={code}
+                        onIonInput={(e) => setCode(String(e.detail.value ?? ''))}
+                      />
+                    </Field>
+                    <Field>
+                      <IonInput
+                        label="ລະຫັດຜ່ານ (ຢ່າງໜ້ອຍ 6 ຕົວ)"
                         labelPlacement="stacked"
                         type="password"
                         autocomplete="new-password"
                         value={newPassword}
                         onIonInput={(e) => setNewPassword(String(e.detail.value ?? ''))}
-                      >
-                        <IonInputPasswordToggle slot="end" />
-                      </IonInput>
-                    </Field>
-                    <Field>
-                      <IonInput
-                        label="ໃສ່ລະຫັດຜ່ານອີກຄັ້ງ"
-                        labelPlacement="stacked"
-                        type="password"
-                        autocomplete="new-password"
-                        value={confirm}
-                        onIonInput={(e) => setConfirm(String(e.detail.value ?? ''))}
                       >
                         <IonInputPasswordToggle slot="end" />
                       </IonInput>
@@ -191,11 +206,18 @@ export const SignInPage: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn })
               )}
 
               <IonButton type="submit" expand="block" shape="round" className="mt-5 h-12 text-base font-semibold" disabled={busy}>
-                {busy ? <IonSpinner name="crescent" /> : mode === 'login' ? 'ເຂົ້າສູ່ລະບົບ' : 'ຕັ້ງລະຫັດຜ່ານ ແລະ ເຂົ້າລະບົບ'}
+                {busy ? <IonSpinner name="crescent" /> : mode === 'login' ? 'ເຂົ້າສູ່ລະບົບ' : 'ລົງທະບຽນ ແລະ ເຂົ້າລະບົບ'}
               </IonButton>
 
-              {mode === 'setup' && (
-                <p className="mt-4 text-center text-xs text-stone-500">ເຄີຍຕັ້ງແລ້ວແຕ່ລືມ? ໃຫ້ HR ກົດຣີເຊັດໃຫ້ກ່ອນ ແລ້ວຈຶ່ງຕັ້ງໃໝ່ຢູ່ນີ້</p>
+              {mode === 'login' ? (
+                <p className="mt-4 text-center text-sm text-stone-500">
+                  ເທື່ອທຳອິດ?{' '}
+                  <button type="button" className="font-semibold text-wine-700 underline" onClick={() => switchTo('register')}>
+                    ລົງທະບຽນ
+                  </button>
+                </p>
+              ) : (
+                <p className="mt-4 text-center text-xs text-stone-500">ເຄີຍລົງທະບຽນແລ້ວແຕ່ລືມລະຫັດຜ່ານ? ໃຫ້ HR ກົດຣີເຊັດໃຫ້ກ່ອນ ແລ້ວຈຶ່ງລົງທະບຽນໃໝ່ຢູ່ນີ້</p>
               )}
             </form>
           </div>

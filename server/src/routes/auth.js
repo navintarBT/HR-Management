@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Employee = require('../models/Employee');
 const { authenticate } = require('../middleware/auth');
-const { samePhone, employeeAccountOf } = require('../utils/accounts');
+const { employeeAccountOf } = require('../utils/accounts');
 const { blockedFor, recordFailure, clearFailures } = require('../utils/loginLimiter');
 // `tv` in the token ties it to the password it was signed in with (see
 // middleware/auth.js) — changing or resetting the password ends it.
@@ -16,6 +16,7 @@ function serializeUser(user) {
   return {
     id: user._id,
     email: user.email,
+    username: user.username,
     role: user.role,
     employee: user.employeeId || null,
     mustChangePassword: user.mustChangePassword,
@@ -26,34 +27,40 @@ const text = (v) => (typeof v === 'string' ? v.trim() : '');
 const tooManyTries = (res, minutes) =>
   res.status(429).json({ message: `ລອງຫຼາຍເທື່ອເກີນໄປ — ກະລຸນາລໍຖ້າ ${minutes} ນາທີ ແລ້ວລອງໃໝ່` });
 
-// Admins and managers sign in with their email; employees with their
-// employee code (the ROMEO app at /me) — the account found is their own
-// role-'employee' one, never an admin/manager account linked to the same person.
+// Admins and managers sign in with their email; employees (the ROMEO app at
+// /me) with one field that is either the username they picked or their
+// employee code (digits only — a username always starts with a letter). The
+// account found is their own role-'employee' one, never an admin/manager
+// account linked to the same person.
 router.post('/login', async (req, res, next) => {
   try {
     const email = text(req.body.email).toLowerCase();
-    const employeeCode = text(req.body.employeeCode);
+    const appId = text(req.body.login) || text(req.body.employeeCode);
+    const employeeCode = /^\d+$/.test(appId) ? appId : '';
+    const username = appId && !employeeCode ? appId.toLowerCase() : '';
     const password = typeof req.body.password === 'string' ? req.body.password : '';
-    if ((!email && !employeeCode) || !password) {
-      return res.status(400).json({ message: employeeCode || !email ? 'ກະລຸນາປ້ອນລະຫັດພະນັກງານ ແລະ ລະຫັດຜ່ານ' : 'Email and password are required' });
+    if ((!email && !appId) || !password) {
+      return res.status(400).json({ message: appId || !email ? 'ກະລຸນາປ້ອນຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດພະນັກງານ ແລະ ລະຫັດຜ່ານ' : 'Email and password are required' });
     }
-    const limitKey = employeeCode ? `code:${employeeCode}` : `email:${email}`;
+    const limitKey = employeeCode ? `code:${employeeCode}` : username ? `user:${username}` : `email:${email}`;
     const wait = blockedFor(limitKey);
     if (wait) return tooManyTries(res, wait);
 
     const needsSetup = () =>
-      res.status(401).json({ message: 'ບັນຊີນີ້ຍັງບໍ່ໄດ້ຕັ້ງລະຫັດຜ່ານ — ກົດ "ຕັ້ງລະຫັດຜ່ານ" ກ່ອນ', needsSetup: true });
+      res.status(401).json({ message: 'ບັນຊີນີ້ຍັງບໍ່ໄດ້ລົງທະບຽນ — ກົດ "ລົງທະບຽນ" ກ່ອນ', needsSetup: true });
     let user = null;
     if (employeeCode) {
       const employee = await Employee.findOne({ employeeCode }, '_id status');
       if (employee) user = await employeeAccountOf(employee._id).populate('employeeId');
-      // An active employee who hasn't made their account yet: point them to
-      // setting a password rather than calling it a wrong one.
+      // An active employee who hasn't registered yet: point them to
+      // registering rather than calling it a wrong password.
       if (employee?.status === 'active' && !user) return needsSetup();
+    } else if (username) {
+      user = await User.findOne({ username, role: 'employee' }).populate('employeeId');
     } else {
       user = await User.findOne({ email }).populate('employeeId');
     }
-    const wrong = employeeCode ? 'ລະຫັດພະນັກງານ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ' : 'Invalid email or password';
+    const wrong = appId ? 'ຊື່ຜູ້ໃຊ້ ຫຼື ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ' : 'Invalid email or password';
     if (!user) {
       recordFailure(limitKey);
       return res.status(401).json({ message: wrong });
@@ -77,50 +84,64 @@ router.post('/login', async (req, res, next) => {
   }
 });
 
-// An employee sets their own password — the first time, and again after an
-// admin resets it (routes/employeeAccounts.js). Their phone number on file is
-// what proves it's them. Only while no password is set: once it is, nobody
-// who merely knows a colleague's code and number can take the account over,
-// only an admin reset reopens it.
+// An employee registers in the app: a username of their own, their employee
+// code and a password — the first time, and again after an admin resets a
+// forgotten password (routes/employeeAccounts.js). Nothing else is asked
+// (decided 21/11/2026, to keep it simple — the phone-number check is gone), so
+// a code can be registered only once: after that only an admin reset opens it
+// again, and the employee page shows HR which username took which code, and when.
 const EMPLOYEE_MIN_PASSWORD = 6;
-router.post('/employee-setup', async (req, res, next) => {
+// English letters and digits (plus . _ -), starting with a letter, so a
+// username never looks like an employee code at sign-in.
+const USERNAME_RULE = /^[a-z][a-z0-9._-]{2,29}$/;
+const USERNAME_TAKEN = 'ຊື່ຜູ້ໃຊ້ນີ້ມີຄົນໃຊ້ແລ້ວ — ລອງຊື່ອື່ນ';
+router.post('/employee-register', async (req, res, next) => {
   try {
+    const username = text(req.body.username).toLowerCase();
     const employeeCode = text(req.body.employeeCode);
-    const phone = text(req.body.phone);
-    const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
-    if (!employeeCode || !phone || !newPassword) {
-      return res.status(400).json({ message: 'ກະລຸນາປ້ອນ ລະຫັດພະນັກງານ, ເບີໂທ ແລະ ລະຫັດຜ່ານໃໝ່' });
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
+    if (!username || !employeeCode || !password) {
+      return res.status(400).json({ message: 'ກະລຸນາປ້ອນ ຊື່ຜູ້ໃຊ້, ລະຫັດພະນັກງານ ແລະ ລະຫັດຜ່ານ' });
     }
-    if (newPassword.length < EMPLOYEE_MIN_PASSWORD) {
+    if (!USERNAME_RULE.test(username)) {
+      return res.status(400).json({ message: 'ຊື່ຜູ້ໃຊ້ຕ້ອງເປັນຕົວອັກສອນອັງກິດ ຫຼື ຕົວເລກ 3–30 ໂຕ ຂຶ້ນຕົ້ນດ້ວຍຕົວອັກສອນ ແລະ ບໍ່ມີຍະຫວ່າງ — ຕົວຢ່າງ: somphone' });
+    }
+    if (password.length < EMPLOYEE_MIN_PASSWORD) {
       return res.status(400).json({ message: `ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ ${EMPLOYEE_MIN_PASSWORD} ຕົວ` });
     }
-    const limitKey = `setup:${employeeCode}`;
+    const limitKey = `register:${employeeCode}`;
     const wait = blockedFor(limitKey);
     if (wait) return tooManyTries(res, wait);
 
-    const employee = await Employee.findOne({ employeeCode }, '_id status phone');
-    // One answer for a wrong code and a wrong number, so neither can be probed.
-    if (!employee || employee.status !== 'active' || !samePhone(employee.phone, phone)) {
+    const employee = await Employee.findOne({ employeeCode }, '_id status');
+    if (!employee || employee.status !== 'active') {
       recordFailure(limitKey);
-      return res.status(400).json({
-        message: employee && employee.status === 'active' && !employee.phone
-          ? 'ຍັງບໍ່ມີເບີໂທຂອງທ່ານໃນລະບົບ — ກະລຸນາຕິດຕໍ່ HR'
-          : 'ລະຫັດພະນັກງານ ຫຼື ເບີໂທບໍ່ຖືກຕ້ອງ',
-      });
+      return res.status(400).json({ message: 'ບໍ່ພົບລະຫັດພະນັກງານນີ້ — ກວດລະຫັດອີກຄັ້ງ ຫຼື ຖາມ HR' });
     }
 
     let user = await employeeAccountOf(employee._id);
     if (user?.passwordHash) {
-      return res.status(409).json({ message: 'ບັນຊີນີ້ຕັ້ງລະຫັດຜ່ານແລ້ວ — ຖ້າລືມລະຫັດ ໃຫ້ HR ກົດຣີເຊັດໃຫ້' });
+      return res.status(409).json({ message: 'ລະຫັດພະນັກງານນີ້ລົງທະບຽນແລ້ວ — ກົດ "ເຂົ້າສູ່ລະບົບ" ໄດ້ເລີຍ. ຖ້າລືມລະຫັດຜ່ານ ໃຫ້ HR ກົດຣີເຊັດໃຫ້' });
+    }
+    // Their own old username (kept through an admin reset) may be picked again.
+    if (await User.exists(user ? { username, _id: { $ne: user._id } } : { username })) {
+      return res.status(409).json({ message: USERNAME_TAKEN });
     }
     if (!user) user = new User({ role: 'employee', employeeId: employee._id });
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    user.username = username;
+    user.passwordHash = await bcrypt.hash(password, 10);
     user.passwordSetAt = new Date();
     user.lastLoginAt = new Date();
     user.isActive = true;
     user.mustChangePassword = false;
     user.tokenVersion = (user.tokenVersion ?? 0) + 1;
-    await user.save();
+    try {
+      await user.save();
+    } catch (err) {
+      // Two people taking the same username at the same moment.
+      if (err?.code === 11000) return res.status(409).json({ message: USERNAME_TAKEN });
+      throw err;
+    }
     clearFailures(limitKey);
 
     await user.populate('employeeId');

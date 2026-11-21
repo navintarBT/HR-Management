@@ -878,4 +878,5 @@ module.exports = {
   isLockedByHand,
   GRACE_MINUTES,
   STANDARD_WORK_HOURS,
+  OVERNIGHT_BUFFER_HOURS,
 };

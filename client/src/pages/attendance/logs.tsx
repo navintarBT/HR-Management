@@ -398,6 +398,8 @@ const AttendanceSummaryGrid: React.FC = () => {
         date: editing.dateKey,
         checkIn: values.checkIn.format('HH:mm'),
         checkOut: values.checkOut ? values.checkOut.format('HH:mm') : undefined,
+        // An out no later than the in is the next morning (shown as ອອກມື້ຖັດໄປ).
+        outNextDay: !!values.checkOut && values.checkOut.format('HH:mm') <= values.checkIn.format('HH:mm'),
         note: values.note,
       });
       notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ' });
@@ -449,13 +451,21 @@ const AttendanceSummaryGrid: React.FC = () => {
   // wrong. Kept on the day since 13/11/2026; for a day judged before that, the
   // shift in force then: the day's own time, else the shift history, else
   // their shift now (the same order the server judges by).
-  const judgedShiftOf = (emp: Employee, dateKey: string, row: AttendanceDaily): { shift: string; now: string | null } | undefined => {
+  // A time set for that one day by hand (ແກ້ໄຂການສະແກນ, ປັບເວລາສະເພາະມື້,
+  // ຕັ້ງຄ່າແຜນວຽກ's ກຳນົດເວລາພິເສດ) gets no "ກະ X" under the time — the label is for
+  // a day that belongs to another shift (a move, a swap, a cover); hovering
+  // still tells which time the day was judged by.
+  const judgedShiftOf = (
+    emp: Employee,
+    dateKey: string,
+    row: AttendanceDaily
+  ): { shift: string; now: string | null; perDay: boolean } | undefined => {
     const label = (t: { start: string; end: string } | null) => (t ? `${t.start}-${t.end}` : null);
+    const queued = scheduledByEmpDate[`${emp._id}_${dateKey}`];
     let judged: string | null;
     if (row.shiftStart !== undefined) {
       judged = row.shiftStart && row.shiftEnd ? `${row.shiftStart}-${row.shiftEnd}` : null;
     } else {
-      const queued = scheduledByEmpDate[`${emp._id}_${dateKey}`];
       if (queued) judged = `${queued.startTime}-${queued.endTime}`;
       else if (swappedByEmpDate[`${emp._id}_${dateKey}`]) judged = null;
       else {
@@ -468,9 +478,16 @@ const AttendanceSummaryGrid: React.FC = () => {
       }
     }
     const now = label(resolveDefaultTime(emp));
-    return judged && judged !== now ? { shift: judged, now } : undefined;
+    if (!judged || judged === now) return undefined;
+    const perDay =
+      !!queued &&
+      `${queued.startTime}-${queued.endTime}` === judged &&
+      !queued.coveringFor &&
+      !(queued.note ?? '').startsWith('ສ້າງອັດຕະໂນມັດ');
+    return { shift: judged, now, perDay };
   };
-  const judgedShiftTitle = (j: { shift: string; now: string | null }) => `ຕັດສິນຕາມກະ ${j.shift} · ກະປັດຈຸບັນ ${j.now ?? '-'}`;
+  const judgedShiftTitle = (j: { shift: string; now: string | null; perDay: boolean }) =>
+    `${j.perDay ? 'ເວລາສະເພາະມື້' : 'ຕັດສິນຕາມກະ'} ${j.shift} · ກະປັດຈຸບັນ ${j.now ?? '-'}`;
 
   // What one person's day shows, for the table and the exported files alike.
   type DayCell =
@@ -513,11 +530,11 @@ const AttendanceSummaryGrid: React.FC = () => {
             : undefined;
       const judged = judgedShiftOf(emp, dateKey, row!);
       const title = [note, judged ? judgedShiftTitle(judged) : undefined].filter(Boolean).join('\n') || undefined;
-      return { kind: 'status', label, time: timeText(row!) || undefined, bg: style.bg, text: style.text, title, shift: judged?.shift };
+      return { kind: 'status', label, time: timeText(row!) || undefined, bg: style.bg, text: style.text, title, shift: judged && !judged.perDay ? judged.shift : undefined };
     }
     if (row?.firstIn) {
       const judged = judgedShiftOf(emp, dateKey, row);
-      return { kind: 'time', time: timeText(row), shift: judged?.shift, title: judged ? judgedShiftTitle(judged) : undefined };
+      return { kind: 'time', time: timeText(row), shift: judged && !judged.perDay ? judged.shift : undefined, title: judged ? judgedShiftTitle(judged) : undefined };
     }
     // No AttendanceDaily row at all — a real queued shift always
     // wins first (that's what a swap/stand-in override means, even
@@ -918,7 +935,23 @@ const AttendanceSummaryGrid: React.FC = () => {
           <Form.Item label="ເວລາເຂົ້າ" name="checkIn" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາເຂົ້າ' }]}>
             <TimePicker style={{ width: '100%' }} format="HH:mm" minuteStep={5} />
           </Form.Item>
-          <Form.Item label="ເວລາອອກ (ຖ້າມີ)" name="checkOut">
+          <Form.Item
+            label="ເວລາອອກ (ຖ້າມີ)"
+            name="checkOut"
+            extra={
+              <Form.Item noStyle shouldUpdate>
+                {() => {
+                  const inAt = form.getFieldValue('checkIn');
+                  const outAt = form.getFieldValue('checkOut');
+                  return inAt && outAt && outAt.format('HH:mm') <= inAt.format('HH:mm') && editing ? (
+                    <Typography.Text type="warning" className="fix-out-next-day">
+                      ອອກມື້ຖັດໄປ ({dayjs(editing.dateKey).add(1, 'day').format('DD/MM')}) — ເຂົ້າ-ອອກຂ້າມຄືນ
+                    </Typography.Text>
+                  ) : null;
+                }}
+              </Form.Item>
+            }
+          >
             <TimePicker style={{ width: '100%' }} format="HH:mm" minuteStep={5} />
           </Form.Item>
           <Form.Item label="ໝາຍເຫດ / ຫຼັກຖານ" name="note">

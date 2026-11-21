@@ -18,7 +18,11 @@ const {
   bulkMarkPresentForOutage,
   setAsideDayScans,
   COUNTED_LOGS,
+  OVERNIGHT_BUFFER_HOURS,
 } = require('../utils/attendanceProcessor');
+
+const hmOf = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+const dmOf = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
 
 const router = express.Router();
 
@@ -117,7 +121,7 @@ router.post('/simulate', authenticate, requireRole('admin', 'manager'), async (r
 // own default) a real scan would be, not a separate hand-rolled calculation.
 router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async (req, res, next) => {
   try {
-    const { employeeId, date, checkIn, checkOut, note } = req.body;
+    const { employeeId, date, checkIn, checkOut, note, outNextDay } = req.body;
     if (!employeeId || !date || !checkIn) {
       return res.status(400).json({ message: 'ກະລຸນາປ້ອນ ພະນັກງານ, ວັນທີ່ ແລະ ເວລາເຂົ້າ' });
     }
@@ -137,14 +141,81 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     // rejecting it, but only when this employee's shift actually is overnight
     // that day — otherwise a genuinely backwards time (same-day shift) still
     // gets caught below.
+    // The page also says so outright (outNextDay — an out typed no later than
+    // the in, shown there as ອອກມື້ຖັດໄປ): someone with no shift, or a day
+    // shift, who worked through the night.
+    const expectedShift = await resolveExpectedShift(employeeId, date);
+    let crossesMidnight = false;
     if (checkOutTs && checkOutTs <= checkInTs) {
-      const expected = await resolveExpectedShift(employeeId, date);
-      if (isOvernightShift(expected)) {
+      if (isOvernightShift(expectedShift) || outNextDay === true) {
         checkOutTs = new Date(checkOutTs.getTime() + 24 * 3600000);
+        crossesMidnight = true;
       }
     }
     if (checkOutTs && checkOutTs <= checkInTs) {
       return res.status(400).json({ message: 'ເວລາອອກຕ້ອງຢູ່ຫຼັງເວລາເຂົ້າ' });
+    }
+
+    // A time outside this day's scan window would be saved but then counted
+    // on the day before / after (the out of a 21:00-04:00 night typed as 10:00
+    // lands on the next day as its in, and that day reads wrong) — refuse it
+    // instead of "saving" something that silently goes elsewhere. The night of
+    // a day getting its own time just below always fits, so it isn't checked.
+    // An overnight shift's cut-off is taken from the shift itself: a rest night
+    // they did work only counts as worked once this fix's own in is saved.
+    if (!(crossesMidnight && !isOvernightShift(expectedShift))) {
+      const { windowStart, windowEnd: currentEnd } = await resolveShiftWindow(employeeId, date);
+      let windowEnd = currentEnd;
+      if (isOvernightShift(expectedShift)) {
+        windowEnd = new Date(`${date}T00:00:00`);
+        windowEnd.setDate(windowEnd.getDate() + 1);
+        windowEnd.setHours(expectedShift.endHour, expectedShift.endMinute, 0, 0);
+        windowEnd = new Date(windowEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+      }
+      if (checkInTs < windowStart) {
+        return res.status(400).json({
+          message: `ເວລາເຂົ້າ ${checkIn} ຍັງເປັນຂອງມື້ກ່ອນ (ມື້ນີ້ເລີ່ມນັບແຕ່ ${hmOf(windowStart)} ວັນທີ ${dmOf(windowStart)}) — ກວດວັນທີອີກຄັ້ງ`,
+        });
+      }
+      if (checkOutTs && checkOutTs > windowEnd) {
+        return res.status(400).json({
+          message: `ເວລາອອກ ${checkOut} ກາຍເວລາຕັດຮອບຂອງມື້ນີ້ (${hmOf(windowEnd)} ວັນທີ ${dmOf(windowEnd)}) — ຈະໄປຕົກມື້ຖັດໄປ. ຖ້າອອກຊ້າແທ້ ໃຫ້ແຈ້ງຜູ້ດູແລລະບົບ; ຖ້າເຮັດແບບນີ້ປະຈຳ ໃຫ້ປ່ຽນກະທີ່ ຍ້າຍກະ`,
+        });
+      }
+    }
+
+    // A night worked on a day that isn't an overnight shift: the day's own
+    // scan window ends at midnight, so the morning's scan-out would land on the
+    // next day. The day gets that night's time as its own (the same day row as
+    // ຕັ້ງຄ່າແຜນວຽກ's ກຳນົດເວລາພິເສດ — shown there as ແກ້ໄຂພິເສດ, with ຄືນຄ່າປົກກະຕິ),
+    // so its window runs into the morning and the next day starts after it.
+    if (crossesMidnight && !isOvernightShift(expectedShift)) {
+      const dayRows = await Shift.find({ employee: employeeId, date, status: { $in: ['scheduled', 'rest', 'swapped'] } });
+      if (dayRows.some((r) => r.status === 'scheduled' && r.coveringFor)) {
+        return res.status(400).json({ message: 'ມື້ນີ້ເປັນການເຮັດແທນ — ແກ້ເວລາການແທນທີ່ ຕັ້ງຄ່າແຜນວຽກ ກ່ອນ' });
+      }
+      if (dayRows.some((r) => r.status !== 'scheduled')) {
+        return res.status(400).json({ message: 'ມື້ນີ້ຕັ້ງເປັນວັນພັກ / ບໍ່ມີກະ ໄວ້ — ຄືນຄ່າປົກກະຕິທີ່ ຕັ້ງຄ່າແຜນວຽກ ກ່ອນ' });
+      }
+      const startTime = checkIn;
+      const endTime = checkOut;
+      const own = dayRows.find((r) => r.status === 'scheduled');
+      if (own) {
+        own.startTime = startTime;
+        own.endTime = endTime;
+        await own.save();
+      } else {
+        if (!employee.position) return res.status(400).json({ message: 'ຄົນນີ້ຍັງບໍ່ມີຕຳແໜ່ງ — ຕັ້ງຕຳແໜ່ງກ່ອນ ຈຶ່ງບັນທຶກເວລາຂ້າມຄືນໄດ້' });
+        await Shift.create({
+          employee: employeeId,
+          position: employee.position,
+          date,
+          startTime,
+          endTime,
+          status: 'scheduled',
+          note: 'ແກ້ໄຂການສະແກນ — ເຂົ້າ-ອອກຂ້າມຄືນ',
+        });
+      }
     }
 
     // Must set aside the SAME window recomputeDay will read back from below — for
@@ -179,6 +250,13 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
 
     // force: HR is replacing this day on purpose, even a ຂາດ/ມາແທນ set by hand.
     const daily = await recomputeDay(employeeId, date, { force: true });
+    // The next day no longer takes this night's morning scan.
+    if (crossesMidnight) {
+      const next = new Date(`${date}T00:00:00`);
+      next.setDate(next.getDate() + 1);
+      const nextKey = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;
+      await recomputeDay(employeeId, nextKey);
+    }
     res.json({ ok: true, daily });
   } catch (err) {
     next(err);

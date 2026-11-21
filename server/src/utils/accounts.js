@@ -12,19 +12,6 @@ async function migrateUserEmailIndex() {
   return !!old;
 }
 
-// Phone numbers as typed on the employee record and by the employee can
-// differ in spaces, dashes and the country code (020 5555 1234 vs
-// +856 20 55551234) — compared on their last 8 digits, the subscriber number.
-const PHONE_DIGITS = 8;
-function phoneKey(phone) {
-  const digits = String(phone ?? '').replace(/\D/g, '');
-  return digits.length >= PHONE_DIGITS ? digits.slice(-PHONE_DIGITS) : null;
-}
-function samePhone(a, b) {
-  const ka = phoneKey(a);
-  return !!ka && ka === phoneKey(b);
-}
-
 // An employee's own account for the ROMEO app — the one role 'employee'
 // account linked to them (an admin/manager account linked to the same person
 // is a separate thing and is never touched by the app's flows).
@@ -32,4 +19,4 @@ function employeeAccountOf(employeeId) {
   return User.findOne({ employeeId, role: 'employee' });
 }
 
-module.exports = { migrateUserEmailIndex, samePhone, phoneKey, employeeAccountOf };
+module.exports = { migrateUserEmailIndex, employeeAccountOf };

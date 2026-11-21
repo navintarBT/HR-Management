@@ -8,23 +8,25 @@ import { API_URL, axiosInstance } from '../providers/axios';
 
 interface AppAccount {
   status: 'none' | 'active' | 'reset';
+  username: string | null;
   isActive: boolean | null;
   passwordSetAt: string | null;
   lastLoginAt: string | null;
 }
 
 const STATUS: Record<AppAccount['status'], { color: string; label: string }> = {
-  none: { color: 'default', label: 'ຍັງບໍ່ໄດ້ສ້າງບັນຊີ' },
+  none: { color: 'default', label: 'ຍັງບໍ່ໄດ້ລົງທະບຽນ' },
   active: { color: 'green', label: 'ໃຊ້ງານໄດ້' },
-  reset: { color: 'orange', label: 'ຣີເຊັດແລ້ວ — ລໍຖ້າພະນັກງານຕັ້ງລະຫັດໃໝ່' },
+  reset: { color: 'orange', label: 'ຣີເຊັດແລ້ວ — ລໍຖ້າພະນັກງານລົງທະບຽນໃໝ່' },
 };
 
 const formatTime = (value: string | null) => (value ? dayjs(value).format('DD/MM/YYYY HH:mm') : '-');
 
-// The employee's own account for the ROMEO app (/me): they create it
-// themselves with their employee code and the phone number on file here, so
-// HR only sees where it stands and resets a forgotten password — after which
-// they set a new one the same way. Admins/managers see it; only admins reset.
+// The employee's own account for the ROMEO app (/me): they register it
+// themselves with a username, their employee code and a password, so HR only
+// sees where it stands (and which username took the code — nothing else is
+// checked at registration) and resets a forgotten password, after which they
+// register again the same way. Admins/managers see it; only admins reset.
 export const EmployeeAppAccountSection: React.FC<{ employee?: Employee }> = ({ employee }) => {
   const { open: notify } = useNotification();
   const { data: identity } = useGetIdentity<Identity>();
@@ -44,7 +46,7 @@ export const EmployeeAppAccountSection: React.FC<{ employee?: Employee }> = ({ e
     setResetting(true);
     try {
       await axiosInstance.post(`${API_URL}/employee-accounts/${employee._id}/reset`, {});
-      notify?.({ type: 'success', message: 'ຣີເຊັດແລ້ວ — ໃຫ້ພະນັກງານກົດ "ຕັ້ງລະຫັດຜ່ານ" ໃນແອັບ ແລ້ວໃສ່ລະຫັດພະນັກງານ ແລະ ເບີໂທ' });
+      notify?.({ type: 'success', message: 'ຣີເຊັດແລ້ວ — ໃຫ້ພະນັກງານກົດ "ລົງທະບຽນ" ໃນແອັບອີກຄັ້ງ' });
       refetch();
     } catch (err: any) {
       notify?.({ type: 'error', message: err?.response?.data?.message || 'ຣີເຊັດບໍ່ສຳເລັດ' });
@@ -62,20 +64,20 @@ export const EmployeeAppAccountSection: React.FC<{ employee?: Employee }> = ({ e
         {account?.isActive === false && <Tag color="red">ປິດແລ້ວ</Tag>}
       </Descriptions.Item>
       <Descriptions.Item label="ເຂົ້າລະບົບດ້ວຍ">
+        {account?.username ? (
+          <>
+            ຊື່ຜູ້ໃຊ້ <Typography.Text strong>{account.username}</Typography.Text> ຫຼື{' '}
+          </>
+        ) : null}
         ລະຫັດພະນັກງານ <Typography.Text strong>{employee.employeeCode ?? '-'}</Typography.Text> + ລະຫັດຜ່ານທີ່ພະນັກງານຕັ້ງເອງ
-        {!employee.phone && (
-          <Typography.Text type="danger" style={{ display: 'block' }}>
-            ຍັງບໍ່ມີເບີໂທ — ພະນັກງານຈະຕັ້ງລະຫັດຜ່ານບໍ່ໄດ້ ຈົນກວ່າຈະໃສ່ເບີໂທໃຫ້
-          </Typography.Text>
-        )}
       </Descriptions.Item>
-      <Descriptions.Item label="ຕັ້ງລະຫັດຜ່ານເມື່ອ">{formatTime(account?.passwordSetAt ?? null)}</Descriptions.Item>
+      <Descriptions.Item label="ລົງທະບຽນເມື່ອ">{formatTime(account?.passwordSetAt ?? null)}</Descriptions.Item>
       <Descriptions.Item label="ເຂົ້າລະບົບຫຼ້າສຸດ">{formatTime(account?.lastLoginAt ?? null)}</Descriptions.Item>
       {isAdmin && account?.status === 'active' && (
         <Descriptions.Item label="ລືມລະຫັດຜ່ານ">
           <Popconfirm
             title="ຣີເຊັດລະຫັດຜ່ານ?"
-            description="ພະນັກງານຈະຖືກອອກຈາກລະບົບ ແລະ ຕ້ອງຕັ້ງລະຫັດໃໝ່ດ້ວຍລະຫັດພະນັກງານ + ເບີໂທ"
+            description="ພະນັກງານຈະຖືກອອກຈາກລະບົບ ແລະ ຕ້ອງກົດ ລົງທະບຽນ ໃນແອັບອີກຄັ້ງ"
             okText="ຣີເຊັດ"
             cancelText="ຍົກເລີກ"
             onConfirm={reset}

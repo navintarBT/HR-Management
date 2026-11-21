@@ -10,6 +10,7 @@ const USER_KEY = 'me_user';
 export interface MeUser {
   id: string;
   role: string;
+  username?: string;
   employee: { _id: string; employeeCode?: string; firstName?: string; lastName?: string } | null;
 }
 

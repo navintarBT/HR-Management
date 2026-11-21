@@ -304,6 +304,26 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
     config: { query: { from: startKey, to: endKey } },
   });
   const restRowsByEmployee = useMemo(() => groupRestRowsByEmployee(restScheduleData?.data), [restScheduleData?.data]);
+  // ວາງແຜນວັນພັກ: every rest-day change still to come, earliest first — so a
+  // move saved for later shows what they rest on now and where it goes from
+  // when, until that day comes (asked for 2026-11-21).
+  const todayKey = useMemo(() => dayjs().format('YYYY-MM-DD'), []);
+  const { data: comingRestData, refetch: refetchComingRest } = useCustom<RestDayScheduleRow[]>({
+    url: `${API_URL}/rest-day-history/schedule`,
+    method: 'get',
+    config: { query: { from: todayKey, to: dayjs().add(26, 'week').format('YYYY-MM-DD') } },
+    queryOptions: { enabled: planner },
+  });
+  const comingRestByEmployee = useMemo(() => {
+    const map = new Map<string, RestDayScheduleRow[]>();
+    for (const [id, list] of groupRestRowsByEmployee(comingRestData?.data)) {
+      const coming = list
+        .filter((r) => r.effectiveDate > todayKey)
+        .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate) || a.createdAt.localeCompare(b.createdAt));
+      if (coming.length) map.set(id, coming);
+    }
+    return map;
+  }, [comingRestData?.data, todayKey]);
   const { data: shiftLogsData } = useCustom<ShiftChangeLogEntry[]>({
     url: `${API_URL}/shift-change-logs`,
     method: 'get',
@@ -550,6 +570,7 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
       if (monday !== weekMonday) changeWeek(monday);
     }
     refetchRestSchedule();
+    if (planner) refetchComingRest();
     invalidate({ resource: 'employees', invalidates: ['list'] });
     invalidate({ resource: 'leaves', invalidates: ['list'] });
   };
@@ -606,6 +627,13 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
     // A regular rest day moved away is a working day again: their shift that day.
     const work = info.status.kind === 'work' ? info.status : !resting && info.status.kind === 'rest' ? regularTimeOn(emp, dateKey) : null;
     const changed = editableWeek && !!picked && picked.includes(dow) !== planned.includes(dow);
+    // A move already saved that hasn't started yet (today they still rest on
+    // `current`): the day it goes to and the day it leaves are both marked, so
+    // the plan shows where it came from as well as where it goes.
+    const current = emp.defaultRestDay ?? [];
+    const savedMove = editableWeek ? (comingRestByEmployee.get(emp._id) ?? []).filter((r) => r.effectiveDate <= weekMonday).pop() : undefined;
+    const movedHere = !!savedMove && !changed && planned.includes(dow) && !current.includes(dow);
+    const movedAway = !!savedMove && !changed && !planned.includes(dow) && current.includes(dow);
     const clickable = planner && canPlan && emp.status === 'active' && !pastWeek;
     const blocked = clickable && editableWeek && !restingRecurring && effectiveRestrictedRestDays(emp).includes(dow);
     return (
@@ -619,7 +647,7 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
           borderRadius: 4,
           cursor: !clickable ? 'default' : blocked ? 'not-allowed' : 'pointer',
           background: resting ? OFF_STYLE.rest.background : onLeave ? OFF_STYLE.leave.background : undefined,
-          outline: changed ? '2px dashed #1677ff' : undefined,
+          outline: changed ? '2px dashed #1677ff' : movedHere || movedAway ? '2px dashed #fa8c16' : undefined,
           outlineOffset: -2,
         }}
       >
@@ -638,6 +666,16 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
             <span style={{ color: '#bfbfbf' }}>-</span>
           )}
           {changed && <div style={{ fontSize: 10, color: '#1677ff', fontWeight: 600 }}>{restingRecurring ? 'ຈະພັກ' : 'ຈະເຮັດວຽກ'}</div>}
+          {movedHere && (
+            <div className="rest-plan-moved-here" style={{ fontSize: 10, color: '#d46b08', fontWeight: 600 }}>
+              ວັນພັກໃໝ່ ແຕ່ {dayjs(savedMove!.effectiveDate).format('DD/MM')}
+            </div>
+          )}
+          {movedAway && (
+            <div className="rest-plan-moved-away" style={{ fontSize: 10, color: '#722ed1', fontWeight: 600 }}>
+              ວັນພັກປະຈຸບັນ → ຍ້າຍອອກ
+            </div>
+          )}
         </div>
         {info.covering.map((s) => (
           <div key={s._id} style={{ fontSize: 11, color: '#531dab', lineHeight: 1.3 }}>
@@ -1021,9 +1059,17 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
               </div>
               <div>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  ວັນພັກ: {restDaysLabel(emp.defaultRestDay ?? [])}
+                  {planner ? 'ວັນພັກປະຈຸບັນ' : 'ວັນພັກ'}: {restDaysLabel(emp.defaultRestDay ?? [])}
                 </Typography.Text>
               </div>
+              {planner &&
+                (comingRestByEmployee.get(emp._id) ?? []).map((r) => (
+                  <div key={r._id} className="rest-plan-coming">
+                    <Typography.Text style={{ fontSize: 12, color: '#d46b08' }}>
+                      → {restDaysLabel(r.newRestDay)} ແຕ່ {dayjs(r.effectiveDate).format('DD/MM')}
+                    </Typography.Text>
+                  </div>
+                ))}
             </>
           )}
         />
@@ -1066,7 +1112,7 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
       </Table>
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view, rows, rangeDays, dayInfo, shiftIndex, isLoading, employeesLoading, pinToolbar, offsetHeader, stackTop, planner, editableWeek, pastWeek, plan.rowsByEmployee, canPlan]
+    [view, rows, rangeDays, dayInfo, shiftIndex, isLoading, employeesLoading, pinToolbar, offsetHeader, stackTop, planner, editableWeek, pastWeek, plan.rowsByEmployee, canPlan, comingRestByEmployee]
   );
   // New data draws it in the background, so ຫາຄົນແທນຕໍ່ right after saving doesn't
   // wait for the reload that the save set off.
@@ -1287,7 +1333,7 @@ export const ScheduleCoversGrid: React.FC<{ planner?: boolean }> = ({ planner = 
       </Space>
       <Typography.Paragraph type="secondary" className="covers-no-print">
         {planner
-          ? 'ວັນພັກ, ມື້ລາ ແລະ ການເຮັດແທນຂອງແຕ່ລະມື້ໃນອາທິດທີ່ເລືອກ. ກົດຊ່ອງວັນເພື່ອຍ້າຍວັນພັກໄປວັນນັ້ນ (ກົດ Ctrl ຄ້າງໄວ້: ເພີ່ມອີກວັນ · ກົດວັນພັກອີກເທື່ອ: ເອົາອອກ), ແລ້ວກົດ ກວດ ແລະ ບັນທຶກ — ການຍ້າຍມີຜົນແຕ່ວັນຈັນຂອງອາທິດທີ່ສະແດງ; ກົດໃນອາທິດນີ້ ຫຼື ທີ່ຜ່ານມາ ໜ້າຈໍຈະໄປອາທິດໜ້າໃຫ້ (ອາທິດທຳອິດທີ່ຍ້າຍໄດ້). 📅 ຂ້າງຊື່: ຕັ້ງວັນພັກປະຈຳຂອງຄົນນັ້ນ (ລວມທັງຄົນໃໝ່ທີ່ຍັງບໍ່ມີວັນພັກ)'
+          ? 'ວັນພັກ, ມື້ລາ ແລະ ການເຮັດແທນຂອງແຕ່ລະມື້ໃນອາທິດທີ່ເລືອກ. ກົດຊ່ອງວັນເພື່ອຍ້າຍວັນພັກໄປວັນນັ້ນ (ກົດ Ctrl ຄ້າງໄວ້: ເພີ່ມອີກວັນ · ກົດວັນພັກອີກເທື່ອ: ເອົາອອກ), ແລ້ວກົດ ກວດ ແລະ ບັນທຶກ — ການຍ້າຍມີຜົນແຕ່ວັນຈັນຂອງອາທິດທີ່ສະແດງ; ກົດໃນອາທິດນີ້ ໜ້າຈໍຈະໄປອາທິດໜ້າໃຫ້ (ອາທິດທຳອິດທີ່ຍ້າຍໄດ້); ອາທິດທີ່ຜ່ານມາເບິ່ງໄດ້ຢ່າງດຽວ. ການຍ້າຍທີ່ບັນທຶກແລ້ວແຕ່ຍັງບໍ່ທັນມີຜົນ: ກອບສີສົ້ມ — "ວັນພັກໃໝ່ ແຕ່ …" ແມ່ນວັນທີ່ຍ້າຍໄປ, "ວັນພັກປະຈຸບັນ → ຍ້າຍອອກ" ແມ່ນວັນພັກຕອນນີ້; ຂ້າງຊື່ສະແດງວັນພັກປະຈຸບັນ ແລະ "→ … ແຕ່ …". 📅 ຂ້າງຊື່: ຕັ້ງວັນພັກປະຈຳຂອງຄົນນັ້ນ (ລວມທັງຄົນໃໝ່ທີ່ຍັງບໍ່ມີວັນພັກ)'
           : view === 'week'
           ? 'ອາທິດທີ່ເລືອກ — ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ: ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ'
           : 'ທຸກຄົນໃນພະແນກ / ຕຳແໜ່ງທີ່ເລືອກ — ມື້ພັກ, ມື້ລາ ແລະ ມື້ເຮັດວຽກທີ່ມີຄົນແທນ. ກົດ "ຫາຄົນແທນ" ໃນມື້ນັ້ນ ເພື່ອມອບໝາຍ (ມື້ເຮັດວຽກປົກກະຕິ ເອົາເມົາສ໌ຊີ້ທີ່ຊ່ອງ). ຄົນທີ່ໄປແທນຕ້ອງສະແກນຕາມເວລາຂອງການແທນ ບໍ່ແມ່ນກະປົກກະຕິຂອງຕົນເອງ'}

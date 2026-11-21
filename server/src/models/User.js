@@ -4,10 +4,14 @@ const userSchema = new mongoose.Schema(
   {
     // Admins and managers sign in with this. An employee's own account (role
     // 'employee', the ROMEO app at /me) has none — they sign in with their
-    // employee code — hence optional, unique only among accounts that have one.
+    // username or employee code — hence optional, unique only among accounts that have one.
     email: { type: String, trim: true, lowercase: true },
+    // An employee's own account only: the name they picked when they
+    // registered in the app (routes/auth.js employee-register). They sign in
+    // with it or with their employee code. Unique among accounts that have one.
+    username: { type: String, trim: true, lowercase: true },
     // Empty on an employee account until the employee sets it themselves
-    // (routes/auth.js employee-setup) and again after an admin resets it.
+    // (routes/auth.js employee-register) and again after an admin resets it.
     passwordHash: { type: String },
     role: { type: String, enum: ['admin', 'manager', 'employee'], required: true },
     employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },
@@ -23,5 +27,6 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: 'string' } } });
+userSchema.index({ username: 1 }, { unique: true, partialFilterExpression: { username: { $type: 'string' } } });
 
 module.exports = mongoose.model('User', userSchema);
