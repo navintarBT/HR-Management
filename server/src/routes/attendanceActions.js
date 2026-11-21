@@ -18,7 +18,7 @@ const {
   bulkMarkPresentForOutage,
   setAsideDayScans,
   COUNTED_LOGS,
-  OVERNIGHT_BUFFER_HOURS,
+  overnightCutoff,
 } = require('../utils/attendanceProcessor');
 
 const hmOf = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -145,6 +145,12 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     // the in, shown there as ອອກມື້ຖັດໄປ): someone with no shift, or a day
     // shift, who worked through the night.
     const expectedShift = await resolveExpectedShift(employeeId, date);
+    // A night typed here before (Shift.scanFixOut) is HR's own entry, not the
+    // day's shift: typed again it's updated, and a same-day time undoes it.
+    const handNight = expectedShift?.endsAtOut
+      ? (await Shift.find({ employee: employeeId, date, status: 'scheduled', scanFixOut: { $type: 'string' } })).find((r) => r.scanFixOut === r.endTime) ?? null
+      : null;
+    const nightShift = isOvernightShift(expectedShift) && !handNight;
     let crossesMidnight = false;
     if (checkOutTs && checkOutTs <= checkInTs) {
       if (isOvernightShift(expectedShift) || outNextDay === true) {
@@ -163,14 +169,14 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     // a day getting its own time just below always fits, so it isn't checked.
     // An overnight shift's cut-off is taken from the shift itself: a rest night
     // they did work only counts as worked once this fix's own in is saved.
-    if (!(crossesMidnight && !isOvernightShift(expectedShift))) {
+    if (!(crossesMidnight && !nightShift)) {
       const { windowStart, windowEnd: currentEnd } = await resolveShiftWindow(employeeId, date);
       let windowEnd = currentEnd;
-      if (isOvernightShift(expectedShift)) {
-        windowEnd = new Date(`${date}T00:00:00`);
-        windowEnd.setDate(windowEnd.getDate() + 1);
-        windowEnd.setHours(expectedShift.endHour, expectedShift.endMinute, 0, 0);
-        windowEnd = new Date(windowEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+      if (nightShift) {
+        const expectedEnd = new Date(`${date}T00:00:00`);
+        expectedEnd.setDate(expectedEnd.getDate() + 1);
+        expectedEnd.setHours(expectedShift.endHour, expectedShift.endMinute, 0, 0);
+        windowEnd = overnightCutoff(expectedEnd, expectedShift).last;
       }
       if (checkInTs < windowStart) {
         return res.status(400).json({
@@ -189,7 +195,11 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     // next day. The day gets that night's time as its own (the same day row as
     // ຕັ້ງຄ່າແຜນວຽກ's ກຳນົດເວລາພິເສດ — shown there as ແກ້ໄຂພິເສດ, with ຄືນຄ່າປົກກະຕິ),
     // so its window runs into the morning and the next day starts after it.
-    if (crossesMidnight && !isOvernightShift(expectedShift)) {
+    // It ends right at the out typed (Shift.scanFixOut): a scan after that is
+    // the next day's own, however early.
+    const before = await resolveShiftWindow(employeeId, date);
+    let undone = false;
+    if (crossesMidnight && !nightShift) {
       const dayRows = await Shift.find({ employee: employeeId, date, status: { $in: ['scheduled', 'rest', 'swapped'] } });
       if (dayRows.some((r) => r.status === 'scheduled' && r.coveringFor)) {
         return res.status(400).json({ message: 'ມື້ນີ້ເປັນການເຮັດແທນ — ແກ້ເວລາການແທນທີ່ ຕັ້ງຄ່າແຜນວຽກ ກ່ອນ' });
@@ -199,10 +209,13 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
       }
       const startTime = checkIn;
       const endTime = checkOut;
-      const own = dayRows.find((r) => r.status === 'scheduled');
+      const own = handNight ?? dayRows.find((r) => r.status === 'scheduled');
       if (own) {
+        // The first night typed over the day's own time keeps that time to put back.
+        if (!handNight) own.scanFixReplaced = { startTime: own.startTime, endTime: own.endTime };
         own.startTime = startTime;
         own.endTime = endTime;
+        own.scanFixOut = endTime;
         await own.save();
       } else {
         if (!employee.position) return res.status(400).json({ message: 'ຄົນນີ້ຍັງບໍ່ມີຕຳແໜ່ງ — ຕັ້ງຕຳແໜ່ງກ່ອນ ຈຶ່ງບັນທຶກເວລາຂ້າມຄືນໄດ້' });
@@ -212,10 +225,24 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
           date,
           startTime,
           endTime,
+          scanFixOut: endTime,
           status: 'scheduled',
           note: 'ແກ້ໄຂການສະແກນ — ເຂົ້າ-ອອກຂ້າມຄືນ',
         });
       }
+    } else if (handNight && !crossesMidnight) {
+      // Fixed again to a same-day time: the night typed before goes, and the
+      // day is back on the time it had.
+      if (handNight.scanFixReplaced?.startTime && handNight.scanFixReplaced?.endTime) {
+        handNight.startTime = handNight.scanFixReplaced.startTime;
+        handNight.endTime = handNight.scanFixReplaced.endTime;
+        handNight.scanFixOut = undefined;
+        handNight.scanFixReplaced = undefined;
+        await handNight.save();
+      } else {
+        await handNight.deleteOne();
+      }
+      undone = true;
     }
 
     // Must set aside the SAME window recomputeDay will read back from below — for
@@ -225,7 +252,16 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     // survives the cleanup, recomputeDay still finds it, and the edit looks
     // like it silently did nothing (e.g. clearing checkOut to downgrade to a
     // single scan never actually takes, because the stale checkout persists).
+    // When this edit moved the day's end (a night typed, changed or undone),
+    // HR's earlier punches for the day go from the wider of the two windows;
+    // the terminal's own are set aside only within the day as it is now —
+    // anything after it is the next day's.
     const { windowStart, windowEnd } = await resolveShiftWindow(employeeId, date);
+    await AttendanceLog.deleteMany({
+      employee: employeeId,
+      deviceId: 'MANUAL',
+      timestamp: { $gte: before.windowStart < windowStart ? before.windowStart : windowStart, $lte: before.windowEnd > windowEnd ? before.windowEnd : windowEnd },
+    });
     await setAsideDayScans(employeeId, windowStart, windowEnd);
 
     const raw = { manual: true, note: note || undefined, editedBy: req.user?.email };
@@ -250,8 +286,9 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
 
     // force: HR is replacing this day on purpose, even a ຂາດ/ມາແທນ set by hand.
     const daily = await recomputeDay(employeeId, date, { force: true });
-    // The next day no longer takes this night's morning scan.
-    if (crossesMidnight) {
+    // The next day no longer takes this night's morning scan (or takes back
+    // what's after the out typed / a night undone).
+    if (crossesMidnight || undone) {
       const next = new Date(`${date}T00:00:00`);
       next.setDate(next.getDate() + 1);
       const nextKey = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-${String(next.getDate()).padStart(2, '0')}`;

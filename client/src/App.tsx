@@ -47,7 +47,7 @@ import { AppSider } from './components/AppSider';
 import { LoginPage } from './pages/login';
 import { ChangePasswordPage } from './pages/change-password';
 import { DashboardPage } from './pages/dashboard';
-import { EmployeeList, EmployeeCreate, EmployeeEdit, EmployeeShow } from './pages/employees';
+import { EmployeeList, EmployeeCreate, EmployeeEdit, EmployeeShow, EmployeeAppAccountsPage } from './pages/employees';
 import { OrganizationPage } from './pages/organization';
 import { AttendanceOverviewPage, AttendanceLogsPage, AttendanceDailyPage } from './pages/attendance';
 import { LeaveSummaryPage } from './pages/leaves/summary';
@@ -286,6 +286,7 @@ export const appRoutes = (
         <Route path="create" element={<EmployeeCreate />} />
         <Route path="edit/:id" element={<EmployeeEdit />} />
         <Route path="show/:id" element={<EmployeeShow />} />
+        <Route path="app-accounts" element={<EmployeeAppAccountsPage />} />
       </Route>
 
       <Route path="/organization" element={<OrganizationPage />} />

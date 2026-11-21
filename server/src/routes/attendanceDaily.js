@@ -60,6 +60,8 @@ router.get('/range', authenticate, requireRole('admin', 'manager', 'employee'), 
     if (days > RANGE_MAX_DAYS) return res.status(400).json({ message: `ເລືອກໄດ້ສູງສຸດ ${RANGE_MAX_DAYS} ວັນ` });
     const query = { date: { $gte: from, $lte: to } };
     if (req.user.role === 'employee') query.employee = req.user.employeeId ? req.user.employeeId._id : null;
+    // One person's (ບັນຊີແອັບພະນັກງານ's day-by-day history).
+    else if (typeof req.query.employee === 'string' && /^[a-f\d]{24}$/i.test(req.query.employee)) query.employee = req.query.employee;
     res.json(await AttendanceDaily.find(query, RANGE_FIELDS).lean());
   } catch (err) {
     next(err);

@@ -10,9 +10,19 @@ const userSchema = new mongoose.Schema(
     // registered in the app (routes/auth.js employee-register). They sign in
     // with it or with their employee code. Unique among accounts that have one.
     username: { type: String, trim: true, lowercase: true },
+    // An employee account only: the employee code typed when it was
+    // registered (or the one an admin made it on). Moving the account to
+    // another code keeps it, so ບັນຊີແອັບພະນັກງານ shows in red the accounts whose
+    // registered ID isn't the code they belong to now. None on accounts from
+    // before 22/11/2026 — those were registered with their own code.
+    registeredCode: { type: String, trim: true },
     // Empty on an employee account until the employee sets it themselves
     // (routes/auth.js employee-register) and again after an admin resets it.
     passwordHash: { type: String },
+    // An employee account only: the same password, encrypted so an admin can
+    // read it back on ບັນຊີແອັບພະນັກງານ (utils/passwordView.js). Never loaded
+    // unless asked for by name.
+    passwordView: { type: String, select: false },
     role: { type: String, enum: ['admin', 'manager', 'employee'], required: true },
     employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },
     isActive: { type: Boolean, default: true },

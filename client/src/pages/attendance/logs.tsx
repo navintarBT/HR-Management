@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm, message } from 'antd';
-import { CameraFilled, LeftOutlined, RightOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined } from '@ant-design/icons';
+import { LeftOutlined, RightOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type {
   AttendanceDaily,
@@ -71,6 +71,15 @@ const CELL_STYLE: Record<string, { bg: string; text: string; label: string }> = 
   substituted: { bg: '#e6fffb', text: '#08979c', label: 'ມາແທນ' },
   swapped: { bg: '#fff0f6', text: '#c41d7f', label: 'ສະຫຼັບກະ' },
 };
+
+// Photo evidence dot on a day's cell, by how many photos (in/out) the
+// employee sent from their app: none, one, both. An orange ring marks a photo
+// sent after the day or used for another shift too.
+const EVIDENCE_DOT = ['#f5222d', '#722ed1', '#52c41a'] as const;
+const EVIDENCE_FLAG_RING = '#fa8c16';
+// Days someone worked or should have — no photo then shows the red dot. Not
+// ມາແທນ (someone else worked it — they never scan), ລາ, or a rest/swap day.
+const EVIDENCE_EXPECTED = new Set(['present', 'late', 'incomplete', 'absent']);
 
 // Same fallback order as the server's resolveExpectedStart: a day-specific
 // queued Shift wins when one exists, otherwise the employee's own recurring
@@ -204,6 +213,24 @@ const AttendanceSummaryGrid: React.FC = () => {
   // A day with photos that can't be edited here (a rest day, a swap day) still
   // opens to show them.
   const [viewingEvidence, setViewingEvidence] = useState<{ employee: Employee; dateKey: string } | null>(null);
+  // The dot on a day's cell: red — no photo, purple — one (in or out), green —
+  // both. Shown on every day they worked or should have (a time, ຊ້າ, ສະແກນ
+  // ຄັ້ງດຽວ, ຂາດວຽກ); any other day only when it has photos.
+  const evidenceDotOf = (emp: Employee, dateKey: string) => {
+    const slots = evidenceByEmpDate[`${emp._id}_${dateKey}`];
+    const count = (slots?.in ? 1 : 0) + (slots?.out ? 1 : 0);
+    if (!count) {
+      const row = byEmpDate[`${emp._id}_${dateKey}`];
+      return row && EVIDENCE_EXPECTED.has(row.status) ? { color: EVIDENCE_DOT[0], title: 'ບໍ່ມີຮູບຫຼັກຖານ', flagged: false } : null;
+    }
+    const flagged = [slots?.in, slots?.out].some((e) => e && (e.backdated || e.duplicate));
+    const which = count === 2 ? 'ຄົບ ເຂົ້າ-ອອກ' : slots?.in ? '1 ຮູບ (ເຂົ້າ)' : '1 ຮູບ (ອອກ)';
+    return {
+      color: EVIDENCE_DOT[count],
+      title: `ມີຮູບຫຼັກຖານ ${which}${flagged ? ' — ມີຮູບຍ້ອນຫຼັງ ຫຼື ຮູບຊ້ຳ, ກວດເບິ່ງ' : ''} — ກົດເພື່ອເບິ່ງ`,
+      flagged,
+    };
+  };
 
   const byEmpDate = useMemo(() => {
     const map: Record<string, AttendanceDaily> = {};
@@ -734,16 +761,20 @@ const AttendanceSummaryGrid: React.FC = () => {
               { color: CELL_STYLE.substituted.text, label: 'ມາແທນ' },
               { color: CELL_STYLE.swapped.text, label: 'ສະຫຼັບກະ (ບໍ່ມີກະຍ້ອນມື້ສະຫຼັບຕຳແໜ່ງ)' },
               { color: '#8c8c8c', outline: true, label: '"ກະ 06:00-18:00" ໃຕ້ເວລາ = ມື້ນັ້ນຕັດສິນຕາມກະນີ້ (ບໍ່ແມ່ນກະປັດຈຸບັນ — ຍ້າຍ/ສະຫຼັບ/ໄປແທນ)' },
+              { color: EVIDENCE_DOT[0], dot: true, label: 'ບໍ່ມີຮູບຫຼັກຖານ' },
+              { color: EVIDENCE_DOT[1], dot: true, label: 'ມີຮູບຫຼັກຖານ 1 ຮູບ (ເຂົ້າ ຫຼື ອອກ)' },
+              { color: EVIDENCE_DOT[2], dot: true, label: 'ມີຮູບຫຼັກຖານຄົບ ເຂົ້າ-ອອກ' },
+              { color: EVIDENCE_FLAG_RING, dot: true, ring: true, label: 'ຂອບສົ້ມ = ມີຮູບສົ່ງຍ້ອນຫຼັງ ຫຼື ຮູບຊ້ຳ' },
             ].map((item) => (
               <Space key={item.label} size={6}>
                 <span
                   style={{
                     display: 'inline-block',
-                    width: 14,
-                    height: 14,
-                    borderRadius: 3,
-                    background: item.outline ? 'transparent' : item.color,
-                    border: item.outline ? `2px solid ${item.color}` : 'none',
+                    width: item.dot ? 10 : 14,
+                    height: item.dot ? 10 : 14,
+                    borderRadius: item.dot ? '50%' : 3,
+                    background: item.outline || item.ring ? 'transparent' : item.color,
+                    border: item.outline || item.ring ? `2px solid ${item.color}` : 'none',
                   }}
                 />
                 <Typography.Text strong style={{ fontSize: 13, color: item.color }}>
@@ -875,34 +906,25 @@ const AttendanceSummaryGrid: React.FC = () => {
                   return <span style={{ color: '#bfbfbf' }}>-</span>;
                 };
                 const content = renderDay();
-                const slots = evidenceByEmpDate[`${emp._id}_${dateKey}`];
-                if (!slots) return content;
-                const count = (slots.in ? 1 : 0) + (slots.out ? 1 : 0);
-                const flagged = [slots.in, slots.out].some((e) => e && (e.backdated || e.duplicate));
+                const dot = evidenceDotOf(emp, dateKey);
+                if (!dot) return content;
                 return (
                   <div style={{ position: 'relative' }}>
                     {content}
                     <span
-                      title={`ມີຮູບຫຼັກຖານ ${count} ຮູບ — ກົດເພື່ອເບິ່ງ`}
+                      className="evidence-dot"
+                      title={dot.title}
                       style={{
                         position: 'absolute',
-                        top: -6,
-                        right: -6,
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 2,
-                        padding: '0 4px',
-                        borderRadius: 8,
-                        fontSize: 10,
-                        lineHeight: '15px',
-                        color: '#fff',
-                        background: flagged ? '#d46b08' : '#9F1239',
-                        boxShadow: '0 0 0 1px #fff',
+                        top: -4,
+                        right: -4,
+                        width: 9,
+                        height: 9,
+                        borderRadius: '50%',
+                        background: dot.color,
+                        boxShadow: dot.flagged ? `0 0 0 2px ${EVIDENCE_FLAG_RING}` : '0 0 0 1.5px #fff',
                       }}
-                    >
-                      <CameraFilled style={{ fontSize: 9 }} />
-                      {count}
-                    </span>
+                    />
                   </div>
                 );
               }}
@@ -923,11 +945,12 @@ const AttendanceSummaryGrid: React.FC = () => {
         confirmLoading={submitting}
         destroyOnClose
       >
-        {editing && evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`] && (
+        {/* Always there, so HR sees at once whether this day has photos. */}
+        {editing && (
           <>
             <Typography.Text strong>ຮູບຫຼັກຖານຈາກແອັບພະນັກງານ</Typography.Text>
             <div style={{ margin: '8px 0 16px' }}>
-              <ScanEvidenceView slots={evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`]} />
+              <ScanEvidenceView slots={evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`] ?? {}} />
             </div>
           </>
         )}

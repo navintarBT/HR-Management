@@ -19,4 +19,20 @@ function employeeAccountOf(employeeId) {
   return User.findOne({ employeeId, role: 'employee' });
 }
 
-module.exports = { migrateUserEmailIndex, employeeAccountOf };
+// The app account's own rules — the same whether the employee registers
+// (routes/auth.js) or an admin edits the account (routes/employeeAccounts.js).
+const EMPLOYEE_MIN_PASSWORD = 6;
+// English letters and digits (plus . _ -), starting with a letter, so a
+// username never looks like an employee code at sign-in.
+const USERNAME_RULE = /^[a-z][a-z0-9._-]{2,29}$/;
+const USERNAME_RULE_MESSAGE = 'ຊື່ຜູ້ໃຊ້ຕ້ອງເປັນຕົວອັກສອນອັງກິດ ຫຼື ຕົວເລກ 3–30 ໂຕ ຂຶ້ນຕົ້ນດ້ວຍຕົວອັກສອນ ແລະ ບໍ່ມີຍະຫວ່າງ — ຕົວຢ່າງ: somphone';
+const USERNAME_TAKEN = 'ຊື່ຜູ້ໃຊ້ນີ້ມີຄົນໃຊ້ແລ້ວ — ລອງຊື່ອື່ນ';
+
+module.exports = {
+  migrateUserEmailIndex,
+  employeeAccountOf,
+  EMPLOYEE_MIN_PASSWORD,
+  USERNAME_RULE,
+  USERNAME_RULE_MESSAGE,
+  USERNAME_TAKEN,
+};

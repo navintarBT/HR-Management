@@ -20,6 +20,19 @@ const COUNTED_LOGS = { voided: { $ne: true } };
 // that same overnight shift (covers reasonable OT/cleanup) before it's
 // instead treated as the start of a new shift-day.
 const OVERNIGHT_BUFFER_HOURS = 3;
+// A night HR typed by hand (ແກ້ໄຂການສະແກນ) has its real out already — it ends
+// within that minute, and the next scan belongs to the next day (decided
+// 22/11/2026: the 3-hour allowance took the next morning's own check-in).
+const ENDS_AT_OUT_MS = 60000;
+// Where an overnight shift's day stops ('last', inclusive) and the next day's
+// scans start ('next'), from the end of that shift on the next calendar date.
+function overnightCutoff(expectedEnd, shift) {
+  if (shift?.endsAtOut) {
+    return { last: new Date(expectedEnd.getTime() + ENDS_AT_OUT_MS - 1), next: new Date(expectedEnd.getTime() + ENDS_AT_OUT_MS) };
+  }
+  const at = new Date(expectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+  return { last: at, next: at };
+}
 
 function toDateKey(date) {
   const d = new Date(date);
@@ -110,6 +123,8 @@ async function resolveExpectedShift(employeeId, dateKey) {
       // employee's regular shift — resolveShiftWindow uses this to keep a
       // back-to-back day's own check-in inside its window (see there).
       fromOverride: true,
+      // A night HR typed by hand (Shift.scanFixOut): it ends at that out.
+      endsAtOut: !!shift.scanFixOut && shift.scanFixOut === shift.endTime,
     };
   }
 
@@ -210,7 +225,8 @@ async function isUnworkedRestNight(employeeId, dateKey, shift) {
 // The actual scan window for shift-day `dateKey` — widened past plain
 // calendar-day midnight-to-midnight on both ends when needed:
 //  - end: if `dateKey`'s own shift is overnight, extended to catch its
-//    scan-out on the next calendar date (plus a grace buffer for OT/cleanup).
+//    scan-out on the next calendar date (plus a grace buffer for OT/cleanup —
+//    none for a night HR typed by hand, see overnightCutoff).
 //  - start: if the day BEFORE `dateKey` was itself an overnight shift, its
 //    window already claims everything up to its own cutoff — `dateKey` must
 //    not start any earlier than that, or the same scan gets picked up by
@@ -227,10 +243,10 @@ async function resolveShiftWindow(employeeId, dateKey) {
   let windowEnd = overnight ? null : new Date(`${dateKey}T23:59:59.999`);
 
   if (overnight) {
-    windowEnd = new Date(`${dateKey}T00:00:00`);
-    windowEnd.setDate(windowEnd.getDate() + 1);
-    windowEnd.setHours(expected.endHour, expected.endMinute, 0, 0);
-    windowEnd = new Date(windowEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+    const expectedEnd = new Date(`${dateKey}T00:00:00`);
+    expectedEnd.setDate(expectedEnd.getDate() + 1);
+    expectedEnd.setHours(expected.endHour, expected.endMinute, 0, 0);
+    windowEnd = overnightCutoff(expectedEnd, expected).last;
   }
 
   // "Yesterday" is resolved as the shift it really was (a Shift row, or the
@@ -245,7 +261,7 @@ async function resolveShiftWindow(employeeId, dateKey) {
   if (isOvernightShift(yesterdayShift)) {
     const yesterdayExpectedEnd = new Date(`${dateKey}T00:00:00`);
     yesterdayExpectedEnd.setHours(yesterdayShift.endHour, yesterdayShift.endMinute, 0, 0);
-    let yesterdayCutoff = new Date(yesterdayExpectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
+    let yesterdayCutoff = overnightCutoff(yesterdayExpectedEnd, yesterdayShift).next;
     if (expected?.fromOverride) {
       const todayStart = new Date(`${dateKey}T00:00:00`);
       todayStart.setHours(expected.startHour, expected.startMinute, 0, 0);
@@ -879,4 +895,5 @@ module.exports = {
   GRACE_MINUTES,
   STANDARD_WORK_HOURS,
   OVERNIGHT_BUFFER_HOURS,
+  overnightCutoff,
 };

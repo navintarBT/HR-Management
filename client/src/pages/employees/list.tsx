@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { List, useTable, useSelect, EditButton, ShowButton, CreateButton } from '@refinedev/antd';
 import { useGetIdentity, useList, useUpdate, useNotification, useInvalidate } from '@refinedev/core';
 import { Table, Space, Input, Select, Avatar, Typography, Card, Row, Col, Statistic, DatePicker, Modal, Form, Button, Tooltip } from 'antd';
-import { UserOutlined, SearchOutlined, StopOutlined, DeleteOutlined } from '@ant-design/icons';
+import { UserOutlined, SearchOutlined, StopOutlined, DeleteOutlined, MobileOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { Employee, Department, Position, Identity } from '../../types';
 import { EmployeeStatusTag } from '../../components/StatusTags';
@@ -166,7 +167,16 @@ export const EmployeeList: React.FC = () => {
   return (
     <List
       title="ລາຍຊື່ພະນັກງານ"
-      headerButtons={isAdmin ? <CreateButton>ເພີ່ມພະນັກງານ</CreateButton> : <></>}
+      headerButtons={
+        <>
+          {(isAdmin || identity?.role === 'manager') && (
+            <Link to="/employees/app-accounts">
+              <Button icon={<MobileOutlined />}>ບັນຊີແອັບພະນັກງານ</Button>
+            </Link>
+          )}
+          {isAdmin && <CreateButton>ເພີ່ມພະນັກງານ</CreateButton>}
+        </>
+      }
       breadcrumb={false}
     >
       <Row gutter={16} style={{ marginBottom: 16 }}>

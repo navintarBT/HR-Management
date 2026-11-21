@@ -3,8 +3,9 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Employee = require('../models/Employee');
 const { authenticate } = require('../middleware/auth');
-const { employeeAccountOf } = require('../utils/accounts');
+const { employeeAccountOf, EMPLOYEE_MIN_PASSWORD, USERNAME_RULE, USERNAME_RULE_MESSAGE, USERNAME_TAKEN } = require('../utils/accounts');
 const { blockedFor, recordFailure, clearFailures } = require('../utils/loginLimiter');
+const { sealPassword } = require('../utils/passwordView');
 // `tv` in the token ties it to the password it was signed in with (see
 // middleware/auth.js) — changing or resetting the password ends it.
 const { signToken } = require('../utils/tokens');
@@ -75,6 +76,9 @@ router.post('/login', async (req, res, next) => {
     }
     clearFailures(limitKey);
     user.lastLoginAt = new Date();
+    // The copy an admin can read back — also how an account registered before
+    // that copy existed gets one.
+    if (user.role === 'employee') user.passwordView = sealPassword(password);
     await user.save();
 
     const token = signToken(user);
@@ -90,11 +94,7 @@ router.post('/login', async (req, res, next) => {
 // (decided 21/11/2026, to keep it simple — the phone-number check is gone), so
 // a code can be registered only once: after that only an admin reset opens it
 // again, and the employee page shows HR which username took which code, and when.
-const EMPLOYEE_MIN_PASSWORD = 6;
-// English letters and digits (plus . _ -), starting with a letter, so a
-// username never looks like an employee code at sign-in.
-const USERNAME_RULE = /^[a-z][a-z0-9._-]{2,29}$/;
-const USERNAME_TAKEN = 'ຊື່ຜູ້ໃຊ້ນີ້ມີຄົນໃຊ້ແລ້ວ — ລອງຊື່ອື່ນ';
+// An admin can also set the username, password or code (routes/employeeAccounts.js).
 router.post('/employee-register', async (req, res, next) => {
   try {
     const username = text(req.body.username).toLowerCase();
@@ -104,7 +104,7 @@ router.post('/employee-register', async (req, res, next) => {
       return res.status(400).json({ message: 'ກະລຸນາປ້ອນ ຊື່ຜູ້ໃຊ້, ລະຫັດພະນັກງານ ແລະ ລະຫັດຜ່ານ' });
     }
     if (!USERNAME_RULE.test(username)) {
-      return res.status(400).json({ message: 'ຊື່ຜູ້ໃຊ້ຕ້ອງເປັນຕົວອັກສອນອັງກິດ ຫຼື ຕົວເລກ 3–30 ໂຕ ຂຶ້ນຕົ້ນດ້ວຍຕົວອັກສອນ ແລະ ບໍ່ມີຍະຫວ່າງ — ຕົວຢ່າງ: somphone' });
+      return res.status(400).json({ message: USERNAME_RULE_MESSAGE });
     }
     if (password.length < EMPLOYEE_MIN_PASSWORD) {
       return res.status(400).json({ message: `ລະຫັດຜ່ານຕ້ອງມີຢ່າງໜ້ອຍ ${EMPLOYEE_MIN_PASSWORD} ຕົວ` });
@@ -129,7 +129,9 @@ router.post('/employee-register', async (req, res, next) => {
     }
     if (!user) user = new User({ role: 'employee', employeeId: employee._id });
     user.username = username;
+    user.registeredCode = employeeCode;
     user.passwordHash = await bcrypt.hash(password, 10);
+    user.passwordView = sealPassword(password);
     user.passwordSetAt = new Date();
     user.lastLoginAt = new Date();
     user.isActive = true;
@@ -169,6 +171,7 @@ router.post('/change-password', authenticate, async (req, res, next) => {
     if (!valid) return res.status(401).json({ message: 'Current password is incorrect' });
 
     req.user.passwordHash = await bcrypt.hash(newPassword, 10);
+    if (req.user.role === 'employee') req.user.passwordView = sealPassword(newPassword);
     req.user.mustChangePassword = false;
     req.user.passwordSetAt = new Date();
     // Ends every other session; this one continues with the new token below.

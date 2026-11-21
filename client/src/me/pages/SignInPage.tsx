@@ -194,6 +194,10 @@ export const SignInPage: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn })
                         <IonInputPasswordToggle slot="end" />
                       </IonInput>
                     </Field>
+                    {/* Admins can read it back (server: utils/passwordView.js) — say so. */}
+                    <p className="register-password-note px-1 text-xs leading-relaxed text-stone-500">
+                      HR ເບິ່ງລະຫັດຜ່ານນີ້ໄດ້ ເພື່ອຊ່ວຍເວລາທ່ານລືມ — ຢ່າໃຊ້ລະຫັດດຽວກັບ Facebook ຫຼື ທະນາຄານ
+                    </p>
                   </>
                 )}
               </div>

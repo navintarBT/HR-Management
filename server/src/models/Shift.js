@@ -31,6 +31,19 @@ const shiftSchema = new mongoose.Schema(
     // Set only on a 'scheduled' entry created to cover someone else's shift —
     // `employee` is the one actually working it, `coveringFor` the one being covered.
     coveringFor: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', default: null },
+    // Set by ແກ້ໄຂການສະແກນ when HR types a night through midnight on a day that
+    // isn't an overnight shift: the out HR typed (HH:mm). While the row still
+    // ends at that time, the day ends right at it — no allowance after it for a
+    // late scan-out — so the next morning's own scans stay with the next day
+    // (decided 22/11/2026). A row changed elsewhere since no longer matches it.
+    scanFixOut: { type: String },
+    // The times this row had before that night was typed over it (none: the row
+    // was made for the night) — put back if the day is fixed again to a
+    // same-day time.
+    scanFixReplaced: {
+      startTime: { type: String },
+      endTime: { type: String },
+    },
   },
   { timestamps: true }
 );
