@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, Segmented, Tag, message } from 'antd';
@@ -12,6 +12,7 @@ import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { regularShiftHours } from '../../utils/shiftHistory';
 import { followsIrregularRule } from '../../utils/substituteRule';
+import { DayDetailModal, type DayFacts } from './DayDetailModal';
 import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
 import {
   PrintPickerModal,
@@ -79,6 +80,31 @@ function columnInRange(column: string, startKey: string, endKey: string) {
   const [from, to] = (column.split(':')[1] ?? '').split('_');
   return !!from && !!to && from >= startKey && to <= endKey;
 }
+
+// Where the page was when a day cell's ໄປແກ້ໄຂ sent HR to ປະຫວັດການສະແກນ — the
+// same month, filters and cell come back on return (this tab only).
+const RETURN_KEY = 'payroll-summary-return';
+interface ReturnPoint {
+  from: string;
+  to: string;
+  department?: string;
+  position?: string;
+  person?: string;
+  employeeId: string;
+  column: string;
+}
+function readReturn(): ReturnPoint | null {
+  try {
+    const point = JSON.parse(sessionStorage.getItem(RETURN_KEY) ?? 'null') as ReturnPoint | null;
+    const isKey = (v: unknown) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    return point && isKey(point.from) && isKey(point.to) && point.employeeId ? point : null;
+  } catch {
+    return null;
+  }
+}
+
+const LAO_WEEKDAYS = ['ອາທິດ', 'ຈັນ', 'ອັງຄານ', 'ພຸດ', 'ພະຫັດ', 'ສຸກ', 'ເສົາ'];
+const LEAVE_TYPE_TEXT: Record<string, string> = { vacation: 'ລາພັກຜ່ອນ', sick: 'ລາເຈັບປ່ວຍ', personal: 'ລາກິດສ່ວນຕົວ' };
 
 function idOf(value: unknown) {
   return value && typeof value === 'object' ? (value as { _id: string })._id : (value as string | undefined);
@@ -352,7 +378,11 @@ const PRINT_MIN_DAY_COL_WIDTH_PX = 6;
 // days inside the selected range count. ມື້ x2 / ຊ/ມ x3 come from approved OT: every
 // full 24 hours is a ມື້, the hours left over are ຊ/ມ.
 const PayrollSummaryGrid: React.FC = () => {
-  const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().startOf('month'), dayjs().endOf('month')]);
+  // Back from ປະຫວັດການສະແກນ: as it was (readReturn).
+  const [returning] = useState(readReturn);
+  const [range, setRange] = useState<[Dayjs, Dayjs]>(() =>
+    returning ? [dayjs(returning.from), dayjs(returning.to)] : [dayjs().startOf('month'), dayjs().endOf('month')]
+  );
   const rangeStartKey = range[0].format('YYYY-MM-DD');
   const rangeEndKey = range[1].format('YYYY-MM-DD');
   const goToMonth = (m: Dayjs) => setRange([m.startOf('month'), m.endOf('month')]);
@@ -370,9 +400,9 @@ const PayrollSummaryGrid: React.FC = () => {
   });
   const allEmployees = employeesData?.data ?? [];
 
-  const [departmentFilter, setDepartmentFilter] = useState<string>();
-  const [positionFilter, setPositionFilter] = useState<string>();
-  const [personFilter, setPersonFilter] = useState<string>();
+  const [departmentFilter, setDepartmentFilter] = useState<string | undefined>(returning?.department);
+  const [positionFilter, setPositionFilter] = useState<string | undefined>(returning?.position);
+  const [personFilter, setPersonFilter] = useState<string | undefined>(returning?.person);
 
   const { selectProps: departmentSelect, query: departmentQuery } = useSelect<Department>({
     resource: 'departments',
@@ -526,18 +556,21 @@ const PayrollSummaryGrid: React.FC = () => {
     method: 'get',
     config: { query: { from: rangeStartKey, to: rangeEndKey } },
   });
-  const { absentSet, recentDailySet, scannedSet } = useMemo(() => {
+  const { absentSet, recentDailySet, scannedSet, dailyByKey } = useMemo(() => {
     const absent = new Map<string, AttendanceDaily>();
     const any = new Set<string>();
     const scanned = new Set<string>();
+    // The record itself, for a day's ລາຍລະອຽດ (DayDetailModal).
+    const byKey = new Map<string, AttendanceDaily>();
     for (const d of dailyData?.data ?? []) {
       if (!d.employee) continue;
       const key = `${idOf(d.employee)}_${d.date}`;
       any.add(key);
+      byKey.set(key, d);
       if (d.status === 'absent') absent.set(key, d);
       else if (d.firstIn || d.lastOut) scanned.add(key);
     }
-    return { absentSet: absent, recentDailySet: any, scannedSet: scanned };
+    return { absentSet: absent, recentDailySet: any, scannedSet: scanned, dailyByKey: byKey };
   }, [dailyData?.data]);
 
   // Days someone actually scanned before their recorded start date — still
@@ -754,6 +787,64 @@ const PayrollSummaryGrid: React.FC = () => {
     return null;
   };
 
+  // A day cell's ລາຍລະອຽດ: what the cell says and why, by the same rules as
+  // the cell itself — DayDetailModal puts it next to the scans and photos.
+  const describeDay = (emp: Employee, dateKey: string): DayFacts => {
+    const dow = dayjs(dateKey).day();
+    const key = `${emp._id}_${dateKey}`;
+    const state = printDayState(emp, dateKey, dow);
+    const style = PRINT_DAY_STYLE[state];
+    const restFlag = state === 'rest' ? restDayFlag(emp, dateKey) : null;
+    const leaveScan = LEAVE_STATES.includes(state) && scannedSet.has(key);
+    const flag = restFlag
+      ? { color: REST_DAY_FLAG[restFlag].color, text: REST_DAY_FLAG[restFlag].title }
+      : leaveScan
+        ? { color: LEAVE_SCAN_FLAG.color, text: LEAVE_SCAN_FLAG.title }
+        : undefined;
+    const scheduled = (scheduledShiftsData?.data ?? []).find((s) => idOf(s.employee) === emp._id && s.date === dateKey);
+    const restShift = (restShiftsData?.data ?? []).find((s) => idOf(s.employee) === emp._id && s.date === dateKey);
+    const leave = findCoveringLeave(emp, dateKey);
+    const reasons: string[] = [];
+    if (leave) {
+      const span = `${dayjs(leave.startDate).format('DD/MM')}–${dayjs(leave.endDate).format('DD/MM')}`;
+      const overlap = (leave.restDayOverlaps ?? []).find((o) => o.date === dateKey);
+      if (overlap) {
+        const what = overlap.type === 'holiday' ? `ວັນຮ້ານປິດ${overlap.holidayName ? ` (${overlap.holidayName})` : ''}` : 'ວັນພັກປະຈຳ';
+        reasons.push(`ຢູ່ໃນໃບລາ ${span} ແຕ່ເປັນ${what} — ບໍ່ນັບເປັນມື້ລາ`);
+      } else {
+        const today = leaveDayKind(leave, dateKey) === 'grace' ? 'ຍັງຟຣີ (ປ)' : `ຕັດ ${leave.deductAmount ?? '-'}`;
+        reasons.push(`${LEAVE_TYPE_TEXT[leave.type] ?? 'ລາ'} ${span} · ມື້ນີ້${today}`);
+      }
+    } else if (scheduled) {
+      reasons.push(scheduled.coveringFor ? `ໄປເຮັດແທນ ${personName(scheduled.coveringFor, 'ຄົນອື່ນ')}` : 'ມີເວລາກະສະເພາະມື້ນີ້ (ຕາຕະລາງກະ)');
+    } else if (state === 'rest') {
+      if (restShift) reasons.push(restShift.holiday ? 'ວັນຮ້ານປິດ' : 'ຕັ້ງເປັນວັນພັກສະເພາະມື້ນີ້ (ຕາຕະລາງກະ)');
+      else if (swappedSet.has(key)) reasons.push('ມື້ສະຫຼັບຕຳແໜ່ງ — ບໍ່ມີກະມື້ນີ້');
+      else {
+        const rest = restDaysOn(restRowsByEmployee.get(emp._id), emp.defaultRestDay, dateKey);
+        reasons.push(`ວັນພັກປະຈຳອາທິດທີ່ໃຊ້ໃນມື້ນັ້ນ: ${rest.length ? rest.map((d) => LAO_WEEKDAYS[d]).join(', ') : '-'}`);
+      }
+    }
+    if (state === 'absent' || state === 'x2Absent' || state === 'x3Absent') {
+      const severity = noAbsenceSeverityFor(emp, dateKey, dow);
+      reasons.push(severity ? `ຂາດວຽກ — ຕັດ ${severity}` : 'ຂາດວຽກ');
+    }
+    if (state === 'blank') {
+      reasons.push(emp.deviceUserId ? 'ຕຳແໜ່ງມາບໍ່ປົກກະຕິ (DJ / ບໍ່ມີກະ) — ນັບສະເພາະມື້ທີ່ສະແກນ ຫຼື ໝາຍມາແທນ' : 'ຍັງບໍ່ມີລະຫັດເຄື່ອງສະແກນ');
+    }
+    const daily = dailyByKey.get(key);
+    const regular = regularShiftHours(emp);
+    const shift =
+      daily?.shiftStart && daily.shiftEnd
+        ? `ກະທີ່ໃຊ້ຕັດສິນມື້ນີ້: ${daily.shiftStart}–${daily.shiftEnd}`
+        : scheduled?.startTime
+          ? `ກະມື້ນີ້: ${scheduled.startTime}–${scheduled.endTime}`
+          : regular
+            ? `ກະປົກກະຕິ: ${regular}`
+            : undefined;
+    return { employee: emp, dateKey, label: style.label, meaning: PRINT_DAY_LEGEND_TEXT[state], colors: { bg: style.bg, text: style.text }, flag, reasons, shift, daily };
+  };
+
   // Everyone's row, whatever the page is filtered to — ພິມ can print every
   // department at once (PrintPicker); the table on screen takes `rows` below.
   const allRows = useMemo<SummaryRow[]>(() => {
@@ -894,6 +985,10 @@ const PayrollSummaryGrid: React.FC = () => {
   const [commentCell, setCommentCell] = useState<{ employeeId: string; employeeName: string; column: string; label: string } | null>(
     null
   );
+  // A day cell opens its ລາຍລະອຽດ (with the comments in it); a summary cell
+  // opens its comments straight away.
+  const [detailCell, setDetailCell] = useState<{ employee: Employee; dateKey: string } | null>(null);
+  const navigate = useNavigate();
   const { mutate: createComment, isLoading: postingComment } = useCreate();
   const { mutate: patchCommentStatus, isLoading: savingCommentStatus } = useCustomMutation();
 
@@ -911,12 +1006,11 @@ const PayrollSummaryGrid: React.FC = () => {
   //
   // A cell that already has a thread gets this as a reply (server side), and
   // any new message reopens it for review.
+  const postComment = (employeeId: string, column: string, text: string) =>
+    createComment({ resource: 'payroll-comments', values: { employee: employeeId, column, text } }, { onSuccess: () => refetchComments() });
   const submitComment = (text: string) => {
     if (!commentCell) return;
-    createComment(
-      { resource: 'payroll-comments', values: { employee: commentCell.employeeId, column: commentCell.column, text } },
-      { onSuccess: () => refetchComments() }
-    );
+    postComment(commentCell.employeeId, commentCell.column, text);
   };
 
   // ຢືນຢັນ / ເປີດຄືນ without posting a message.
@@ -941,15 +1035,16 @@ const PayrollSummaryGrid: React.FC = () => {
   // × ~41 columns, an antd icon (several real DOM nodes: span > svg > path)
   // on every single cell was enough extra DOM weight to make the whole table
   // noticeably sluggish; a CSS pseudo-element costs nothing in the DOM at all.
-  const withComment = (content: React.ReactNode, employeeId: string, employeeName: string, column: string, label: string) => {
+  const withComment = (content: React.ReactNode, employeeId: string, employeeName: string, column: string, label: string, onOpen?: () => void) => {
     const thread = threadsByKey.get(`${employeeId}::${column}`);
     const marker = thread ? (thread.status === 'open' ? ' has-comment' : ' is-resolved') : '';
+    const threadNote = thread ? `${thread.messages.length} ຂໍ້ຄວາມ · ${thread.status === 'open' ? 'ລໍຖ້າຢືນຢັນ' : 'ຢືນຢັນແລ້ວ'}` : '';
     return (
       <div
         id={`comment-${employeeId}::${column}`}
         className={`payroll-comment-cell${marker}`}
-        onClick={() => openComments(employeeId, employeeName, column, label)}
-        title={thread ? `${thread.messages.length} ຂໍ້ຄວາມ · ${thread.status === 'open' ? 'ລໍຖ້າຢືນຢັນ' : 'ຢືນຢັນແລ້ວ'}` : 'ເພີ່ມຄອມເມັ້ນ'}
+        onClick={onOpen ?? (() => openComments(employeeId, employeeName, column, label))}
+        title={onOpen ? `ກົດເບິ່ງລາຍລະອຽດ${threadNote ? ` · ຄອມເມັ້ນ ${threadNote}` : ''}` : threadNote || 'ເພີ່ມຄອມເມັ້ນ'}
       >
         {content}
       </div>
@@ -1004,6 +1099,40 @@ const PayrollSummaryGrid: React.FC = () => {
     const target = pendingFocus.current;
     if (target && focusComment(target.employeeId, target.column)) pendingFocus.current = null;
   });
+  // Back from ປະຫວັດການສະແກນ: the cell HR went to fix is shown again once the
+  // table is there.
+  useEffect(() => {
+    if (!returning) return undefined;
+    try {
+      sessionStorage.removeItem(RETURN_KEY);
+    } catch {
+      // nothing kept
+    }
+    const target = { employeeId: returning.employeeId, column: returning.column };
+    pendingFocus.current = target;
+    const timer = setTimeout(() => {
+      if (pendingFocus.current === target) pendingFocus.current = null;
+    }, 20000);
+    return () => clearTimeout(timer);
+  }, [returning]);
+  // ໄປແກ້ໄຂ: that person's day opened for editing on ປະຫວັດການສະແກນ.
+  const goEdit = (facts: DayFacts) => {
+    try {
+      const point: ReturnPoint = {
+        from: rangeStartKey,
+        to: rangeEndKey,
+        department: departmentFilter,
+        position: positionFilter,
+        person: personFilter,
+        employeeId: facts.employee._id,
+        column: dayCommentColumn(facts.dateKey),
+      };
+      sessionStorage.setItem(RETURN_KEY, JSON.stringify(point));
+    } catch {
+      // private mode: back to this month, unfiltered
+    }
+    navigate(`/attendance/logs?employee=${facts.employee._id}&date=${facts.dateKey}&from=payroll`);
+  };
   const jumpToThread = (t: CommentThread) => {
     setNotifOpen(false);
     if (focusComment(t.employeeId, t.column)) return;
@@ -1479,7 +1608,8 @@ const PayrollSummaryGrid: React.FC = () => {
                   r.employee._id,
                   `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`,
                   dayCommentColumn(dateKey),
-                  day.format('DD/MM/YYYY')
+                  day.format('DD/MM/YYYY'),
+                  () => setDetailCell({ employee: r.employee, dateKey })
                 );
               }}
             />
@@ -1781,6 +1911,19 @@ const PayrollSummaryGrid: React.FC = () => {
         }}
       />
 
+      <DayDetailModal facts={detailCell ? describeDay(detailCell.employee, detailCell.dateKey) : null} onClose={() => setDetailCell(null)} onEdit={goEdit}>
+        {detailCell && (
+          <CommentThreadPanel
+            key={`${detailCell.employee._id}_${detailCell.dateKey}`}
+            heading
+            thread={threadsByKey.get(`${detailCell.employee._id}::${dayCommentColumn(detailCell.dateKey)}`)}
+            posting={postingComment}
+            savingStatus={savingCommentStatus}
+            onSubmit={(text) => postComment(detailCell.employee._id, dayCommentColumn(detailCell.dateKey), text)}
+            onSetStatus={(status) => setThreadStatus(detailCell.employee._id, dayCommentColumn(detailCell.dateKey), status)}
+          />
+        )}
+      </DayDetailModal>
       <CommentThreadModal
         cell={commentCell}
         thread={commentCell ? threadsByKey.get(`${commentCell.employeeId}::${commentCell.column}`) : undefined}
@@ -1824,6 +1967,36 @@ function CommentThreadModal({
   onSubmit: (text: string) => void;
   onSetStatus: (status: 'open' | 'resolved') => void;
 }) {
+  return (
+    <Modal
+      open={!!cell}
+      onCancel={onClose}
+      title={cell ? `ຄອມເມັ້ນ — ${cell.employeeName} / ${cell.label}` : ''}
+      footer={null}
+      className="payroll-no-print"
+      destroyOnClose
+    >
+      {cell && <CommentThreadPanel thread={thread} posting={posting} savingStatus={savingStatus} onSubmit={onSubmit} onSetStatus={onSetStatus} />}
+    </Modal>
+  );
+}
+
+function CommentThreadPanel({
+  thread,
+  posting,
+  savingStatus,
+  onSubmit,
+  onSetStatus,
+  heading,
+}: {
+  thread: CommentThread | undefined;
+  posting: boolean;
+  savingStatus: boolean;
+  onSubmit: (text: string) => void;
+  onSetStatus: (status: 'open' | 'resolved') => void;
+  // Its own title, when it sits under other things (a day's ລາຍລະອຽດ).
+  heading?: boolean;
+}) {
   const [draft, setDraft] = useState('');
   const text = draft.trim();
   const isOpen = thread?.status === 'open';
@@ -1835,83 +2008,73 @@ function CommentThreadModal({
   };
 
   return (
-    <Modal
-      open={!!cell}
-      onCancel={onClose}
-      title={cell ? `ຄອມເມັ້ນ — ${cell.employeeName} / ${cell.label}` : ''}
-      footer={null}
-      className="payroll-no-print"
-      destroyOnClose
-    >
-      {cell && (
-        <div>
-          {thread && (
-            <Space size={8} style={{ marginBottom: 4 }}>
-              {isOpen ? (
-                <>
-                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>
-                    ລໍຖ້າຢືນຢັນ
-                  </Tag>
-                  <Button size="small" icon={<CheckOutlined />} loading={savingStatus} onClick={() => onSetStatus('resolved')}>
-                    ຢືນຢັນ
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Tag color="green" style={{ marginInlineEnd: 0 }}>
-                    ✓ ຢືນຢັນແລ້ວ · {thread.resolvedByName} · {dayjs(thread.resolvedAt).format('DD/MM/YYYY HH:mm')}
-                  </Tag>
-                  <Button size="small" type="link" loading={savingStatus} onClick={() => onSetStatus('open')}>
-                    ເປີດຄືນ
-                  </Button>
-                </>
-              )}
-            </Space>
+    <div>
+      {heading && <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>ຄອມເມັ້ນ</Typography.Text>}
+      {thread && (
+        <Space size={8} style={{ marginBottom: 4 }}>
+          {isOpen ? (
+            <>
+              <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                ລໍຖ້າຢືນຢັນ
+              </Tag>
+              <Button size="small" icon={<CheckOutlined />} loading={savingStatus} onClick={() => onSetStatus('resolved')}>
+                ຢືນຢັນ
+              </Button>
+            </>
+          ) : (
+            <>
+              <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                ✓ ຢືນຢັນແລ້ວ · {thread.resolvedByName} · {dayjs(thread.resolvedAt).format('DD/MM/YYYY HH:mm')}
+              </Tag>
+              <Button size="small" type="link" loading={savingStatus} onClick={() => onSetStatus('open')}>
+                ເປີດຄືນ
+              </Button>
+            </>
           )}
-          <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
-            {!thread && <Typography.Text type="secondary">ຍັງບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
-            {thread?.messages.map((m, i) => (
-              <div
-                key={m.id}
-                style={{
-                  padding: '8px 0',
-                  borderBottom: '1px solid #f0f0f0',
-                  ...(i > 0 && { marginLeft: 16, paddingLeft: 10, borderLeft: '2px solid #f0f0f0' }),
-                }}
-              >
-                <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>
-                  {i > 0 && '↳ '}
-                  {m.authorName} · {dayjs(m.createdAt).format('DD/MM/YYYY HH:mm')}
-                </div>
-                <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
-              </div>
-            ))}
-          </div>
-          <Input.TextArea
-            rows={2}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={thread ? 'ພິມຕອບ...' : 'ພິມຄອມເມັ້ນ...'}
-            onPressEnter={(e) => {
-              if (!e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-          {thread && !isOpen && (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              ຖ້າຕອບ, ຄອມເມັ້ນນີ້ຈະກັບໄປ ລໍຖ້າຢືນຢັນ ອີກ
-            </Typography.Text>
-          )}
-          <div style={{ textAlign: 'right', marginTop: 8 }}>
-            <Button type="primary" loading={posting} disabled={!text} onClick={send}>
-              ສົ່ງ
-            </Button>
-          </div>
-        </div>
+        </Space>
       )}
-    </Modal>
+      <div style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 12 }}>
+        {!thread && <Typography.Text type="secondary">ຍັງບໍ່ມີຄອມເມັ້ນ</Typography.Text>}
+        {thread?.messages.map((m, i) => (
+          <div
+            key={m.id}
+            style={{
+              padding: '8px 0',
+              borderBottom: '1px solid #f0f0f0',
+              ...(i > 0 && { marginLeft: 16, paddingLeft: 10, borderLeft: '2px solid #f0f0f0' }),
+            }}
+          >
+            <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 2 }}>
+              {i > 0 && '↳ '}
+              {m.authorName} · {dayjs(m.createdAt).format('DD/MM/YYYY HH:mm')}
+            </div>
+            <div style={{ whiteSpace: 'pre-wrap' }}>{m.text}</div>
+          </div>
+        ))}
+      </div>
+      <Input.TextArea
+        rows={2}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={thread ? 'ພິມຕອບ...' : 'ພິມຄອມເມັ້ນ...'}
+        onPressEnter={(e) => {
+          if (!e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      />
+      {thread && !isOpen && (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          ຖ້າຕອບ, ຄອມເມັ້ນນີ້ຈະກັບໄປ ລໍຖ້າຢືນຢັນ ອີກ
+        </Typography.Text>
+      )}
+      <div style={{ textAlign: 'right', marginTop: 8 }}>
+        <Button type="primary" loading={posting} disabled={!text} onClick={send}>
+          ສົ່ງ
+        </Button>
+      </div>
+    </div>
   );
 }
 

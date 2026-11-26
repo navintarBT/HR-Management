@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCustom, useGetIdentity, useNotification } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Modal, Form, TimePicker, Input, Select, Divider, Popconfirm, message } from 'antd';
-import { LeftOutlined, RightOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, LeftOutlined, RightOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type {
   AttendanceDaily,
@@ -107,7 +108,22 @@ const AttendanceSummaryGrid: React.FC = () => {
   const isManager = identity?.role === 'admin' || identity?.role === 'manager';
   const isAdmin = identity?.role === 'admin';
 
-  const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().startOf('month'), dayjs().endOf('month')]);
+  // Sent here from ສະຫຼຸບເງິນເດືອນ (a day's ໄປແກ້ໄຂ): that person's row and
+  // that day, opened for editing — no month or name to look for by hand.
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const target = useMemo(() => {
+    const employee = params.get('employee');
+    const date = params.get('date');
+    return employee && date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? { employee, date } : null;
+  }, [params]);
+  const fromPayroll = params.get('from') === 'payroll';
+  const backToPayroll = () => navigate('/payroll-summary');
+
+  const [range, setRange] = useState<[Dayjs, Dayjs]>(() => {
+    const month = target ? dayjs(target.date) : dayjs();
+    return [month.startOf('month'), month.endOf('month')];
+  });
 
   const days = useMemo(() => {
     const count = range[1].startOf('day').diff(range[0].startOf('day'), 'day') + 1;
@@ -127,6 +143,8 @@ const AttendanceSummaryGrid: React.FC = () => {
   const allEmployees = employeesData?.data ?? [];
 
   const [search, setSearch] = useState('');
+  // What the search box shows (set for HR when they arrive from ສະຫຼຸບເງິນເດືອນ).
+  const [searchInput, setSearchInput] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<string>();
   const [positionFilter, setPositionFilter] = useState<string>();
 
@@ -221,7 +239,7 @@ const AttendanceSummaryGrid: React.FC = () => {
     const count = (slots?.in ? 1 : 0) + (slots?.out ? 1 : 0);
     if (!count) {
       const row = byEmpDate[`${emp._id}_${dateKey}`];
-      return row && EVIDENCE_EXPECTED.has(row.status) ? { color: EVIDENCE_DOT[0], title: 'ບໍ່ມີຮູບຫຼັກຖານ', flagged: false } : null;
+      return row && EVIDENCE_EXPECTED.has(row.status) ? { color: EVIDENCE_DOT[0], title: 'ບໍ່ມີຮູບຫຼັກຖານ', flagged: false, hasPhotos: false } : null;
     }
     const flagged = [slots?.in, slots?.out].some((e) => e && (e.backdated || e.duplicate));
     const which = count === 2 ? 'ຄົບ ເຂົ້າ-ອອກ' : slots?.in ? '1 ຮູບ (ເຂົ້າ)' : '1 ຮູບ (ອອກ)';
@@ -229,6 +247,7 @@ const AttendanceSummaryGrid: React.FC = () => {
       color: EVIDENCE_DOT[count],
       title: `ມີຮູບຫຼັກຖານ ${which}${flagged ? ' — ມີຮູບຍ້ອນຫຼັງ ຫຼື ຮູບຊ້ຳ, ກວດເບິ່ງ' : ''} — ກົດເພື່ອເບິ່ງ`,
       flagged,
+      hasPhotos: true,
     };
   };
 
@@ -345,7 +364,13 @@ const AttendanceSummaryGrid: React.FC = () => {
     return !row && isRecurringRestDay(emp, dateKey, day);
   };
 
+  // A day that has a scan to correct (see onCell below).
+  const canEdit = (emp: Employee, dateKey: string, day: Dayjs) =>
+    isManager && !isRestDay(emp, dateKey, day) && !swappedByEmpDate[`${emp._id}_${dateKey}`];
+
   const [editing, setEditing] = useState<{ employee: Employee; dateKey: string } | null>(null);
+  // ບັນທຶກ ແລະ ກັບໄປ: back to ສະຫຼຸບເງິນເດືອນ once the fix is saved.
+  const backAfterSave = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
   const { open: notify } = useNotification();
@@ -367,8 +392,42 @@ const AttendanceSummaryGrid: React.FC = () => {
       note: undefined,
     });
     setDisciplineReason('');
+    backAfterSave.current = false;
     setEditing({ employee: emp, dateKey });
   };
+
+  // The day asked for in the address, once everything it needs has loaded:
+  // only that person shown, the day opened, the cell shown and marked.
+  const handled = useRef<string | null>(null);
+  const targetReady =
+    !!identity && !employeesLoading && !dailyLoading && !!shiftLogsData && !!restScheduleData && !!shiftsData && !!scheduledShiftsData && !!swappedShiftsData && !!evidenceData;
+  useEffect(() => {
+    if (!target || !targetReady) return;
+    const id = `${target.employee}_${target.date}`;
+    if (handled.current === id) return;
+    const emp = allEmployees.find((e) => e._id === target.employee);
+    if (!emp) return;
+    handled.current = id;
+    const query = emp.employeeCode || `${emp.firstName ?? ''}`.trim();
+    setSearch(query);
+    setSearchInput(query);
+    setDepartmentFilter(undefined);
+    setPositionFilter(undefined);
+    const day = dayjs(target.date);
+    if (canEdit(emp, target.date, day)) openEdit(emp, target.date);
+    else if (evidenceByEmpDate[id]) setViewingEvidence({ employee: emp, dateKey: target.date });
+    else message.info('ມື້ນີ້ເປັນວັນພັກ ຫຼື ບໍ່ມີກະ — ບໍ່ມີເວລາໃຫ້ແກ້ໄຂ');
+    setTimeout(() => {
+      const cell = document.getElementById(`scan-cell-${id}`);
+      if (!cell) return;
+      cell.scrollIntoView({ block: 'center', inline: 'center' });
+      cell.style.outline = '3px solid #fa541c';
+      cell.style.outlineOffset = '-3px';
+      setTimeout(() => {
+        cell.style.outline = '';
+      }, 6000);
+    }, 500);
+  });
 
   // Deliberately forcing status='absent' as discipline — separate from the
   // manual-fix form above (that one corrects what a scan actually recorded;
@@ -432,9 +491,11 @@ const AttendanceSummaryGrid: React.FC = () => {
       notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ' });
       setEditing(null);
       refetchDaily();
+      if (backAfterSave.current) backToPayroll();
     } catch (err: any) {
       notify?.({ type: 'error', message: err?.response?.data?.message || 'ບັນທຶກບໍ່ສຳເລັດ' });
     } finally {
+      backAfterSave.current = false;
       setSubmitting(false);
     }
   };
@@ -666,6 +727,11 @@ const AttendanceSummaryGrid: React.FC = () => {
       <div ref={toolbarRef} style={{ position: 'sticky', top: stackTop, zIndex: 9, background: 'var(--app-surface-bg)', paddingBottom: 16 }}>
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Space wrap>
+            {fromPayroll && (
+              <Button type="primary" ghost icon={<ArrowLeftOutlined />} onClick={backToPayroll} className="back-to-payroll">
+                ກັບໄປ ສະຫຼຸບເງິນເດືອນ
+              </Button>
+            )}
             <Button icon={<LeftOutlined />} onClick={() => goToMonth(range[0].subtract(1, 'month'))} />
             <Button onClick={() => goToMonth(dayjs())}>ເດືອນນີ້</Button>
             <Button icon={<RightOutlined />} onClick={() => goToMonth(range[0].add(1, 'month'))} />
@@ -697,8 +763,12 @@ const AttendanceSummaryGrid: React.FC = () => {
               allowClear
               style={{ width: 220 }}
               prefix={<SearchOutlined />}
+              value={searchInput}
               onSearch={(v) => setSearch(v)}
-              onChange={(e) => !e.target.value && setSearch('')}
+              onChange={(e) => {
+                setSearchInput(e.target.value);
+                if (!e.target.value) setSearch('');
+              }}
             />
             <Select
               {...departmentSelect}
@@ -782,6 +852,9 @@ const AttendanceSummaryGrid: React.FC = () => {
                 </Typography.Text>
               </Space>
             ))}
+            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+              ກົດທີ່ຈຸດສີ = ເບິ່ງຮູບຫຼັກຖານ · ກົດທີ່ຊ່ອງ = ແກ້ໄຂການສະແກນ
+            </Typography.Text>
           </Space>
         </Space>
       </div>
@@ -843,7 +916,7 @@ const AttendanceSummaryGrid: React.FC = () => {
                 // A swapped-blank day has no expected shift either (see
                 // positionSwap.js) — nothing for manual-fix to correct, same
                 // reasoning as a rest day.
-                const editable = isManager && !isRestDay(emp, dateKey, day) && !swappedByEmpDate[`${emp._id}_${dateKey}`];
+                const editable = canEdit(emp, dateKey, day);
                 const hasEvidence = !!evidenceByEmpDate[`${emp._id}_${dateKey}`];
                 const clickable = editable || hasEvidence;
                 const pendingSwapWith = pendingSwapByPositionDate[`${idOf(emp.position)}_${dateKey}`];
@@ -857,6 +930,7 @@ const AttendanceSummaryGrid: React.FC = () => {
                   ...(clickable
                     ? { onClick: () => (editable ? openEdit(emp, dateKey) : setViewingEvidence({ employee: emp, dateKey })) }
                     : {}),
+                  id: `scan-cell-${emp._id}_${dateKey}`,
                   style,
                   title: pendingSwapWith ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້` : undefined,
                 };
@@ -908,23 +982,47 @@ const AttendanceSummaryGrid: React.FC = () => {
                 const content = renderDay();
                 const dot = evidenceDotOf(emp, dateKey);
                 if (!dot) return content;
+                // A dot with photos opens them on their own (ຮູບຫຼັກຖານ), apart
+                // from ແກ້ໄຂການສະແກນ, which the rest of the cell opens. A wider
+                // spot than the dot itself, so it's easy to hit.
                 return (
                   <div style={{ position: 'relative' }}>
                     {content}
                     <span
-                      className="evidence-dot"
+                      className="evidence-dot-hit"
                       title={dot.title}
+                      onClick={
+                        dot.hasPhotos
+                          ? (e) => {
+                              e.stopPropagation();
+                              setViewingEvidence({ employee: emp, dateKey });
+                            }
+                          : undefined
+                      }
                       style={{
                         position: 'absolute',
-                        top: -4,
-                        right: -4,
-                        width: 9,
-                        height: 9,
-                        borderRadius: '50%',
-                        background: dot.color,
-                        boxShadow: dot.flagged ? `0 0 0 2px ${EVIDENCE_FLAG_RING}` : '0 0 0 1.5px #fff',
+                        top: -10,
+                        right: -10,
+                        width: 21,
+                        height: 21,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: dot.hasPhotos ? 'zoom-in' : undefined,
+                        pointerEvents: dot.hasPhotos ? 'auto' : 'none',
                       }}
-                    />
+                    >
+                      <span
+                        className="evidence-dot"
+                        style={{
+                          width: 9,
+                          height: 9,
+                          borderRadius: '50%',
+                          background: dot.color,
+                          boxShadow: dot.flagged ? `0 0 0 2px ${EVIDENCE_FLAG_RING}` : '0 0 0 1.5px #fff',
+                        }}
+                      />
+                    </span>
                   </div>
                 );
               }}
@@ -944,16 +1042,64 @@ const AttendanceSummaryGrid: React.FC = () => {
         onOk={() => form.submit()}
         confirmLoading={submitting}
         destroyOnClose
+        footer={
+          fromPayroll
+            ? (_, { OkBtn, CancelBtn }) => (
+                <>
+                  <CancelBtn />
+                  <Button
+                    loading={submitting}
+                    className="save-and-back"
+                    onClick={() => {
+                      backAfterSave.current = true;
+                      form.submit();
+                    }}
+                  >
+                    ບັນທຶກ ແລະ ກັບໄປ ສະຫຼຸບເງິນເດືອນ
+                  </Button>
+                  <OkBtn />
+                </>
+              )
+            : undefined
+        }
       >
-        {/* Always there, so HR sees at once whether this day has photos. */}
-        {editing && (
-          <>
-            <Typography.Text strong>ຮູບຫຼັກຖານຈາກແອັບພະນັກງານ</Typography.Text>
-            <div style={{ margin: '8px 0 16px' }}>
-              <ScanEvidenceView slots={evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`] ?? {}} />
-            </div>
-          </>
-        )}
+        {/* The photos have their own window (ຮູບຫຼັກຖານ: the dot on the cell,
+            or ເບິ່ງຮູບ here) — this only says whether there are any. */}
+        {editing &&
+          (() => {
+            const slots = evidenceByEmpDate[`${editing.employee._id}_${editing.dateKey}`] ?? {};
+            const count = (slots.in ? 1 : 0) + (slots.out ? 1 : 0);
+            const flagged = [slots.in, slots.out].some((e) => e && (e.backdated || e.duplicate));
+            const which = count === 2 ? 'ຄົບ ເຂົ້າ-ອອກ' : count === 1 ? (slots.in ? 'ມີແຕ່ຮູບເຂົ້າ' : 'ມີແຕ່ຮູບອອກ') : 'ບໍ່ມີ';
+            return (
+              <div
+                className="edit-evidence-line"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '4px 12px',
+                  marginBottom: 16,
+                  border: '1px solid rgba(140, 140, 140, 0.25)',
+                  borderRadius: 8,
+                }}
+              >
+                <Space size={8}>
+                  <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: EVIDENCE_DOT[count] }} />
+                  <span>
+                    ຮູບຫຼັກຖານ: {which}
+                    {flagged && <Typography.Text type="warning"> · ມີຮູບຍ້ອນຫຼັງ ຫຼື ຮູບຊ້ຳ</Typography.Text>}
+                  </span>
+                </Space>
+                {count > 0 && (
+                  <Button size="small" type="link" onClick={() => setViewingEvidence({ employee: editing.employee, dateKey: editing.dateKey })}>
+                    ເບິ່ງຮູບ
+                  </Button>
+                )}
+              </div>
+            );
+          })()}
         <Form form={form} layout="vertical" onFinish={submitFix}>
           <Form.Item label="ເວລາເຂົ້າ" name="checkIn" rules={[{ required: true, message: 'ກະລຸນາເລືອກເວລາເຂົ້າ' }]}>
             <TimePicker style={{ width: '100%' }} format="HH:mm" minuteStep={5} />
