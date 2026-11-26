@@ -11,6 +11,15 @@ export function hasRegularShift(emp: Employee): boolean {
 // anyone with no regular shift at all, who has no schedule to be judged
 // against either (asked for 2026-10-28). Mirrors the server's
 // utils/substituteRule.js followsIrregularRule.
+// Whether this employee's days with no shift run noon to noon (they work
+// nights: the DJs) — their own setting, else their position's. Mirrors the
+// server's utils/substituteRule.js worksNights.
+export function worksNights(emp: Employee): boolean {
+  if (emp.worksNights === true || emp.worksNights === false) return emp.worksNights;
+  const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;
+  return position?.worksNights === true;
+}
+
 export function followsIrregularRule(emp: Employee): boolean {
   if (emp.allowsSubstituteStatus === true || emp.allowsSubstituteStatus === false) return emp.allowsSubstituteStatus;
   const position = emp.position && typeof emp.position === 'object' ? emp.position : undefined;

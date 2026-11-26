@@ -145,7 +145,7 @@ export const CameraView: React.FC<Props> = ({ active, now, loading, currentDay, 
         <div className="rounded-3xl bg-white p-3 shadow-sm ring-1 ring-stone-100">
           <div className="mb-2 flex items-baseline justify-between px-1">
             <div className="font-semibold">{now ? `ກະ ${shiftDayLabel(now.date)}` : loading ? 'ກຳລັງໂຫຼດ…' : 'ຍັງບໍ່ຮູ້ກະ (ບໍ່ມີເນັດ)'}</div>
-            <div className="text-sm text-stone-500">{now?.shift ? `${now.shift.start} – ${now.shift.end}` : now ? 'ບໍ່ມີກະປະຈຳ' : ''}</div>
+            <div className="text-sm text-stone-500">{now?.shift ? `${now.shift.start} – ${now.shift.end}` : now?.night ? 'ກາງຄືນ · ນັບແຕ່ 12:00' : now ? 'ບໍ່ມີກະປະຈຳ' : ''}</div>
           </div>
           <div className="flex gap-2">
             <Slot label={KIND_LABEL.in} slot={now?.in ?? null} next={kind === 'in'} />

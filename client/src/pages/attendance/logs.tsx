@@ -23,6 +23,7 @@ import { lateLabel } from '../../utils/lateSeverity';
 import { groupLogsByEmployee, shiftOnDate } from '../../utils/shiftHistory';
 import { groupRestRowsByEmployee, restDaysOn } from '../../utils/restDays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
+import { worksNights } from '../../utils/substituteRule';
 import { ScanEvidenceView } from '../../components/ScanEvidenceView';
 import { downloadCsv, downloadXlsx, type SheetSpec } from '../../utils/exportSheet';
 import { PrintPickerModal, groupBySection, pickedScope, positionRows, sectionHeading, type PrintSection } from '../../components/PrintPicker';
@@ -362,6 +363,13 @@ const AttendanceSummaryGrid: React.FC = () => {
     if (restByEmpDate[`${emp._id}_${dateKey}`]) return true;
     const row = byEmpDate[`${emp._id}_${dateKey}`];
     return !row && isRecurringRestDay(emp, dateKey, day);
+  };
+
+  // A night worker's day with no shift of its own: noon to noon.
+  const nightDayOf = (emp: Employee, dateKey: string) => {
+    if (!worksNights(emp) || scheduledByEmpDate[`${emp._id}_${dateKey}`]) return false;
+    const historical = shiftOnDate(shiftLogsByEmployee.get(emp._id), dateKey);
+    return historical ? !(historical.startTime && historical.endTime) : !resolveDefaultTime(emp);
   };
 
   // A day that has a scan to correct (see onCell below).
@@ -1113,6 +1121,16 @@ const AttendanceSummaryGrid: React.FC = () => {
                 {() => {
                   const inAt = form.getFieldValue('checkIn');
                   const outAt = form.getFieldValue('checkOut');
+                  // A night worker's day with no shift runs noon to noon (the
+                  // server's resolveShiftWindow): before noon is the next morning.
+                  if (editing && nightDayOf(editing.employee, editing.dateKey)) {
+                    const next = dayjs(editing.dateKey).add(1, 'day').format('DD/MM');
+                    return (
+                      <Typography.Text type="secondary" className="fix-night-day">
+                        ນັບແບບກາງຄືນ (12:00 → 11:59): ເວລາກ່ອນ 12:00 = ເຊົ້າມື້ຖັດໄປ ({next})
+                      </Typography.Text>
+                    );
+                  }
                   return inAt && outAt && outAt.format('HH:mm') <= inAt.format('HH:mm') && editing ? (
                     <Typography.Text type="warning" className="fix-out-next-day">
                       ອອກມື້ຖັດໄປ ({dayjs(editing.dateKey).add(1, 'day').format('DD/MM')}) — ເຂົ້າ-ອອກຂ້າມຄືນ

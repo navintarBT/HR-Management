@@ -8,7 +8,6 @@ const { followsIrregularRule } = require('../utils/substituteRule');
 const {
   recomputeDay,
   reprocessFromLogs,
-  dayRange,
   resolveShiftDateKey,
   resolveExpectedShift,
   resolveShiftWindow,
@@ -18,6 +17,7 @@ const {
   bulkMarkPresentForOutage,
   setAsideDayScans,
   COUNTED_LOGS,
+  NIGHT_DAY_START_HOUR,
   overnightCutoff,
 } = require('../utils/attendanceProcessor');
 
@@ -32,7 +32,7 @@ const router = express.Router();
 // from the calendar day before, instead of looking like a lone "in".
 async function inferType(employeeId, timestamp) {
   const shiftDateKey = await resolveShiftDateKey(employeeId, timestamp);
-  const { start } = dayRange(shiftDateKey);
+  const { windowStart: start } = await resolveShiftWindow(employeeId, shiftDateKey);
   const last = await AttendanceLog.findOne({
     employee: employeeId,
     timestamp: { $gte: start, $lt: timestamp },
@@ -129,7 +129,7 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
     const employee = await Employee.findById(employeeId);
     if (!employee) return res.status(404).json({ message: 'Employee not found' });
 
-    const checkInTs = new Date(`${date}T${checkIn}:00`);
+    let checkInTs = new Date(`${date}T${checkIn}:00`);
     let checkOutTs = checkOut ? new Date(`${date}T${checkOut}:00`) : null;
     if (Number.isNaN(checkInTs.getTime()) || (checkOutTs && Number.isNaN(checkOutTs.getTime()))) {
       return res.status(400).json({ message: 'ຮູບແບບເວລາບໍ່ຖືກຕ້ອງ' });
@@ -151,8 +151,18 @@ router.post('/manual-fix', authenticate, requireRole('admin', 'manager'), async 
       ? (await Shift.find({ employee: employeeId, date, status: 'scheduled', scanFixOut: { $type: 'string' } })).find((r) => r.scanFixOut === r.endTime) ?? null
       : null;
     const nightShift = isOvernightShift(expectedShift) && !handNight;
+    // A night worker's day with no shift runs noon to noon (resolveShiftWindow):
+    // a time typed before noon is the next morning's — they came, or left,
+    // after midnight. Nothing to move or extend: the day already holds it.
+    const nightDay = !expectedShift && (await resolveShiftWindow(employeeId, date)).night;
+    if (nightDay) {
+      const noon = new Date(`${date}T00:00:00`);
+      noon.setHours(NIGHT_DAY_START_HOUR, 0, 0, 0);
+      if (checkInTs < noon) checkInTs = new Date(checkInTs.getTime() + 24 * 3600000);
+      if (checkOutTs && checkOutTs < noon) checkOutTs = new Date(checkOutTs.getTime() + 24 * 3600000);
+    }
     let crossesMidnight = false;
-    if (checkOutTs && checkOutTs <= checkInTs) {
+    if (!nightDay && checkOutTs && checkOutTs <= checkInTs) {
       if (isOvernightShift(expectedShift) || outNextDay === true) {
         checkOutTs = new Date(checkOutTs.getTime() + 24 * 3600000);
         crossesMidnight = true;

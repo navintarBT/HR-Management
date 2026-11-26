@@ -4,7 +4,7 @@ const AttendanceLog = require('../models/AttendanceLog');
 const Device = require('../models/Device');
 const DeviceCommand = require('../models/DeviceCommand');
 const DeviceEnrolledUser = require('../models/DeviceEnrolledUser');
-const { recomputeDay, dayRange, resolveShiftDateKey, resolveShiftWindow, COUNTED_LOGS } = require('../utils/attendanceProcessor');
+const { recomputeDay, resolveShiftDateKey, resolveShiftWindow, COUNTED_LOGS } = require('../utils/attendanceProcessor');
 const { splitLines, parseRecordLine, userFromRecord, templateFromRecord, parseDeviceOptions } = require('../utils/zkProtocol');
 const { ingestTemplates } = require('../utils/deviceSync');
 const { isApprovedDevice, NEW_DEVICE_DEFAULTS } = require('../utils/deviceApproval');
@@ -89,7 +89,7 @@ async function refuseUnapproved(device, res) {
 // shift's early-morning punch still alternates against last night's punch.
 async function inferType(employeeId, timestamp) {
   const shiftDateKey = await resolveShiftDateKey(employeeId, timestamp);
-  const { start } = dayRange(shiftDateKey);
+  const { windowStart: start } = await resolveShiftWindow(employeeId, shiftDateKey);
   const last = await AttendanceLog.findOne({
     employee: employeeId,
     timestamp: { $gte: start, $lt: timestamp },

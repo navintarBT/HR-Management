@@ -49,6 +49,9 @@ const employeeSchema = new mongoose.Schema(
     // the position's setting; true/false forces it on/off for this one person
     // regardless of position (e.g. one server who also covers DJ nights).
     allowsSubstituteStatus: { type: Boolean },
+    // Individual override of Position.worksNights (noon-to-noon days when
+    // there's no shift) — unset inherits the position's.
+    worksNights: { type: Boolean },
     // Snapshot of defaultShiftCategory/Start/End taken the moment the
     // substitute rule turns on for this employee (see utils/substituteRule.js)
     // — restored when the rule turns back off, since that clears the live

@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const ScanEvidence = require('../models/ScanEvidence');
 const EvidencePhoto = require('../models/EvidencePhoto');
 const { authenticate } = require('../middleware/auth');
-const { resolveShiftDateKey, resolveExpectedShift, toDateKey } = require('../utils/attendanceProcessor');
+const { resolveShiftDateKey, resolveShiftWindow, toDateKey } = require('../utils/attendanceProcessor');
 const { sha256, isJpeg, storageState, storageChanged, serializeEvidence } = require('../utils/evidence');
 
 // The employees' app (/me): their own photo evidence, one for coming in and
@@ -89,8 +89,8 @@ router.get('/evidence/today', authenticate, async (req, res, next) => {
     const employeeId = ownEmployeeId(req, res);
     if (!employeeId) return;
     const date = await resolveShiftDateKey(employeeId, new Date());
-    const [expected, rows, storage] = await Promise.all([
-      resolveExpectedShift(employeeId, date),
+    const [{ expected, night }, rows, storage] = await Promise.all([
+      resolveShiftWindow(employeeId, date),
       ScanEvidence.find({ employee: employeeId, date }),
       storageState(),
     ]);
@@ -101,6 +101,9 @@ router.get('/evidence/today', authenticate, async (req, res, next) => {
     res.json({
       date,
       shift: expected ? { start: hm(expected.startHour, expected.startMinute), end: hm(expected.endHour, expected.endMinute) } : null,
+      // No shift, and their days run noon to noon (a DJ): the phone works out
+      // the next day the same way without internet (client/src/me/lib/shift.ts).
+      night: !!night,
       in: slot('in'),
       out: slot('out'),
       storageFull: storage.full,

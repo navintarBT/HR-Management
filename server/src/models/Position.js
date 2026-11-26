@@ -9,6 +9,12 @@ const positionSchema = new mongoose.Schema(
     // attendance grid instead of showing as absent, for positions where someone
     // else routinely covers the shift instead of the assigned person (e.g. DJ).
     allowsSubstituteStatus: { type: Boolean, default: false },
+    // Works nights with no shift of their own (the DJs): on such a day the
+    // shift-day runs noon to noon, so a night past midnight — or one begun
+    // after it — stays one day, the evening's (asked for 27/11/2026). Days with
+    // a shift are judged by that shift as before. See utils/substituteRule.js
+    // worksNights and attendanceProcessor.js resolveShiftWindow.
+    worksNights: { type: Boolean, default: false },
     // Days of week (0=Sun..6=Sat) this position is never allowed to pick as a
     // rest day — for roles that can't be off on the business's busiest days
     // (e.g. Fri/Sat/Sun at a bar). Only blocks *choosing* a rest day (the

@@ -4,7 +4,7 @@ import { useList, useUpdate, useInvalidate, useNotification } from '@refinedev/c
 import { Table, Switch, Select, Input, Space, Typography, Popconfirm, Button, Modal, Form } from 'antd';
 import { SearchOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { Department, Employee, Position } from '../../types';
-import { followsIrregularRule, hasRegularShift } from '../../utils/substituteRule';
+import { followsIrregularRule, hasRegularShift, worksNights } from '../../utils/substituteRule';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
 import { WEEKDAY_OPTIONS } from '../../utils/weekdays';
 import { ALL_EMPLOYEES_PAGE_SIZE } from '../../utils/listLimits';
@@ -46,7 +46,7 @@ const PositionRuleTable: React.FC<{ employeesByPosition: Record<string, number> 
   const hasFilter = !!(search || departmentFilter);
 
   const positions = useMemo(() => {
-    if (!hasFilter) return allPositions.filter((p) => p.allowsSubstituteStatus);
+    if (!hasFilter) return allPositions.filter((p) => p.allowsSubstituteStatus || p.worksNights);
     return allPositions.filter((p) => {
       if (search && !p.name.toLowerCase().includes(search.trim().toLowerCase())) return false;
       if (departmentFilter && !(p.departments ?? []).some((d) => idOf(d) === departmentFilter)) return false;
@@ -57,6 +57,27 @@ const PositionRuleTable: React.FC<{ employeesByPosition: Record<string, number> 
   const { mutate: updatePosition } = useUpdate();
   const invalidate = useInvalidate();
   const { open: notify } = useNotification();
+
+  // Noon-to-noon days for this position's people on days with no shift. Days
+  // already judged keep what they were; from now on scans and photos follow it.
+  const setNights = (position: Position, on: boolean) => {
+    updatePosition(
+      { resource: 'positions', id: position._id, values: { worksNights: on } },
+      {
+        onSuccess: () => {
+          notify?.({
+            type: 'success',
+            message: on
+              ? `"${position.name}": ນັບມື້ແບບກາງຄືນ (12:00 → 11:59 ມື້ຖັດໄປ) ແລ້ວ — ມີຜົນກັບການສະແກນ ແລະ ຮູບ ແຕ່ນີ້ໄປ`
+              : `"${position.name}": ກັບໄປນັບມື້ປົກກະຕິ (00:00 → 23:59) ແລ້ວ`,
+          });
+          invalidate({ resource: 'positions', invalidates: ['list'] });
+          invalidate({ resource: 'employees', invalidates: ['list'] });
+          refetch();
+        },
+      }
+    );
+  };
 
   const setAllowed = (position: Position, allowed: boolean) => {
     updatePosition(
@@ -140,6 +161,31 @@ const PositionRuleTable: React.FC<{ employeesByPosition: Record<string, number> 
             )
           }
         />
+        <Table.Column
+          title={
+            <span>
+              ນັບມື້ແບບກາງຄືນ
+              <br />
+              <Typography.Text type="secondary" style={{ fontSize: 11, fontWeight: 'normal' }}>
+                ມື້ທີ່ບໍ່ມີກະ: 12:00 → 11:59 ມື້ຖັດໄປ (ເຂົ້າຫຼັງທ່ຽງຄືນ ຍັງນັບເປັນຄືນກ່ອນ)
+              </Typography.Text>
+            </span>
+          }
+          width={240}
+          render={(_, position: Position) => (
+            <Popconfirm
+              title={position.worksNights ? `ກັບໄປນັບມື້ປົກກະຕິໃຫ້ "${position.name}"?` : `ນັບມື້ແບບກາງຄືນໃຫ້ "${position.name}"?`}
+              description={
+                position.worksNights
+                  ? 'ມື້ທີ່ບໍ່ມີກະ ຈະກັບໄປຕັດມື້ຕອນທ່ຽງຄືນ'
+                  : 'ມື້ທີ່ບໍ່ມີກະ ຈະນັບແຕ່ 12:00 ຫາ 11:59 ມື້ຖັດໄປ — ສະແກນ ແລະ ຮູບ ຫຼັງທ່ຽງຄືນ ເປັນຂອງຄືນກ່ອນ'
+              }
+              onConfirm={() => setNights(position, !position.worksNights)}
+            >
+              <Switch checked={!!position.worksNights} className="position-works-nights" />
+            </Popconfirm>
+          )}
+        />
       </Table>
     </div>
   );
@@ -185,7 +231,7 @@ const EmployeeRuleTable: React.FC = () => {
   const hasFilter = !!(search || departmentFilter || positionFilter);
 
   const employees = useMemo(() => {
-    if (!hasFilter) return allEmployees.filter((e) => e.allowsSubstituteStatus != null);
+    if (!hasFilter) return allEmployees.filter((e) => e.allowsSubstituteStatus != null || e.worksNights != null);
     return allEmployees.filter((e) => {
       if (search) {
         const q = search.trim().toLowerCase();
@@ -339,6 +385,44 @@ const EmployeeRuleTable: React.FC = () => {
                   </Typography.Text>
                 )}
               </Typography.Text>
+            );
+          }}
+        />
+        <Table.Column
+          title="ນັບມື້ (ມື້ທີ່ບໍ່ມີກະ)"
+          width={230}
+          render={(_, emp: Employee) => {
+            const fromPosition = typeof emp.position === 'object' && emp.position?.worksNights === true;
+            return (
+              <Space direction="vertical" size={2}>
+                <Select
+                  size="small"
+                  style={{ width: 210 }}
+                  allowClear
+                  className="employee-works-nights"
+                  placeholder={`ໃຊ້ຄ່າຈາກຕຳແໜ່ງ (${fromPosition ? 'ກາງຄືນ' : 'ປົກກະຕິ'})`}
+                  value={emp.worksNights ?? undefined}
+                  options={[
+                    { label: 'ກາງຄືນ — 12:00 → 11:59 ມື້ຖັດໄປ', value: true },
+                    { label: 'ປົກກະຕິ — 00:00 → 23:59', value: false },
+                  ]}
+                  onChange={(v) =>
+                    updateEmployee(
+                      { resource: 'employees', id: emp._id, values: { worksNights: v === undefined ? null : v } },
+                      {
+                        onSuccess: () => {
+                          notify?.({ type: 'success', message: 'ບັນທຶກສຳເລັດ — ມີຜົນກັບການສະແກນ ແລະ ຮູບ ແຕ່ນີ້ໄປ' });
+                          invalidate({ resource: 'employees', invalidates: ['list'] });
+                          refetch();
+                        },
+                      }
+                    )
+                  }
+                />
+                <Typography.Text type={worksNights(emp) ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
+                  ໃຊ້ຈິງ: {worksNights(emp) ? 'ກາງຄືນ (12:00 → 11:59)' : 'ປົກກະຕິ'}
+                </Typography.Text>
+              </Space>
             );
           }}
         />
@@ -1949,6 +2033,10 @@ export const SubstituteRulePage: React.FC = () => {
       <Typography.Paragraph type="secondary">
         ຄົນທີ່ເປີດໃຊ້ກົດນີ້ (ຈາກຕຳແໜ່ງ ຫຼື ຕັ້ງພິເສດເປັນລາຍບຸກຄົນ) ຈະບໍ່ຖືກຕັດສິນວ່າມາຊ້າ/ຂາດວຽກຈາກເວລາສະແກນ ແລະ ສາມາດໃຊ້ສະຖານະ
         "ມາແທນ" ໃນຕາຕະລາງ ປະຫວັດການສະແກນ ໄດ້ — ການເປີດໃຊ້ຈະລ້າງເວລາເຂົ້າວຽກປົກກະຕິຂອງຄົນນັ້ນອອກໃຫ້ອັດຕະໂນມັດ
+      </Typography.Paragraph>
+      <Typography.Paragraph type="secondary">
+        "ນັບມື້ແບບກາງຄືນ" — ສຳລັບຄົນທີ່ເຮັດວຽກກາງຄືນແຕ່ບໍ່ມີກະ (ເຊັ່ນ DJ): ມື້ທີ່ບໍ່ມີກະ ຈະນັບແຕ່ 12:00 ຫາ 11:59 ຂອງມື້ຖັດໄປ ເຊັ່ນ ສະແກນ 02:00
+        ວັນທີ 24 ເປັນຂອງຄືນວັນທີ 23 — ສະແກນທຳອິດ = ເຂົ້າ, ສະແກນສຸດທ້າຍ = ອອກ. ໃຊ້ທັງການສະແກນ ແລະ ຮູບຫຼັກຖານຈາກແອັບ. ມື້ທີ່ມີກະ ຍັງນັບຕາມກະຄືເກົ່າ
       </Typography.Paragraph>
 
       <Typography.Title level={5} style={{ marginTop: 8 }}>

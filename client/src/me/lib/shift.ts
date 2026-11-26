@@ -14,6 +14,8 @@ export interface SlotNow {
 export interface ShiftNow {
   date: string;
   shift: Today['shift'];
+  // A day with no shift that runs noon to noon (see Kept.night).
+  night: boolean;
   in: SlotNow | null;
   out: SlotNow | null;
   storageFull: boolean;
@@ -23,6 +25,9 @@ export interface Kept {
   owner: string;
   date: string;
   shift: Today['shift'];
+  // No shift, works nights: the day runs noon to noon, so the small hours
+  // belong to the evening before (server: attendanceProcessor resolveShiftWindow).
+  night?: boolean;
   in: string | null;
   out: string | null;
   storageFull: boolean;
@@ -38,6 +43,7 @@ export function keepToday(owner: string, today: Today): Kept {
     owner,
     date: today.date,
     shift: today.shift,
+    night: !!today.night,
     in: today.in ? today.in.takenAt ?? today.in.uploadedAt : null,
     out: today.out ? today.out.takenAt ?? today.out.uploadedAt : null,
     storageFull: today.storageFull,
@@ -73,8 +79,12 @@ export function withSent(kept: Kept | null, sent: Evidence[]): Kept | null {
 }
 
 const overnight = (shift: Today['shift']) => !!shift && shift.end <= shift.start;
+// The hour a night worker's day with no shift starts (server: NIGHT_DAY_START_HOUR).
+const NIGHT_DAY_START_HOUR = 12;
+const runsNoonToNoon = (kept: Kept) => !kept.shift && !!kept.night;
 // When shift-day `date` is over and the next one begins.
-function over(date: string, shift: Today['shift']) {
+function over(date: string, shift: Today['shift'], night = false) {
+  if (!shift && night) return dayjs(date).add(1, 'day').hour(NIGHT_DAY_START_HOUR).startOf('hour');
   if (!shift || !overnight(shift)) return dayjs(date).add(1, 'day');
   const [h, m] = shift.end.split(':').map(Number);
   return dayjs(date).add(1, 'day').hour(h).minute(m).add(AFTER_END_HOURS, 'hour');
@@ -86,10 +96,11 @@ export function shiftNow(kept: Kept | null, queued: QueuedPhoto[], now = dayjs()
   if (!kept) return null;
   let date = kept.date;
   let slots = { in: kept.in, out: kept.out };
-  if (!now.isBefore(over(kept.date, kept.shift))) {
+  const night = runsNoonToNoon(kept);
+  if (!now.isBefore(over(kept.date, kept.shift, night))) {
     // A new shift-day since the server was last asked: nothing sent for it yet.
     const yesterday = now.subtract(1, 'day').format('YYYY-MM-DD');
-    date = overnight(kept.shift) && now.isBefore(over(yesterday, kept.shift)) ? yesterday : now.format('YYYY-MM-DD');
+    date = (overnight(kept.shift) || night) && now.isBefore(over(yesterday, kept.shift, night)) ? yesterday : now.format('YYYY-MM-DD');
     slots = { in: null, out: null };
   }
   const slot = (kind: Kind): SlotNow | null => {
@@ -97,7 +108,7 @@ export function shiftNow(kept: Kept | null, queued: QueuedPhoto[], now = dayjs()
     if (waiting) return { takenAt: waiting.takenAt, waiting: true };
     return slots[kind] ? { takenAt: slots[kind]! } : null;
   };
-  return { date, shift: kept.shift, in: slot('in'), out: slot('out'), storageFull: kept.storageFull };
+  return { date, shift: kept.shift, night, in: slot('in'), out: slot('out'), storageFull: kept.storageFull };
 }
 
 // The next photo this shift needs: in first, then out (once both are in, a

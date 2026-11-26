@@ -12,6 +12,8 @@ export interface Position {
   departments?: (Department | string)[];
   head?: Employee | string;
   allowsSubstituteStatus?: boolean;
+  // No shift and works nights (the DJs): such a day runs noon to noon.
+  worksNights?: boolean;
   restrictedRestDays?: number[];
   restDayFallback?: number | null;
   noAbsenceDays?: number[]; // 0 = Sunday .. 6 = Saturday — this position can never be absent on these days
@@ -125,6 +127,7 @@ export interface Employee {
   salary?: number | null;
   annualLeaveDays?: number | null;
   allowsSubstituteStatus?: boolean | null; // overrides Position.allowsSubstituteStatus when set
+  worksNights?: boolean | null; // overrides Position.worksNights when set
   // Individual overrides of the matching Position fields — empty/unset
   // inherits the position's rule; set non-empty to replace it for this one
   // person. See server/src/utils/restDayRules.js.

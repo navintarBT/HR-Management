@@ -8,6 +8,7 @@ const ShiftChangeLog = require('../models/ShiftChangeLog');
 const { shiftOnDate, shiftLogsFor } = require('./shiftHistory');
 const { severityFieldsForAbsence, CLEARED_SEVERITY } = require('./absenceSeverity');
 const { restDaysOn, restDaysOnFor, loadRestDaySchedules } = require('./restDaySchedule');
+const { worksNights } = require('./substituteRule');
 
 const GRACE_MINUTES = 15;
 const SEVERE_LATE_MINUTES = 60;
@@ -32,6 +33,35 @@ function overnightCutoff(expectedEnd, shift) {
   }
   const at = new Date(expectedEnd.getTime() + OVERNIGHT_BUFFER_HOURS * 3600000);
   return { last: at, next: at };
+}
+
+// A night worker's day with no shift (utils/substituteRule.js worksNights —
+// the DJs) runs from this hour to the same hour the next day, so a night past
+// midnight, or one begun after it, stays one day: the evening's (27/11/2026).
+// No DJ ever scanned between 08:00 and 16:00, so noon sits far from every
+// real punch.
+const NIGHT_DAY_START_HOUR = 12;
+function noonOf(dateKey) {
+  const d = new Date(`${dateKey}T00:00:00`);
+  d.setHours(NIGHT_DAY_START_HOUR, 0, 0, 0);
+  return d;
+}
+
+// Asked for every window worked out — the answer kept a minute (a setting
+// changed on ຕັ້ງຄ່າກົດ applies within a minute; forgetNightWorkers at once).
+const NIGHT_CACHE_MS = 60000;
+const nightWorkerCache = new Map();
+async function isNightWorker(employeeId) {
+  const key = String(employeeId);
+  const hit = nightWorkerCache.get(key);
+  if (hit && Date.now() - hit.at < NIGHT_CACHE_MS) return hit.value;
+  const employee = await Employee.findById(employeeId, 'worksNights position').populate('position', 'worksNights').lean();
+  const value = worksNights(employee);
+  nightWorkerCache.set(key, { value, at: Date.now() });
+  return value;
+}
+function forgetNightWorkers() {
+  nightWorkerCache.clear();
 }
 
 function toDateKey(date) {
@@ -231,13 +261,14 @@ async function isUnworkedRestNight(employeeId, dateKey, shift) {
 //    window already claims everything up to its own cutoff — `dateKey` must
 //    not start any earlier than that, or the same scan gets picked up by
 //    both days (double-counted into two different AttendanceDaily records).
-// Only employees with a resolvable shift are affected at all; DJ/no-fixed-
-// schedule positions keep the exact plain calendar-day behavior this system
-// always had, since there's no schedule to reason about the overlap with.
+// Someone with no shift that day keeps the plain calendar day — unless they
+// work nights (isNightWorker): then the day runs noon to noon (`night`).
 async function resolveShiftWindow(employeeId, dateKey) {
   let expected = await resolveExpectedShift(employeeId, dateKey);
   if (await isUnworkedRestNight(employeeId, dateKey, expected)) expected = null;
   const overnight = isOvernightShift(expected);
+  const nights = await isNightWorker(employeeId);
+  const night = nights && !expected;
 
   let windowStart = new Date(`${dateKey}T00:00:00`);
   let windowEnd = overnight ? null : new Date(`${dateKey}T23:59:59.999`);
@@ -247,6 +278,10 @@ async function resolveShiftWindow(employeeId, dateKey) {
     expectedEnd.setDate(expectedEnd.getDate() + 1);
     expectedEnd.setHours(expected.endHour, expected.endMinute, 0, 0);
     windowEnd = overnightCutoff(expectedEnd, expected).last;
+  }
+  if (night) {
+    windowStart = noonOf(dateKey);
+    windowEnd = new Date(noonOf(addDays(dateKey, 1)).getTime() - 1);
   }
 
   // "Yesterday" is resolved as the shift it really was (a Shift row, or the
@@ -258,20 +293,31 @@ async function resolveShiftWindow(employeeId, dateKey) {
   const yesterdayKey = addDays(dateKey, -1);
   let yesterdayShift = await resolveExpectedShift(employeeId, yesterdayKey);
   if (await isUnworkedRestNight(employeeId, yesterdayKey, yesterdayShift)) yesterdayShift = null;
+  // Where yesterday's window stopped, when it ran past midnight: its overnight
+  // shift's cutoff, or noon after a night worker's day with no shift. A
+  // night-worker day with no shift starts right there, so nothing in between
+  // belongs to no day; after a plain day shift (a day cover) it starts at midnight.
+  let yesterdayCutoff = null;
   if (isOvernightShift(yesterdayShift)) {
     const yesterdayExpectedEnd = new Date(`${dateKey}T00:00:00`);
     yesterdayExpectedEnd.setHours(yesterdayShift.endHour, yesterdayShift.endMinute, 0, 0);
-    let yesterdayCutoff = overnightCutoff(yesterdayExpectedEnd, yesterdayShift).next;
+    yesterdayCutoff = overnightCutoff(yesterdayExpectedEnd, yesterdayShift).next;
+  } else if (nights && !yesterdayShift) {
+    yesterdayCutoff = noonOf(dateKey);
+  } else if (night) {
+    yesterdayCutoff = new Date(`${dateKey}T00:00:00`);
+  }
+  if (yesterdayCutoff) {
     if (expected?.fromOverride) {
       const todayStart = new Date(`${dateKey}T00:00:00`);
       todayStart.setHours(expected.startHour, expected.startMinute, 0, 0);
       const latestStart = new Date(todayStart.getTime() - OVERNIGHT_BUFFER_HOURS * 3600000);
       if (latestStart < yesterdayCutoff) yesterdayCutoff = latestStart;
     }
-    if (yesterdayCutoff > windowStart) windowStart = yesterdayCutoff;
+    if (night || yesterdayCutoff > windowStart) windowStart = yesterdayCutoff;
   }
 
-  return { windowStart, windowEnd, expected, overnight };
+  return { windowStart, windowEnd, expected, overnight, night };
 }
 
 // Given a raw scan's own timestamp, decides which shift-day (AttendanceDaily
@@ -896,4 +942,7 @@ module.exports = {
   STANDARD_WORK_HOURS,
   OVERNIGHT_BUFFER_HOURS,
   overnightCutoff,
+  NIGHT_DAY_START_HOUR,
+  isNightWorker,
+  forgetNightWorkers,
 };

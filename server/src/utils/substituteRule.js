@@ -53,4 +53,13 @@ function followsIrregularRule(employee) {
   return position?.allowsSubstituteStatus === true || !hasRegularShift(employee);
 }
 
-module.exports = { computeSubstituteTransitionUpdate, hasRegularShift, followsIrregularRule };
+// Whether this employee's days with no shift run noon to noon (Position /
+// Employee.worksNights — the DJs): their own setting when they have one,
+// otherwise their position's. client/src/utils/substituteRule.ts mirrors this.
+function worksNights(employee) {
+  if (employee?.worksNights === true || employee?.worksNights === false) return employee.worksNights;
+  const position = employee?.position && typeof employee.position === 'object' ? employee.position : null;
+  return position?.worksNights === true;
+}
+
+module.exports = { computeSubstituteTransitionUpdate, hasRegularShift, followsIrregularRule, worksNights };

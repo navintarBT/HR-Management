@@ -23,6 +23,8 @@ export interface Evidence {
 export interface Today {
   date: string;
   shift: { start: string; end: string } | null;
+  // No shift, and the day runs noon to noon (a DJ — server: resolveShiftWindow).
+  night?: boolean;
   in: Evidence | null;
   out: Evidence | null;
   storageFull: boolean;
