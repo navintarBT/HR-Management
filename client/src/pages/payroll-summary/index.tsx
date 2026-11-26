@@ -3,7 +3,18 @@ import { Link, useNavigate } from 'react-router-dom';
 import { List, useSelect } from '@refinedev/antd';
 import { useList, useCreate, useCustom, useCustomMutation } from '@refinedev/core';
 import { Table, DatePicker, Button, Space, Typography, Select, Card, Divider, Modal, Input, Popover, Badge, Segmented, Tag, message } from 'antd';
-import { LeftOutlined, RightOutlined, DownloadOutlined, HomeOutlined, PrinterOutlined, BellOutlined, CheckOutlined, FileExcelOutlined } from '@ant-design/icons';
+import {
+  LeftOutlined,
+  RightOutlined,
+  DownloadOutlined,
+  HomeOutlined,
+  PrinterOutlined,
+  BellOutlined,
+  CheckOutlined,
+  FileExcelOutlined,
+  CommentOutlined,
+  FileSearchOutlined,
+} from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { AttendanceDaily, Employee, Shift, Leave, Overtime, Department, Position, PayrollComment, RestDayScheduleRow } from '../../types';
 import { useTableStickyOffset } from '../../hooks/useTableStickyOffset';
@@ -985,9 +996,30 @@ const PayrollSummaryGrid: React.FC = () => {
   const [commentCell, setCommentCell] = useState<{ employeeId: string; employeeName: string; column: string; label: string } | null>(
     null
   );
-  // A day cell opens its ລາຍລະອຽດ (with the comments in it); a summary cell
-  // opens its comments straight away.
+  // A day cell asks which (cellChoice): its ລາຍລະອຽດ (detailCell) or its
+  // comments (commentCell) — two windows, kept apart (asked for 26/11/2026).
+  // A summary cell opens its comments straight away.
   const [detailCell, setDetailCell] = useState<{ employee: Employee; dateKey: string } | null>(null);
+  const [cellChoice, setCellChoice] = useState<{
+    employee: Employee;
+    dateKey: string;
+    label: string;
+    at: { left: number; top: number; width: number; height: number };
+  } | null>(null);
+  // The choice floats over the cell — gone once the table scrolls away from it.
+  useEffect(() => {
+    if (!cellChoice) return undefined;
+    const close = () => setCellChoice(null);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [cellChoice]);
   const navigate = useNavigate();
   const { mutate: createComment, isLoading: postingComment } = useCreate();
   const { mutate: patchCommentStatus, isLoading: savingCommentStatus } = useCustomMutation();
@@ -1035,7 +1067,14 @@ const PayrollSummaryGrid: React.FC = () => {
   // × ~41 columns, an antd icon (several real DOM nodes: span > svg > path)
   // on every single cell was enough extra DOM weight to make the whole table
   // noticeably sluggish; a CSS pseudo-element costs nothing in the DOM at all.
-  const withComment = (content: React.ReactNode, employeeId: string, employeeName: string, column: string, label: string, onOpen?: () => void) => {
+  const withComment = (
+    content: React.ReactNode,
+    employeeId: string,
+    employeeName: string,
+    column: string,
+    label: string,
+    onOpen?: (cell: HTMLElement) => void
+  ) => {
     const thread = threadsByKey.get(`${employeeId}::${column}`);
     const marker = thread ? (thread.status === 'open' ? ' has-comment' : ' is-resolved') : '';
     const threadNote = thread ? `${thread.messages.length} ຂໍ້ຄວາມ · ${thread.status === 'open' ? 'ລໍຖ້າຢືນຢັນ' : 'ຢືນຢັນແລ້ວ'}` : '';
@@ -1043,8 +1082,8 @@ const PayrollSummaryGrid: React.FC = () => {
       <div
         id={`comment-${employeeId}::${column}`}
         className={`payroll-comment-cell${marker}`}
-        onClick={onOpen ?? (() => openComments(employeeId, employeeName, column, label))}
-        title={onOpen ? `ກົດເບິ່ງລາຍລະອຽດ${threadNote ? ` · ຄອມເມັ້ນ ${threadNote}` : ''}` : threadNote || 'ເພີ່ມຄອມເມັ້ນ'}
+        onClick={(e) => (onOpen ? onOpen(e.currentTarget) : openComments(employeeId, employeeName, column, label))}
+        title={onOpen ? `ກົດເພື່ອເລືອກ: ລາຍລະອຽດ ຫຼື ຄອມເມັ້ນ${threadNote ? ` · ຄອມເມັ້ນ ${threadNote}` : ''}` : threadNote || 'ເພີ່ມຄອມເມັ້ນ'}
       >
         {content}
       </div>
@@ -1609,7 +1648,15 @@ const PayrollSummaryGrid: React.FC = () => {
                   `${r.employee.firstName ?? ''} ${r.employee.lastName ?? ''}`,
                   dayCommentColumn(dateKey),
                   day.format('DD/MM/YYYY'),
-                  () => setDetailCell({ employee: r.employee, dateKey })
+                  (cell) => {
+                    const box = cell.getBoundingClientRect();
+                    setCellChoice({
+                      employee: r.employee,
+                      dateKey,
+                      label: day.format('DD/MM/YYYY'),
+                      at: { left: box.left, top: box.top, width: box.width, height: box.height },
+                    });
+                  }
                 );
               }}
             />
@@ -1911,19 +1958,76 @@ const PayrollSummaryGrid: React.FC = () => {
         }}
       />
 
-      <DayDetailModal facts={detailCell ? describeDay(detailCell.employee, detailCell.dateKey) : null} onClose={() => setDetailCell(null)} onEdit={goEdit}>
-        {detailCell && (
-          <CommentThreadPanel
-            key={`${detailCell.employee._id}_${detailCell.dateKey}`}
-            heading
-            thread={threadsByKey.get(`${detailCell.employee._id}::${dayCommentColumn(detailCell.dateKey)}`)}
-            posting={postingComment}
-            savingStatus={savingCommentStatus}
-            onSubmit={(text) => postComment(detailCell.employee._id, dayCommentColumn(detailCell.dateKey), text)}
-            onSetStatus={(status) => setThreadStatus(detailCell.employee._id, dayCommentColumn(detailCell.dateKey), status)}
-          />
-        )}
-      </DayDetailModal>
+      {cellChoice &&
+        (() => {
+          const { employee, dateKey, label, at } = cellChoice;
+          const name = `${employee.firstName ?? ''} ${employee.lastName ?? ''}`;
+          const thread = threadsByKey.get(`${employee._id}::${dayCommentColumn(dateKey)}`);
+          return (
+            <Popover
+              open
+              placement="bottom"
+              trigger="click"
+              onOpenChange={(open) => !open && setCellChoice(null)}
+              overlayClassName="payroll-no-print cell-choice"
+              content={
+                <Space direction="vertical" size={4} style={{ minWidth: 190 }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {employee.employeeCode} · {label}
+                  </Typography.Text>
+                  <Button
+                    block
+                    icon={<FileSearchOutlined />}
+                    className="cell-choice-detail"
+                    style={{ textAlign: 'left' }}
+                    onClick={() => {
+                      setCellChoice(null);
+                      setDetailCell({ employee, dateKey });
+                    }}
+                  >
+                    ເບິ່ງລາຍລະອຽດ
+                  </Button>
+                  <Button
+                    block
+                    icon={<CommentOutlined />}
+                    className="cell-choice-comment"
+                    style={{ textAlign: 'left' }}
+                    onClick={() => {
+                      setCellChoice(null);
+                      openComments(employee._id, name, dayCommentColumn(dateKey), label);
+                    }}
+                  >
+                    ຄອມເມັ້ນ
+                    {thread && (
+                      <Tag color={thread.status === 'open' ? 'orange' : 'blue'} style={{ marginLeft: 6, marginInlineEnd: 0 }}>
+                        {thread.messages.length} · {thread.status === 'open' ? 'ລໍຖ້າຢືນຢັນ' : 'ຢືນຢັນແລ້ວ'}
+                      </Tag>
+                    )}
+                  </Button>
+                </Space>
+              }
+            >
+              <span style={{ position: 'fixed', left: at.left, top: at.top, width: at.width, height: at.height, pointerEvents: 'none' }} />
+            </Popover>
+          );
+        })()}
+      <DayDetailModal
+        facts={detailCell ? describeDay(detailCell.employee, detailCell.dateKey) : null}
+        onClose={() => setDetailCell(null)}
+        onEdit={goEdit}
+        comments={
+          detailCell
+            ? (() => {
+                const thread = threadsByKey.get(`${detailCell.employee._id}::${dayCommentColumn(detailCell.dateKey)}`);
+                return thread ? `${thread.messages.length} · ${thread.status === 'open' ? 'ລໍຖ້າຢືນຢັນ' : 'ຢືນຢັນແລ້ວ'}` : '';
+              })()
+            : ''
+        }
+        onComments={(facts) => {
+          setDetailCell(null);
+          openComments(facts.employee._id, `${facts.employee.firstName ?? ''} ${facts.employee.lastName ?? ''}`, dayCommentColumn(facts.dateKey), dayjs(facts.dateKey).format('DD/MM/YYYY'));
+        }}
+      />
       <CommentThreadModal
         cell={commentCell}
         thread={commentCell ? threadsByKey.get(`${commentCell.employeeId}::${commentCell.column}`) : undefined}
@@ -1987,15 +2091,12 @@ function CommentThreadPanel({
   savingStatus,
   onSubmit,
   onSetStatus,
-  heading,
 }: {
   thread: CommentThread | undefined;
   posting: boolean;
   savingStatus: boolean;
   onSubmit: (text: string) => void;
   onSetStatus: (status: 'open' | 'resolved') => void;
-  // Its own title, when it sits under other things (a day's ລາຍລະອຽດ).
-  heading?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const text = draft.trim();
@@ -2009,7 +2110,6 @@ function CommentThreadPanel({
 
   return (
     <div>
-      {heading && <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>ຄອມເມັ້ນ</Typography.Text>}
       {thread && (
         <Space size={8} style={{ marginBottom: 4 }}>
           {isOpen ? (

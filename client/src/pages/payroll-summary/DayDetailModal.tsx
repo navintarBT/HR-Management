@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useCustom } from '@refinedev/core';
-import { Alert, Button, Divider, Modal, Space, Spin, Tag, Typography } from 'antd';
-import { EditOutlined } from '@ant-design/icons';
+import { Alert, Button, Modal, Space, Spin, Tag, Typography } from 'antd';
+import { CommentOutlined, EditOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { AttendanceDaily, Employee, ScanEvidence } from '../../types';
 import { API_URL } from '../../providers/axios';
@@ -86,11 +86,13 @@ function verdict(daily: AttendanceDaily | undefined, counted: DayScan[], replace
 export const DayDetailModal: React.FC<{
   facts: DayFacts | null;
   onClose: () => void;
-  // Off to ປະຫວັດການສະແກນ with this person and day open for editing.
+  // Off to ປະຫວັດການສະແກນ, to that person's row and day.
   onEdit: (facts: DayFacts) => void;
-  // The cell's comment thread, below the rest.
-  children?: React.ReactNode;
-}> = ({ facts, onClose, onEdit, children }) => {
+  // The cell's comments are a window of their own: this one closes and that
+  // one opens. `comments`: how many and whether confirmed, '' when none.
+  onComments: (facts: DayFacts) => void;
+  comments: string;
+}> = ({ facts, onClose, onEdit, onComments, comments }) => {
   const open = !!facts;
   const employeeId = facts?.employee._id;
   const dateKey = facts?.dateKey ?? '';
@@ -133,6 +135,9 @@ export const DayDetailModal: React.FC<{
       destroyOnClose
       footer={
         <Space>
+          <Button icon={<CommentOutlined />} onClick={() => onComments(facts)} className="day-detail-comments">
+            ຄອມເມັ້ນ{comments ? ` (${comments})` : ''}
+          </Button>
           <Button onClick={onClose}>ປິດ</Button>
           <Button type="primary" icon={<EditOutlined />} onClick={() => onEdit(facts)} className="day-detail-edit">
             ໄປແກ້ໄຂໃນ ປະຫວັດການສະແກນ
@@ -258,12 +263,6 @@ export const DayDetailModal: React.FC<{
           <div style={{ marginTop: 6 }}>{evidenceLoading ? <Spin size="small" /> : <ScanEvidenceView slots={slots} />}</div>
         </div>
 
-        {children && (
-          <>
-            <Divider style={{ margin: '4px 0' }} />
-            {children}
-          </>
-        )}
       </Space>
     </Modal>
   );

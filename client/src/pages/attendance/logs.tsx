@@ -396,11 +396,12 @@ const AttendanceSummaryGrid: React.FC = () => {
     setEditing({ employee: emp, dateKey });
   };
 
-  // The day asked for in the address, once everything it needs has loaded:
-  // only that person shown, the day opened, the cell shown and marked.
+  // The day asked for in the address, once the table has loaded: only that
+  // person shown, and that day's cell scrolled to and marked — HR opens it
+  // themselves (asked for 26/11/2026: a mark, not the edit popping up).
   const handled = useRef<string | null>(null);
-  const targetReady =
-    !!identity && !employeesLoading && !dailyLoading && !!shiftLogsData && !!restScheduleData && !!shiftsData && !!scheduledShiftsData && !!swappedShiftsData && !!evidenceData;
+  const [marked, setMarked] = useState<string | null>(null);
+  const targetReady = !employeesLoading && !dailyLoading;
   useEffect(() => {
     if (!target || !targetReady) return;
     const id = `${target.employee}_${target.date}`;
@@ -413,20 +414,8 @@ const AttendanceSummaryGrid: React.FC = () => {
     setSearchInput(query);
     setDepartmentFilter(undefined);
     setPositionFilter(undefined);
-    const day = dayjs(target.date);
-    if (canEdit(emp, target.date, day)) openEdit(emp, target.date);
-    else if (evidenceByEmpDate[id]) setViewingEvidence({ employee: emp, dateKey: target.date });
-    else message.info('ມື້ນີ້ເປັນວັນພັກ ຫຼື ບໍ່ມີກະ — ບໍ່ມີເວລາໃຫ້ແກ້ໄຂ');
-    setTimeout(() => {
-      const cell = document.getElementById(`scan-cell-${id}`);
-      if (!cell) return;
-      cell.scrollIntoView({ block: 'center', inline: 'center' });
-      cell.style.outline = '3px solid #fa541c';
-      cell.style.outlineOffset = '-3px';
-      setTimeout(() => {
-        cell.style.outline = '';
-      }, 6000);
-    }, 500);
+    setMarked(id);
+    setTimeout(() => document.getElementById(`scan-cell-${id}`)?.scrollIntoView({ block: 'center', inline: 'center' }), 400);
   });
 
   // Deliberately forcing status='absent' as discipline — separate from the
@@ -926,13 +915,25 @@ const AttendanceSummaryGrid: React.FC = () => {
                   style.outline = '2px dashed #9254de';
                   style.outlineOffset = -2;
                 }
+                // The day picked on ສະຫຼຸບເງິນເດືອນ (see `marked`), until HR leaves.
+                const isMarked = marked === `${emp._id}_${dateKey}`;
+                if (isMarked) {
+                  style.outline = '3px solid #fa541c';
+                  style.outlineOffset = -3;
+                  style.background = 'rgba(250, 84, 28, 0.08)';
+                }
                 return {
                   ...(clickable
                     ? { onClick: () => (editable ? openEdit(emp, dateKey) : setViewingEvidence({ employee: emp, dateKey })) }
                     : {}),
                   id: `scan-cell-${emp._id}_${dateKey}`,
+                  ...(isMarked ? { 'data-marked': 'from-payroll' } : {}),
                   style,
-                  title: pendingSwapWith ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້` : undefined,
+                  title: isMarked
+                    ? 'ມື້ທີ່ເລືອກມາຈາກ ສະຫຼຸບເງິນເດືອນ'
+                    : pendingSwapWith
+                      ? `ມື້ສະຫຼັບຕຳແໜ່ງ — ຈະສະຫຼັບກັບ "${pendingSwapWith}" ມື້ນີ້`
+                      : undefined,
                 };
               }}
               render={(_, emp: Employee) => {
