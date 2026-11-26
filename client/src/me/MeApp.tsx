@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { IonApp } from '@ionic/react';
-import { meApi, savedUser, whenSignedOut, type MeUser } from './api';
+import { meApi, savedUser, shareSession, whenSignedOut, type MeUser } from './api';
+import { keepStorage } from './lib/queue';
 import { SignInPage } from './pages/SignInPage';
 import { Shell } from './pages/Shell';
 
@@ -12,7 +13,11 @@ export const MeApp: React.FC = () => {
   useEffect(() => {
     whenSignedOut(() => setUser(null));
     // Confirms the saved session still holds (HR may have reset the password).
-    if (savedUser()) meApi.get('/auth/me').catch(() => undefined);
+    if (savedUser()) {
+      shareSession();
+      meApi.get('/auth/me').catch(() => undefined);
+    }
+    keepStorage();
   }, []);
 
   return <IonApp>{user ? <Shell user={user} /> : <SignInPage onSignedIn={() => setUser(savedUser())} />}</IonApp>;

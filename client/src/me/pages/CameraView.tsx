@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { IonButton, IonIcon, IonSpinner } from '@ionic/react';
-import { cameraOutline, cameraReverseOutline, checkmarkCircle, ellipseOutline, imagesOutline, warningOutline } from 'ionicons/icons';
+import { cameraOutline, cameraReverseOutline, checkmarkCircle, cloudUploadOutline, ellipseOutline, imagesOutline, warningOutline } from 'ionicons/icons';
 import { captureFrame, type PreparedPhoto } from '../lib/image';
-import type { Kind, Today } from '../lib/evidence';
+import type { Kind } from '../lib/evidence';
+import { nextKind, type ShiftNow, type SlotNow } from '../lib/shift';
 import { KIND_LABEL, shiftDayLabel, timeLabel } from '../lib/dates';
 import { autoSaveEnabled, isIOS, photoFileName, saveToDevice } from '../lib/device';
 
@@ -10,48 +11,66 @@ type CameraState = 'starting' | 'live' | 'unavailable';
 
 interface Props {
   active: boolean;
-  today: Today | null;
+  // The shift the next photo is for; null while nothing is known about it.
+  now: ShiftNow | null;
+  // Waiting for the server's answer, with nothing known yet.
+  loading: boolean;
+  // The shift-day a photo taken now is named after on the phone.
+  currentDay: string;
   employeeCode?: string;
   onCaptured: (photo: PreparedPhoto, kind: Kind) => void;
   openCameraApp: () => void;
   openGallery: () => void;
 }
 
-// The next photo this shift needs: in first, then out (once both are in, a
-// new one replaces out — changeable on the review sheet).
-export const nextKind = (today: Today | null): Kind => (today?.in ? 'out' : 'in');
-
-const Slot: React.FC<{ label: string; time?: string | null; done: boolean; next: boolean }> = ({ label, time, done, next }) => (
+const Slot: React.FC<{ label: string; slot: SlotNow | null; next: boolean }> = ({ label, slot, next }) => (
   <div
+    data-slot={slot ? (slot.waiting ? 'waiting' : 'sent') : 'empty'}
     className={`flex flex-1 items-center gap-2 rounded-2xl px-3 py-2 ${
-      done ? 'bg-emerald-50 text-emerald-800' : next ? 'bg-wine-50 text-wine-700 ring-2 ring-wine-200' : 'bg-stone-100 text-stone-500'
+      slot?.waiting
+        ? 'bg-amber-50 text-amber-800 ring-1 ring-amber-200'
+        : slot
+          ? 'bg-emerald-50 text-emerald-800'
+          : next
+            ? 'bg-wine-50 text-wine-700 ring-2 ring-wine-200'
+            : 'bg-stone-100 text-stone-500'
     }`}
   >
-    <IonIcon icon={done ? checkmarkCircle : ellipseOutline} className="text-xl" />
+    <IonIcon icon={slot?.waiting ? cloudUploadOutline : slot ? checkmarkCircle : ellipseOutline} className="text-xl" />
     <div className="leading-tight">
       <div className="text-sm font-semibold">{label}</div>
-      <div className="text-xs">{done ? `ສົ່ງແລ້ວ ${time ?? ''}` : next ? 'ຮູບຕໍ່ໄປ' : 'ຍັງບໍ່ມີ'}</div>
+      <div className="text-xs">
+        {slot ? `${slot.waiting ? 'ລໍຖ້າສົ່ງ' : 'ສົ່ງແລ້ວ'} ${timeLabel(slot.takenAt)}` : next ? 'ຮູບຕໍ່ໄປ' : 'ຍັງບໍ່ມີ'}
+      </div>
     </div>
   </div>
 );
 
+// How soon a camera the phone took away is opened again.
+const REOPEN_MS = 800;
+
 // Opens straight onto the live camera: the shift it's for and what's still
 // missing on top, one big button to take the photo.
-export const CameraView: React.FC<Props> = ({ active, today, employeeCode, onCaptured, openCameraApp, openGallery }) => {
+export const CameraView: React.FC<Props> = ({ active, now, loading, currentDay, employeeCode, onCaptured, openCameraApp, openGallery }) => {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
+  // Counts up with every start and stop, so a camera that opens late — the app
+  // already left, or another start under way — is closed again.
+  const turn = useRef(0);
   const [state, setState] = useState<CameraState>('starting');
   const [facing, setFacing] = useState<'environment' | 'user'>('environment');
   const [hasTwoCameras, setHasTwoCameras] = useState(false);
   const [capturing, setCapturing] = useState(false);
 
   const stop = useCallback(() => {
+    turn.current += 1;
     stream.current?.getTracks().forEach((t) => t.stop());
     stream.current = null;
   }, []);
 
   const start = useCallback(async () => {
     stop();
+    const mine = turn.current;
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setState('unavailable');
       return;
@@ -62,16 +81,30 @@ export const CameraView: React.FC<Props> = ({ active, today, employeeCode, onCap
         video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
       });
+      if (mine !== turn.current) {
+        media.getTracks().forEach((t) => t.stop());
+        return;
+      }
       stream.current = media;
+      // Taken away by the phone (a call, another app): opened again, rather than
+      // leaving a black or frozen picture to be photographed.
+      media.getVideoTracks()[0]?.addEventListener('ended', () => {
+        if (mine !== turn.current) return;
+        setState('starting');
+        setTimeout(() => {
+          if (mine === turn.current) void start();
+        }, REOPEN_MS);
+      });
       if (video.current) {
         video.current.srcObject = media;
         await video.current.play().catch(() => undefined);
       }
+      if (mine !== turn.current || media.getVideoTracks()[0]?.readyState === 'ended') return;
       setState('live');
       const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
       setHasTwoCameras(devices.filter((d) => d.kind === 'videoinput').length > 1);
     } catch {
-      setState('unavailable');
+      if (mine === turn.current) setState('unavailable');
     }
   }, [facing, stop]);
 
@@ -90,7 +123,7 @@ export const CameraView: React.FC<Props> = ({ active, today, employeeCode, onCap
     };
   }, [active, start, stop]);
 
-  const kind = nextKind(today);
+  const kind = nextKind(now);
 
   const shoot = async () => {
     if (!video.current || state !== 'live' || capturing) return;
@@ -99,7 +132,7 @@ export const CameraView: React.FC<Props> = ({ active, today, employeeCode, onCap
       const photo = await captureFrame(video.current);
       // A copy on the phone straight away (an iPhone gets a button on the
       // review sheet instead — it can't save without one more tap).
-      if (autoSaveEnabled() && !isIOS() && today) void saveToDevice(photo.photo, photoFileName(employeeCode, today.date, kind));
+      if (autoSaveEnabled() && !isIOS()) void saveToDevice(photo.photo, photoFileName(employeeCode, currentDay, kind));
       onCaptured(photo, kind);
     } finally {
       setCapturing(false);
@@ -111,14 +144,14 @@ export const CameraView: React.FC<Props> = ({ active, today, employeeCode, onCap
       <div className="w-full px-4 pt-3 md:max-w-lg md:px-0 md:pt-0">
         <div className="rounded-3xl bg-white p-3 shadow-sm ring-1 ring-stone-100">
           <div className="mb-2 flex items-baseline justify-between px-1">
-            <div className="font-semibold">{today ? `ກະ ${shiftDayLabel(today.date)}` : 'ກຳລັງໂຫຼດ…'}</div>
-            <div className="text-sm text-stone-500">{today?.shift ? `${today.shift.start} – ${today.shift.end}` : today ? 'ບໍ່ມີກະປະຈຳ' : ''}</div>
+            <div className="font-semibold">{now ? `ກະ ${shiftDayLabel(now.date)}` : loading ? 'ກຳລັງໂຫຼດ…' : 'ຍັງບໍ່ຮູ້ກະ (ບໍ່ມີເນັດ)'}</div>
+            <div className="text-sm text-stone-500">{now?.shift ? `${now.shift.start} – ${now.shift.end}` : now ? 'ບໍ່ມີກະປະຈຳ' : ''}</div>
           </div>
           <div className="flex gap-2">
-            <Slot label={KIND_LABEL.in} time={timeLabel(today?.in?.takenAt)} done={!!today?.in} next={kind === 'in'} />
-            <Slot label={KIND_LABEL.out} time={timeLabel(today?.out?.takenAt)} done={!!today?.out} next={kind === 'out' && !today?.out} />
+            <Slot label={KIND_LABEL.in} slot={now?.in ?? null} next={kind === 'in'} />
+            <Slot label={KIND_LABEL.out} slot={now?.out ?? null} next={kind === 'out' && !now?.out} />
           </div>
-          {today?.storageFull && (
+          {now?.storageFull && (
             <div className="mt-2 flex items-center gap-2 rounded-2xl bg-red-50 px-3 py-2 text-sm text-red-700">
               <IonIcon icon={warningOutline} /> ບ່ອນເກັບຮູບເຕັມ — ກະລຸນາແຈ້ງ HR
             </div>
@@ -182,7 +215,7 @@ export const CameraView: React.FC<Props> = ({ active, today, employeeCode, onCap
               <IonIcon icon={cameraReverseOutline} />
             </button>
           </div>
-          <div className="mt-2 text-center text-sm font-medium text-white">ຖ່າຍຮູບ{KIND_LABEL[kind]}</div>
+          <div className="mt-2 text-center text-sm font-medium text-white">ຖ່າຍຮູບ{now ? KIND_LABEL[kind] : ''}</div>
         </div>
       </div>
     </div>

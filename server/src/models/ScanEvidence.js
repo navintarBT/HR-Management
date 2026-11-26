@@ -12,6 +12,9 @@ const scanEvidenceSchema = new mongoose.Schema(
     date: { type: String, required: true }, // YYYY-MM-DD shift-day
     kind: { type: String, enum: ['in', 'out'], required: true },
     photo: { type: mongoose.Schema.Types.ObjectId, ref: 'EvidencePhoto', required: true },
+    // The phone's own id for that upload, so one sent again (no answer the first
+    // time) is recognised. None on photos from before 26/11/2026.
+    clientId: { type: String },
     // When the photo was taken (the phone's clock — the camera moment, or a
     // picked photo's file time) and when it reached the server.
     takenAt: { type: Date },
@@ -27,6 +30,7 @@ const scanEvidenceSchema = new mongoose.Schema(
       {
         _id: false,
         photo: { type: mongoose.Schema.Types.ObjectId, ref: 'EvidencePhoto' },
+        clientId: { type: String },
         takenAt: { type: Date },
         uploadedAt: { type: Date },
         replacedAt: { type: Date },

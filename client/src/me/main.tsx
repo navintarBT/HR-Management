@@ -22,5 +22,17 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/me/sw.js', { scope: '/me/' }).catch(() => undefined);
+    // Everything this page loaded is kept, so the very first visit is already
+    // enough to open without internet.
+    const keep = () =>
+      navigator.serviceWorker.ready.then((reg) => {
+        const urls = performance
+          .getEntriesByType('resource')
+          .map((e) => new URL(e.name))
+          .filter((u) => u.origin === window.location.origin && u.pathname.startsWith('/assets/'))
+          .map((u) => u.pathname);
+        reg.active?.postMessage({ type: 'me-keep', urls: [...new Set(urls)] });
+      });
+    setTimeout(() => void keep().catch(() => undefined), 3000);
   });
 }

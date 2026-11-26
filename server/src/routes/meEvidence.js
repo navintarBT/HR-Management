@@ -36,8 +36,8 @@ function ownEmployeeId(req, res) {
 const hm = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 const isDateKey = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime());
 
-// The photo and thumbnail the app sends, checked and stored.
-async function storePhoto(employeeId, files) {
+// The photo and thumbnail the app sends, checked.
+function checkPhoto(files) {
   const photo = files?.photo?.[0]?.buffer;
   const thumb = files?.thumb?.[0]?.buffer;
   if (!isJpeg(photo) || !isJpeg(thumb) || thumb.length > MAX_THUMB_BYTES) {
@@ -45,12 +45,34 @@ async function storePhoto(employeeId, files) {
     err.status = 400;
     throw err;
   }
-  const hash = sha256(photo);
-  const reused = await EvidencePhoto.exists({ sha256: hash, employee: employeeId });
+  return { photo, thumb, hash: sha256(photo) };
+}
+
+// The row that already took this upload. The phone sends a photo again whenever
+// it didn't hear back, and one that did arrive the first time must not replace
+// itself, fill the other slot or be marked as a duplicate. Told by the phone's
+// own id for it (clientId), or by being the very photo a slot holds now.
+async function alreadySent(employeeId, clientId, hash, rows) {
+  if (clientId) {
+    const row = await ScanEvidence.findOne({ employee: employeeId, $or: [{ clientId }, { 'replaced.clientId': clientId }] });
+    if (row) return row;
+  }
+  if (!rows.length) return null;
+  const same = new Set((await EvidencePhoto.find({ sha256: hash, employee: employeeId }, '_id').lean()).map((p) => String(p._id)));
+  return rows.find((r) => same.has(String(r.photo))) ?? null;
+}
+
+// `slot`: the row it goes to, if there is one — the same picture there before
+// isn't a duplicate, only the same picture used for another shift or in/out.
+async function storePhoto(employeeId, { photo, thumb, hash }, slot) {
+  const own = slot ? [slot.photo, ...slot.replaced.map((r) => r.photo)] : [];
+  const reused = await EvidencePhoto.exists({ sha256: hash, employee: employeeId, _id: { $nin: own } });
   const doc = await EvidencePhoto.create({ employee: employeeId, data: photo, thumb, size: photo.length, sha256: hash });
   storageChanged();
   return { doc, reused: !!reused };
 }
+
+const clientIdOf = (req) => (typeof req.body.clientId === 'string' && req.body.clientId ? req.body.clientId.slice(0, 64) : undefined);
 
 async function refuseWhenFull(res) {
   const storage = await storageState();
@@ -113,7 +135,7 @@ router.post('/evidence', authenticate, withUpload, async (req, res, next) => {
   try {
     const employeeId = ownEmployeeId(req, res);
     if (!employeeId) return;
-    if (await refuseWhenFull(res)) return;
+    const incoming = checkPhoto(req.files);
 
     const now = new Date();
     const sentAt = req.body.takenAt ? new Date(req.body.takenAt) : null;
@@ -123,17 +145,24 @@ router.post('/evidence', authenticate, withUpload, async (req, res, next) => {
     if (date > currentDay) return res.status(400).json({ message: 'ອັບໂຫຼດລ່ວງໜ້າບໍ່ໄດ້' });
 
     const existing = await ScanEvidence.find({ employee: employeeId, date });
-    let kind = req.body.kind === 'in' || req.body.kind === 'out' ? req.body.kind : null;
+    const wanted = req.body.kind === 'in' || req.body.kind === 'out' ? req.body.kind : null;
+    const clientId = clientIdOf(req);
+    const again = await alreadySent(employeeId, clientId, incoming.hash, wanted ? existing.filter((r) => r.kind === wanted) : existing);
+    if (again) return res.json(serializeEvidence(again));
+    if (await refuseWhenFull(res)) return;
+
+    let kind = wanted;
     if (!kind) {
       if (!existing.some((r) => r.kind === 'in')) kind = 'in';
       else if (!existing.some((r) => r.kind === 'out')) kind = 'out';
       else return res.status(409).json({ message: 'ກະນີ້ມີຮູບເຂົ້າ ແລະ ອອກແລ້ວ — ເລືອກວ່າຈະແທນຮູບໃດ', needsKind: true });
     }
 
-    stored = await storePhoto(employeeId, req.files);
     const slot = existing.find((r) => r.kind === kind);
+    stored = await storePhoto(employeeId, incoming, slot);
     const fields = {
       photo: stored.doc._id,
+      clientId,
       takenAt,
       uploadedAt: now,
       backdated: date < currentDay,
@@ -142,7 +171,7 @@ router.post('/evidence', authenticate, withUpload, async (req, res, next) => {
     };
     let row;
     if (slot) {
-      slot.replaced.push({ photo: slot.photo, takenAt: slot.takenAt, uploadedAt: slot.uploadedAt, replacedAt: now });
+      slot.replaced.push({ photo: slot.photo, clientId: slot.clientId, takenAt: slot.takenAt, uploadedAt: slot.uploadedAt, replacedAt: now });
       Object.assign(slot, fields, { editedAt: now });
       row = await slot.save();
     } else {
@@ -151,7 +180,9 @@ router.post('/evidence', authenticate, withUpload, async (req, res, next) => {
     res.status(slot ? 200 : 201).json(serializeEvidence(row));
   } catch (err) {
     if (stored?.doc) await EvidencePhoto.deleteOne({ _id: stored.doc._id }).catch(() => undefined);
-    if (err?.code === 11000) return res.status(409).json({ message: 'ມີຮູບນີ້ຢູ່ແລ້ວ — ລອງໃໝ່ອີກຄັ້ງ' });
+    // The same slot filled a moment ago by another request — the phone tries
+    // again by itself and finds it there (or replaces it, if it's another photo).
+    if (err?.code === 11000) return res.status(503).json({ message: 'ລອງໃໝ່ອີກຄັ້ງ' });
     next(err);
   }
 });
@@ -176,18 +207,23 @@ router.patch('/evidence/:id', authenticate, withUpload, async (req, res, next) =
       return res.status(409).json({ message: 'ວັນ ແລະ ປະເພດນັ້ນມີຮູບຢູ່ແລ້ວ — ແກ້ຮູບນັ້ນແທນ' });
     }
 
-    if (req.files?.photo) {
+    // Sent again after it had arrived (see alreadySent): nothing to replace.
+    const incoming = req.files?.photo ? checkPhoto(req.files) : null;
+    const clientId = clientIdOf(req);
+    const replacing = incoming && !(await alreadySent(employeeId, clientId, incoming.hash, [row]));
+    if (replacing) {
       if (await refuseWhenFull(res)) return;
-      stored = await storePhoto(employeeId, req.files);
-      row.replaced.push({ photo: row.photo, takenAt: row.takenAt, uploadedAt: row.uploadedAt, replacedAt: now });
+      stored = await storePhoto(employeeId, incoming, row);
+      row.replaced.push({ photo: row.photo, clientId: row.clientId, takenAt: row.takenAt, uploadedAt: row.uploadedAt, replacedAt: now });
       row.photo = stored.doc._id;
+      row.clientId = clientId;
       row.duplicate = stored.reused;
       const sentAt = req.body.takenAt ? new Date(req.body.takenAt) : null;
       row.takenAt = sentAt && !Number.isNaN(sentAt.getTime()) ? sentAt : now;
       row.uploadedAt = now;
     }
     // Uploaded after its shift-day — judged again when the photo or the day changes.
-    if (req.files?.photo || date !== row.date) row.backdated = date < currentDay;
+    if (replacing || date !== row.date) row.backdated = date < currentDay;
     row.date = date;
     row.kind = kind;
     if (typeof req.body.note === 'string') row.note = req.body.note.slice(0, 500);
