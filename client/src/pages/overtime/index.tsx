@@ -30,13 +30,18 @@ function computeHours(startTime: string, endTime: string): number {
   return Math.round((minutes / 60) * 100) / 100;
 }
 
-// "55.12 ຊມ." reads as an odd number to glance at — "55 ຊົ່ວໂມງ 12 ນາທີ" is
-// what that duration actually means to someone scanning the table.
-function formatHoursMinutes(hours: number): string {
+// The OT total as one figure: every full 24 hours is a ມື້, what's left is
+// hours (and minutes) — 25 ຊມ. reads "1 ມື້ 1 ຊົ່ວໂມງ", 5.5 ຊມ. "5 ຊົ່ວໂມງ 30
+// ນາທີ" rather than "5.5" (asked for 28/11/2026: two columns, total hours and
+// days, confused people). Only whole days count — 47 ຊມ. is "1 ມື້ 23
+// ຊົ່ວໂມງ", not 2 ມື້.
+function formatOtTotal(hours: number): string {
   const totalMinutes = Math.round(hours * 60);
-  const wholeHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const wholeHours = Math.floor((totalMinutes % (24 * 60)) / 60);
   const minutes = totalMinutes % 60;
-  return minutes > 0 ? `${wholeHours} ຊົ່ວໂມງ ${minutes} ນາທີ` : `${wholeHours} ຊົ່ວໂມງ`;
+  const parts = [days > 0 && `${days} ມື້`, wholeHours > 0 && `${wholeHours} ຊົ່ວໂມງ`, minutes > 0 && `${minutes} ນາທີ`].filter(Boolean);
+  return parts.length ? parts.join(' ') : '-';
 }
 
 // Shared by both pages: month nav + a free date-range, plus search/department/
@@ -212,29 +217,19 @@ export const OvertimeSummaryGrid: React.FC = () => {
           render={(_, emp: Employee) => summaryByEmployee[emp._id]?.approvedCount ?? 0}
         />
         <Table.Column
-          title="ລວມຊົ່ວໂມງ OT"
-          width={130}
-          render={(_, emp: Employee) => {
-            const hours = summaryByEmployee[emp._id]?.approvedHours ?? 0;
-            return hours > 0 ? <Typography.Text strong>{formatHoursMinutes(hours)}</Typography.Text> : '-';
-          }}
-        />
-        <Table.Column
-          title="ນັບເປັນມື້ (24 ຊມ./ມື້)"
-          width={150}
-          render={(_, emp: Employee) => {
-            // ມື້ = a full 24-hour day. Only whole days count — 27 ຊມ. is
-            // "1 ມື້ 3 ຊມ.", not rounded up to 2 ມື້; under 24 ຊມ. total
-            // doesn't reach even 1 ມື້ yet, so nothing is counted.
-            const hours = summaryByEmployee[emp._id]?.approvedHours ?? 0;
-            const days = Math.floor(hours / 24);
-            const remainder = hours - days * 24;
-            if (days <= 0) return '-';
-            return (
-              <Typography.Text strong>
-                {days} ມື້{remainder > 0 ? ` ${formatHoursMinutes(remainder)}` : ''}
+          title={
+            <span>
+              ລວມ OT
+              <br />
+              <Typography.Text type="secondary" style={{ fontSize: 11, fontWeight: 'normal' }}>
+                ຄົບ 24 ຊົ່ວໂມງ = 1 ມື້
               </Typography.Text>
-            );
+            </span>
+          }
+          width={200}
+          render={(_, emp: Employee) => {
+            const hours = summaryByEmployee[emp._id]?.approvedHours ?? 0;
+            return hours > 0 ? <Typography.Text strong>{formatOtTotal(hours)}</Typography.Text> : '-';
           }}
         />
       </Table>
